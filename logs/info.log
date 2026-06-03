@@ -1,0 +1,31 @@
+[2026-05-05 09:23:23]error: Verify Admin Error: Authentication Failed
+[2026-05-05 09:23:24]error: Verify Admin Error: Authentication Failed
+[2026-05-06 02:31:38]error: Verify Admin Error: Authentication Failed
+[2026-05-06 02:31:38]error: Verify Admin Error: Authentication Failed
+[2026-05-07 01:00:57]error: uncaughtException: deleteservice is not defined
+ReferenceError: deleteservice is not defined
+    at file:///C:/Users/VST016/OneDrive/Desktop/Gloup-Test-Backend/src/Admin/routes/approutes.js:40:34
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+[2026-05-07 01:05:26]error: uncaughtException: deleteservice is not defined
+ReferenceError: deleteservice is not defined
+    at file:///C:/Users/VST016/OneDrive/Desktop/Gloup-Test-Backend/src/Admin/routes/approutes.js:40:34
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+[2026-05-15 05:25:26]error: Verify Admin Error: Authentication Failed
+[2026-05-15 05:25:50]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:38]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:38]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:38]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:38]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:38]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-16 01:57:39]error: Verify Admin Error: Authentication Failed
+[2026-05-18 10:01:03]error: Verify Admin Error: Authentication Failed
+[2026-05-18 10:01:03]error: Verify Admin Error: Authentication Failed
+[2026-05-30 01:14:54]error: Verify Admin Error: Authentication Failed
+[2026-05-30 01:14:54]error: Verify Admin Error: Authentication Failed

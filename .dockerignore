@@ -1,0 +1,35 @@
+# Dependencies and caches
+node_modules
+npm-debug.log*
+pnpm-debug.log*
+.yarn
+.pnpm-store
+
+# Git and IDE
+.git
+.gitignore
+.cursor
+.idea
+.vscode
+
+# Local env and secrets (inject at runtime)
+.env
+.env.*
+!.env.example
+
+# Tests and CI
+coverage
+.nyc_output
+**/*.test.js
+**/__tests__
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.docker
+
+# Misc
+terminals
+*.log
+tmp
+temp

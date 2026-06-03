@@ -1,0 +1,623 @@
+{
+  "$id": "defs",
+  "definitions": {
+      "User": {
+        "id": {
+          "type": "integer",
+          "title": "id"
+        },
+        "firstname": {
+          "type": "string",
+          "title": "firstname"
+        },
+        "lastname": {
+          "type": "string",
+          "title": "lastname"
+        },
+        "phone": {
+          "type": "integer",
+          "title": "phone"
+        },
+        "email": {
+          "type": "string",
+          "title": "email",
+          "format": "email"
+        },
+        "password": {
+          "type": "string",
+          "title": "password"
+        },
+        "otp": {
+          "type": "string",
+          "title": "otp"
+        },
+        "optExpiration": {
+          "type": "string",
+          "title": "optExpiration",
+          "format": "date-time"
+        },
+        "date_of_birth": {
+          "type": "string",
+          "title": "date_of_birth",
+          "format": "date-time"
+        },
+        "city": {
+          "type": "string",
+          "title": "city"
+        },
+        "invited_code": {
+          "type": "string",
+          "title": "invited_code"
+        },
+        "used_code": {
+          "type": "string",
+          "title": "used_code"
+        },
+        "wallet": {
+          "type": "number",
+          "title": "wallet",
+          "format": "decimal"
+        },
+        "profilePic": {
+          "type": "string",
+          "title": "profilePic"
+        },
+        "status": {
+          "type": "string",
+          "title": "status",
+          "enum": ["active", "inactive", "banned"]
+        }
+      },
+      "UserSession": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "token": {
+        "type": "string",
+        "title": "token"
+      },
+      "ipv4": {
+        "type": "string",
+        "title": "ipv4",
+        "format": "ipv4"
+      },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "expired", "revoked"]
+      },
+      "created_at": {
+        "type": "string",
+        "title": "created_at",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "title": "updated_at",
+        "format": "date-time"
+      }
+    },
+    "Favourites": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "store_id": {
+        "type": "integer",
+        "title": "store_id"
+      },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "removed"]
+      }
+    },
+    "Reviews": {
+      "id": { "type": "string", "title": "id" },
+      "rating": { "type": "string", "title": "rating" },
+      "user_id": { "type": "string", "title": "user_id" },
+      "store_id": { "type": "string", "title": "store_id" },
+      "cretaed_at": { "type": "string", "title": "cretaed_at", "format": "date-time" },
+      "updated_at": { "type": "string", "title": "updated_at", "format": "date-time" },
+      "review_description": { "type": "string", "title": "description" },
+      "status": { "type": "string", "title": "status", "enum": ["active", "inactive"] }
+    },
+    "Payments": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "payment_status": {
+        "type": "string",
+        "title": "payment_status",
+        "enum": ["pending", "success", "failed"]
+      },
+      "appointment_id": {
+        "type": "integer",
+        "title": "appointment_id"
+      },
+      "created_at": {
+        "type": "string",
+        "title": "created_at",
+        "format": "date-time"
+      }
+    },
+    "WalletLogs": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "date": {
+        "type": "string",
+        "title": "date",
+        "format": "date-time"
+      },
+      "amount_added": {
+        "type": "integer",
+        "title": "amount_added"
+      },
+      "balance_before": {
+        "type": "integer",
+        "title": "balance_before"
+      },
+      "balance_after": {
+        "type": "integer",
+        "title": "balance_after"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "payment_status": {
+        "type": "string",
+        "title": "payment_status",
+        "enum": ["pending", "success", "failed"]
+      },
+      "updated_at": {
+        "type": "string",
+        "title": "updated_at",
+        "format": "date-time"
+      }
+    },
+    "Appointments": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "store_id": {
+        "type": "integer",
+        "title": "store_id"
+      },
+      "booking_from": {
+        "type": "integer",
+        "title": "booking_from"
+      },
+      "booking_to": {
+        "type": "integer",
+        "title": "booking_to"
+      },
+      "created_at": {
+        "type": "string",
+        "title": "created_at",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "title": "updated_at",
+        "format": "date-time"
+      },
+      "amount": {
+        "type": "integer",
+        "title": "amount"
+      },
+      "slot_id": {
+        "type": "integer",
+        "title": "slot_id"
+      },
+      "is_combo": {
+        "type": "boolean",
+        "title": "is_combo"
+      },
+      "profesional_id": {
+        "type": "integer",
+        "title": "profesional_id"
+      },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["booked", "cancelled", "completed"]
+      }
+    },
+    "AppointmentItems": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "service_id": {
+        "type": "integer",
+        "title": "service_id"
+      },
+      "appointment_id": {
+        "type": "integer",
+        "title": "appointment_id"
+      },
+      "service_amount": {
+        "type": "integer",
+        "title": "service_amount"
+      },
+      "combo_id": {
+        "type": "integer",
+        "title": "combo_id"
+      }
+    },
+    "UserCart": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "shop_id": {
+        "type": "integer",
+        "title": "shop_id"
+      },
+      "service_id": {
+        "type": "integer",
+        "title": "service_id"
+      },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive", "deleted"]
+      }
+    },
+    "NotificationLogs": {
+      "id": { 
+        "type": "string", 
+      "title": "id" 
+    },
+      "user_id": { 
+        "type": "string",
+         "title": "user_id"
+         },
+      "notification_title": { 
+        "type": "string", 
+       "title": "title" 
+    },
+      "notification_description": { 
+        "type": "string",
+       "title": "description"
+       },
+      "image": { 
+        "type": "string", 
+      "title": "image" },
+      "status": { 
+        "type": "string", 
+      "title": "status", 
+      "enum": ["sent", "pending", "failed"]
+     }
+    },
+    "Store": {
+      "id":            { "type": "integer", "title": "id" },
+      "name":          { "type": "string",  "title": "name" },
+      "store_type":    { "type": "string",  "title": "store_type" },
+      "website":       { "type": "string",  "title": "website", "format": "uri" },
+      "images":        { "type": "string",  "title": "images" },
+      "team_size":     { "type": "string",  "title": "team_size" },
+      "address_id":    { "type": "integer", "title": "address_id" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      },
+      "category_id":   { "type": "integer", "title": "category_id" }
+    },
+    "StoreSession": {
+      "id":         { "type": "integer", "title": "id" },
+      "store_id":   { "type": "integer", "title": "store_id" },
+      "token":      { "type": "string",  "title": "token" },
+      "ipv4":       { "type": "string",  "title": "ipv4", "format": "ipv4" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "expired"]
+      },
+      "created_at": { "type": "string",  "title": "created_at", "format": "date-time" },
+      "updated_at": { "type": "string",  "title": "updated_at", "format": "date-time" }
+    },
+    "PartnerAddress": {
+      "id":            { "type": "integer", "title": "id" },
+      "store_id":      { "type": "integer", "title": "store_id" },
+      "addressLine1":  { "type": "string",  "title": "addressLine1" },
+      "addressLine2":  { "type": "string",  "title": "addressLine2" },
+      "district":      { "type": "string",  "title": "district" },
+      "city":          { "type": "string",  "title": "city" },
+      "zipcode":       { "type": "integer", "title": "zipcode" },
+      "landmark":      { "type": "string",  "title": "landmark" },
+      "latitude":      { "type": "number",  "title": "latitude", "format": "decimal" },
+      "longitude":     { "type": "number",  "title": "longitude", "format": "decimal" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "Services": {
+      "id":     { "type": "integer", "title": "id" },
+      "name":   { "type": "string",  "title": "name" },
+      "image":  { "type": "string",  "title": "image" },
+      "stauts": {
+        "type": "string",
+        "title": "stauts",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "StoreServices": {
+      "id":         { "type": "integer", "title": "id" },
+      "service_id": { "type": "integer", "title": "service_id" },
+      "store_id":   { "type": "integer", "title": "store_id" },
+      "amount":     { "type": "integer", "title": "amount" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "WorkingHours": {
+      "id":      { "type": "integer", "title": "id" },
+      "store_id":{ "type": "integer", "title": "store_id" },
+      "from":    { "type": "string",  "title": "from", "format": "time" },
+      "to":      { "type": "string",  "title": "to",   "format": "time" }
+    },
+    "Slots": {
+      "id":      { "type": "integer", "title": "id" },
+      "store_id":{ "type": "integer", "title": "store_id" },
+      "from":    { "type": "string",  "title": "from", "format": "time" },
+      "to":      { "type": "string",  "title": "to",   "format": "time" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "Aminities": {
+      "id":   { "type": "integer", "title": "id" },
+      "name": { "type": "string",  "title": "name" },
+      "icon": { "type": "string",  "title": "icon" }
+    },
+    "StoreAminities": {
+      "id":           { "type": "integer", "title": "id" },
+      "aminities_id": { "type": "integer", "title": "aminities_id" },
+      "store_id":     { "type": "integer", "title": "store_id" }
+    },
+    "Stylist": {
+      "id":        { "type": "integer", "title": "id" },
+      "name":      { "type": "string",  "title": "name" },
+      "store_id":  { "type": "integer", "title": "store_id" },
+      "service_id":{ "type": "integer", "title": "service_id" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "Combo": {
+      "id":      { "type": "integer", "title": "id" },
+      "combo":   { "type": "string",  "title": "combo" },
+      "amount":  { "type": "integer", "title": "amount" },
+      "store_id":{ "type": "integer", "title": "store_id" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "Combinations": {
+      "id":               { "type": "integer", "title": "id" },
+      "service_id":       { "type": "integer", "title": "service_id" },
+      "amount_per_service": { "type": "integer", "title": "amount_per_service" },
+      "combo_id":         { "type": "integer", "title": "combo_id" }
+    },
+    "Banner": {
+      "id":           { "type": "integer", "title": "id" },
+      "store_id":     { "type": "integer", "title": "store_id" },
+      "image":        { "type": "integer", "title": "image" },
+      "banner_link":  { "type": "integer", "title": "banner_link" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "StoreWallet": {
+      "id":       { "type": "integer", "title": "id" },
+      "store_id": { "type": "integer", "title": "store_id" },
+      "wallet":   { "type": "integer", "title": "wallet" }
+    },
+    "SettlementLogs": {
+      "id":               { "type": "integer", "title": "id" },
+      "amount_paid":      { "type": "integer", "title": "amount_paid" },
+      "wallet_pending":   { "type": "integer", "title": "wallet_pending" },
+      "store_id":         { "type": "integer", "title": "store_id" },
+      "transaction_date": { "type": "string",  "title": "transaction_date", "format": "date-time" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "SubscriptionPlans": {
+      "id":           { "type": "integer", "title": "id" },
+      "range":        { "type": "integer", "title": "range" },
+      "chairs":       { "type": "integer", "title": "chairs" },
+      "banner":       { "type": "integer", "title": "banner" },
+      "notification": { "type": "boolean", "title": "notification" },
+      "price":        { "type": "integer", "title": "price" }
+    },
+    "StoreSubscription": {
+      "id":              { "type": "integer", "title": "id" },
+      "subscription_id": { "type": "integer", "title": "subscription_id" },
+      "start_date":      { "type": "string",  "title": "start_date", "format": "date-time" },
+      "end_date":        { "type": "string",  "title": "end_date",   "format": "date-time" },
+      "store_id":        { "type": "integer", "title": "store_id" },
+      "amount":          { "type": "integer", "title": "amount" },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "inactive"]
+      }
+    },
+    "SubscriptionPaymentLogs": {
+      "id":                   { "type": "integer", "title": "id" },
+      "payment_status":       { "type": "string",  "title": "payment_status", "enum": ["pending", "completed", "failed"] },
+      "amount_paid":          { "type": "integer", "title": "amount_paid" },
+      "paidOn":               { "type": "integer", "title": "paidOn" },
+      "store_id":             { "type": "integer", "title": "store_id" },
+      "storeSubcription_id":  { "type": "integer", "title": "storeSubcription_id" }
+    },
+    "admin": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "name": {
+        "type": "string",
+        "title": "name"
+      },
+      "password": {
+        "type": "string",
+        "title": "password"
+      },
+      "username": {
+        "type": "string",
+        "title": "username"
+      },
+      "phone": {
+        "type": "string",
+        "title": "phone"
+      },
+      "otp": {
+        "type": "string",
+        "title": "otp"
+      },
+      "otpexpiration": {
+        "type": "string",
+        "title": "otpexpiration",
+        "format": "date-time"
+      },
+      "status": {
+        "type": "string",
+        "title": "status"
+      }
+    },
+    "adminSession": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "user_id": {
+        "type": "integer",
+        "title": "user_id"
+      },
+      "token": {
+        "type": "string",
+        "title": "token"
+      },
+      "ipv4": {
+        "type": "string",
+        "title": "ipv4",
+        "format": "ipv4"
+      },
+      "status": {
+        "type": "string",
+        "title": "status",
+        "enum": ["active", "expired", "revoked"]
+      },
+      "created_at": {
+        "type": "string",
+        "title": "created_at",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "title": "updated_at",
+        "format": "date-time"
+      }
+    },
+    "HireStudent": {
+      "id": {
+        "type": "integer",
+        "title": "id"
+      },
+      "name": {
+        "type": "string",
+        "title": "name"
+      },
+      "specialization": {
+        "type": "string",
+        "title": "specialization"
+      },
+      "academy": {
+        "type": "string",
+        "title": "academy"
+      },
+      "experience": {
+        "type": "string",
+        "title": "experience"
+      },
+      "location": {
+        "type": "string",
+        "title": "location"
+      },
+      "availability": {
+        "type": "string",
+        "title": "availability"
+      },
+      "rating": {
+        "type": "number",
+        "title": "rating"
+      },
+      "bio": {
+        "type": "string",
+        "title": "bio"
+      },
+      "skills": {
+        "type": "array",
+        "title": "skills",
+        "items": {
+          "type": "string"
+        }
+      },
+      "mobile_number": {
+        "type": "string",
+        "title": "mobile_number",
+        "pattern": "^[0-9]{10}$"
+      },
+      "created_at": {
+        "type": "string",
+        "title": "created_at",
+        "format": "date-time"
+      },
+      "updated_at": {
+        "type": "string",
+        "title": "updated_at",
+        "format": "date-time"
+      }
+    }
+  }
+}

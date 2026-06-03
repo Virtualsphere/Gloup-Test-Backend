@@ -1,0 +1,88 @@
+CREATE TABLE StoreLanguages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  store_id INT NOT NULL,
+  language_id INT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_store_lang_store
+    FOREIGN KEY (store_id)
+    REFERENCES Store(id)
+    ON DELETE CASCADE,
+
+  CONSTRAINT fk_store_lang_language
+    FOREIGN KEY (language_id)
+    REFERENCES Languages(id)
+    ON DELETE CASCADE,
+
+  UNIQUE KEY unique_store_language (store_id, language_id)
+);
+
+CREATE INDEX idx_store_languages_store ON StoreLanguages(store_id);
+CREATE INDEX idx_store_languages_language ON StoreLanguages(language_id);
+
+
+
+CREATE TABLE Languages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(100) NOT NULL UNIQUE,
+  code VARCHAR(10) NOT NULL UNIQUE,
+  status ENUM('active','inactive') DEFAULT 'active',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_languages_status ON Languages(status);
+
+
+CREATE TABLE `GuestDetails` (
+  `id` INT NOT NULL AUTO_INCREMENT,
+  `user_id` BIGINT DEFAULT NULL,
+  `name` VARCHAR(255) DEFAULT NULL,
+  `gender` VARCHAR(255) DEFAULT NULL,
+  `age` INT DEFAULT NULL,
+  `phone` VARCHAR(255) DEFAULT NULL,
+  `status` ENUM('active', 'inactive') DEFAULT 'active',
+  `createdAt` DATETIME NOT NULL,
+  `updatedAt` DATETIME NOT NULL,
+  PRIMARY KEY (`id`)
+);
+
+
+
+
+ALTER TABLE `appointments` 
+ADD COLUMN `booking_for` VARCHAR(255) DEFAULT 'myself',
+ADD COLUMN `guest_id` BIGINT DEFAULT NULL;
+
+Subscription Module TABLE 
+
+ALTER TABLE SubscriptionPlans
+CHANGE COLUMN type name VARCHAR(50);
+
+ALTER TABLE SubscriptionPlans
+MODIFY COLUMN days INT DEFAULT 30;
+
+
+INSERT INTO SubscriptionPlans (name, days, price, status, created_at)
+VALUES
+('Starter',30,299,'active',NOW()),
+('Growth',30,499,'active',NOW()),
+('Premium',30,699,'active',NOW());
+
+
+ALTER TABLE StoreSubscription
+MODIFY subscription_id INT;
+
+
+Subscription
+CHANGE paymet_status payment_status ENUM('pending','completed','failed');
+
+ALTER TABLE StoreSubscription
+DROP COLUMN type;
+
+ALTER TABLE StoreSubscription
+ADD CONSTRAINT fk_store_subscription_plan
+FOREIGN KEY (subscription_id)
+REFERENCES SubscriptionPlans(id);
+
+ALTER TABLE StoreSubscription
+ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP;

@@ -1,0 +1,59 @@
+# Compose loads `.env` in this folder for ${...} substitution below. If any value
+# contains `$`, escape it as `$$` or Compose will treat it as a variable (warnings like
+# "variable is not set. Defaulting to a blank string").
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-'Gloup#123'}
+      MYSQL_DATABASE: ${DB_NAME:-gloupProdDB}
+      MYSQL_USER: ${DB_USERNAME:-admin}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-'Gloup#123'}
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./sql_backup/gloupProdDB_backup.sql:/docker-entrypoint-initdb.d/init.sql
+      - db_data:/var/lib/mysql
+
+  app:
+    depends_on:
+      - db
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gloup-api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    volumes:
+      - ./upload:/app/upload
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DB_HOST: db
+    # HOST_PORT = browser URL port; APP_PORT = port inside container (must match .env APP_PORT).
+    ports:
+      - "${HOST_PORT:-5678}:${APP_PORT:-5678}"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "const p=process.env.APP_PORT||'5678';fetch('http://127.0.0.1:'+p+'/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    # Puppeteer / headless Chrome: avoid running out of /dev/shm under load.
+    shm_size: "256mb"
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:noexec,nosuid,size=100m
+
+volumes:
+  db_data:

@@ -1,0 +1,19 @@
+Nanda   - Saloon web login
+            - timeslot fix - web and app must change
+
+DV      - Saloon onboarding in Admin Panel
+            - small bug fixes in API
+            - API master branch fix - todo
+            - hamja must merge some changes - todo
+
+Alex    - User app bug fixes
+            - in gloup mobile app tasks in master data
+
+Nikhil & Jega  - Hiring module with schema and API
+
+Surya & Kuralarasan & Kavya - Partner Saloon services fixing API and frontend
+
+Dinesh
+Vishal
+
+Hamja - User App

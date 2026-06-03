@@ -1,0 +1,467 @@
+@base_url = http://localhost:5678/partner/app/
+@admin_base_url = http://localhost:5678/admin/app/
+
+@customer_base_url = http://localhost:5678/user/app/
+
+POST {{base_url}}today-bookings
+Content-Type: application/json
+
+{
+    "store_id": 58
+}
+
+###
+GET https://api.gloup.in/partner/app/banner-with-color
+
+###
+GET {{base_url}}getbookings?month=2&year=2026
+Content-Type: application/json
+
+
+
+###
+GET {{base_url}}getbookings?date=2026-02-12
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+GET {{base_url}}getbookings?month=2&year=2026
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?status=confirmed
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?status=confirmed,completed
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?search=alex
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?search=hair
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?month=2&year=2026&status=confirmed,completed&search=alex&page=1&limit=20
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings
+Content-Type: application/json
+
+
+###
+GET {{base_url}}getbookings?page=1&limit=10
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+# Filter by Gender (male, female, unisex)
+GET {{base_url}}getbookings?gender=unisex
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+# Filter by Price Range (e.g., 0 - 100)
+GET {{base_url}}getbookings?minPrice=100&maxPrice=150
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+# Simplified Sort (lowtohigh)
+GET {{base_url}}getbookings?sort=lowtohigh
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+# Simplified Sort (hightolow)
+GET {{base_url}}getbookings?sort=hightolow
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+# Combined Filters (Gender + Price Range + Sort)
+GET {{base_url}}getbookings?gender=female&minPrice=0&maxPrice=200&sort=hightolow
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+###
+PATCH  {{base_url}}cancel-booking?appointmentId=9
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+
+###
+POST {{base_url}}/getDashboardData
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+###
+POST {{base_url}}getOverview
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "daily"
+}
+
+###
+POST {{base_url}}getOverview
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "weekly"
+}
+
+###
+POST {{base_url}}getOverview
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "monthly"
+}
+
+
+###
+POST {{base_url}}getServiceAnalytics
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "daily"
+}
+
+###
+POST {{base_url}}getServiceAnalytics
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "weekly"
+}
+
+###
+POST {{base_url}}getServiceAnalytics
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "filterType": "monthly"
+}
+
+
+
+###
+POST {{base_url}}/getbanner
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+###
+GET {{customer_base_url}}v2/getbanner
+
+
+###
+GET {{customer_base_url}}v2/getallcategory
+
+###
+POST {{base_url}}/admin/app/getservices
+
+
+###
+POST {{customer_base_url}}/v2/store/details
+Content-Type: application/json
+# partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+{
+  "store_id": 58
+}
+
+
+###
+POST {{base_url}}/getstoresdetails
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+
+###
+POST {{customer_base_url}}/v2/store/nearby
+Content-Type: application/json
+# partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+{
+  "lat": 13.0827,
+  "lng": 80.2707,
+  "gender": "unisex"
+}
+
+
+###
+GET {{customer_base_url}}/v2/get-all-stores
+
+
+###
+GET {{customer_base_url}}/v2/salons/top?gender=unisex
+
+
+###
+POST {{customer_base_url}}/v2/favourites
+Content-Type: application/json
+
+
+{
+  "store_id": 58
+}
+
+###
+GET {{customer_base_url}}/v2/get-favourites
+Content-Type: application/json
+
+###
+DELETE {{customer_base_url}}/v2/favourites?store_id=58
+Content-Type: application/json
+
+
+###
+POST {{customer_base_url}}/guest/add
+Content-Type: application/json
+
+{
+            "name": "EMMA",
+            "gender": "Female",
+            "age": 30,
+            "phone": "9876543210"
+        }
+
+
+###
+GET {{customer_base_url}}/guest/all
+
+
+###
+GET {{customer_base_url}}/v2/getslotstatus?date=2025-12-13&saloon_id=58
+
+
+###
+GET {{base_url}}/getplans
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+
+####
+POST {{base_url}}/v2/subscription/createorder
+Content-Type: application/json
+partnertoken: U2FsdGVkX1+BIxaTxUVTNiFADP2dDtoKydIPxl63vEpjVgHp1YGFwpu1UrvmNiBHW2WlLR1bQ8XPs5iSdlORrhffEj3yXR2FZQvNZZYOFanGtS+OvKOw4twgtrBVVN0TgmI1NuKw3UjyoBBL7/TZwUA2ohyB9J9FE2ytnMYH9jimHNoW8jyEX8X2WuK3TmRyJsfQtiUGap/a4AbCz1dF1Q==
+
+{
+  "plan_id": 1
+}
+
+
+
+####
+POST {{base_url}}v2/subscription/verifypayment
+Content-Type: application/json
+partnertoken: U2FsdGVkX1+BIxaTxUVTNiFADP2dDtoKydIPxl63vEpjVgHp1YGFwpu1UrvmNiBHW2WlLR1bQ8XPs5iSdlORrhffEj3yXR2FZQvNZZYOFanGtS+OvKOw4twgtrBVVN0TgmI1NuKw3UjyoBBL7/TZwUA2ohyB9J9FE2ytnMYH9jimHNoW8jyEX8X2WuK3TmRyJsfQtiUGap/a4AbCz1dF1Q==
+
+{
+  "subscription_id": 4,
+  "razorpay_order_id": "order_SSbNlt4W29RA4H",
+  "razorpay_payment_id": "pay_PeGv8Zk6Z2Z2Z2",
+  "razorpay_signature": "signature_PeGv8Zk6Z2Z2Z2"
+}
+
+###
+GET {{base_url}}v2/service-categories?page=1&limit=10
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+# ============================================================
+# v2 Services API
+# POST   /partner/app/v2/addservices
+# PATCH  /partner/app/v2/updateservices
+# GET    /partner/app/v2/services
+# ============================================================
+
+### [addServiceV2] SUCCESS - all required fields (duration as hours)
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Hair Cut",
+  "service_category": 1,
+  "amount": 500,
+  "discounted_amount": 450,
+  "duration": "1h",
+  "service_for": "male",
+  "status": true
+}
+
+### [addServiceV2] SUCCESS - duration as fractional hours (1.5h → 01:30:00)
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Deep Conditioning",
+  "service_category": 1,
+  "amount": 800,
+  "duration": "1.5h",
+  "service_for": "female"
+}
+
+### [addServiceV2] SUCCESS - duration as minutes (30m → 00:30:00)
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Beard Trim",
+  "service_category": 1,
+  "amount": 150,
+  "duration": "30m",
+  "service_for": "male",
+  "status": false
+}
+
+### [addServiceV2] SUCCESS - unisex service with discounted amount
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Scalp Treatment",
+  "service_category": 2,
+  "amount": 1200,
+  "discounted_amount": 999,
+  "duration": "45m",
+  "service_for": "unisex"
+}
+
+### [addServiceV2] ERROR 400 - missing required field (amount)
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Hair Cut",
+  "service_category": 1,
+  "duration": "30m",
+  "service_for": "male"
+}
+
+### [addServiceV2] ERROR 400 - missing required field (service_for)
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "Hair Cut",
+  "service_category": 1,
+  "amount": 300,
+  "duration": "30m"
+}
+
+### [addServiceV2] ERROR 401 - no auth token
+POST {{base_url}}v2/addservices
+Content-Type: application/json
+
+{
+  "service_name": "Hair Cut",
+  "service_category": 1,
+  "amount": 300,
+  "duration": "30m",
+  "service_for": "male"
+}
+
+
+### [updateServiceV2] SUCCESS - partial update (name + amount only)
+# Replace <service_id> with an actual service ID returned from addservices
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "id": 1,
+  "service_name": "Hair Cut (Updated)",
+  "amount": 600
+}
+
+### [updateServiceV2] SUCCESS - update duration + status
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "id": 1,
+  "duration": "45m",
+  "status": false
+}
+
+### [updateServiceV2] SUCCESS - clear discounted_amount (set to null)
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "id": 1,
+  "discounted_amount": null
+}
+
+### [updateServiceV2] ERROR 400 - missing id
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "service_name": "No ID provided"
+}
+
+### [updateServiceV2] ERROR 400 - ownership mismatch (service belongs to another store)
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+{
+  "id": 9999,
+  "service_name": "Should fail"
+}
+
+### [updateServiceV2] ERROR 401 - no auth token
+PATCH {{base_url}}v2/updateservices
+Content-Type: application/json
+
+{
+  "id": 1,
+  "service_name": "Unauthorized update"
+}
+
+
+### [listServicesV2] SUCCESS - get all services for authenticated partner
+GET {{base_url}}v2/services
+Content-Type: application/json
+partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==

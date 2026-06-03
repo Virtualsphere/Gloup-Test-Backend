@@ -1,0 +1,432 @@
+@customer_base_url = http://localhost:5678/user/app/
+@customer_auth_url =http://localhost:5678/user/auth/
+@Content-Type= application/json
+
+
+@userauth = U2FsdGVkX19rTVpfU3KZswgsRh9+f2xNQGXUUFGFqGoZTixIHS8uZnwN4c7D16HrmTkZwaXoLd2mfrlqvhFDKYIXU0ALoSrSJ0uX3BmFtQtbjJf/oiCZvpFMcmN0/SJXkNExSkOWN81aCT2KAYtjhBtQ2AoJLZGP5cnesiW26dYhOD1+lnEWdgbxiKUnYu8HHbcD7ogoKKscvXvCCqeRbg==
+@userauth2 = U2FsdGVkX18PW5Ewk7dzr/MnO1Rv+Ls55YlWhoMexz3+B1NUJ6/UTcyNCQDmGa0acXliP2UEfIS60nInrA16nBGy8YvDC9hD+JBKkVjeEUa+scVaccmObG82saPeSkWc/Iu8DTBgkqVJiYDOsSisNxWc/rDQp5ErDb1c5cXVb7+cRxtPROWlhbQq4Nx8/xBm9RRbv98tysYjSKg9gCPWfQ==
+POST {{customer_auth_url}}sendOTP
+Content-Type:{{Content-Type}}
+
+{
+    "phone":"8248628437"
+}
+
+###
+POST {{customer_auth_url}}verifyOTP
+Content-Type:{{Content-Type}}
+
+{
+    "phone":"8248628437",
+    "otp":"7951"
+}
+
+###
+GET {{customer_base_url}}v2/getbanner
+
+
+###
+GET {{customer_base_url}}v2/getallcategory
+
+###
+
+
+
+###
+POST {{customer_base_url}}/v2/store/details
+Content-Type: application/json
+userauth:{{userauth}}
+
+# partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+{
+  "store_id": 58
+}
+
+
+####
+POST {{customer_base_url}}/getstorebyid
+Content-Type: application/json
+userauth:{{userauth}}/
+
+{
+  "id": 58
+}
+
+###
+POST {{customer_base_url}}/v2/store/nearby
+Content-Type: application/json
+# partnertoken: U2FsdGVkX1/8xUSz1JiNQyrGAzeAlghc6qVnsuz+KHSUF7Nm96NPHtKJkCZ7fDCKEirn8ieZtlUymBpMszXeGzOZwEZxtHE3NLJMj9cYnvFU+qsJ4Pg0IOiAwdUFAXb64zSNlHhD7iUFb07yB+YYM+bnm+4QQkSV1BMkp5pEckJIwvv9KVyB2PT6CaFWPf2DxWpeW1hGSvlljd7eK1Rrcg==
+
+
+{
+  "lat": 13.0827,
+  "lng": 80.2707,
+  "gender": "unisex"
+}
+
+
+###
+GET {{customer_base_url}}/v2/get-all-stores
+
+
+###
+GET {{customer_base_url}}/v2/salons/top?gender=unisex
+
+
+###
+POST {{customer_base_url}}/v2/favourites
+Content-Type: application/json
+userauth:{{userauth}}
+
+{
+  "store_id": 1
+}
+
+###
+GET {{customer_base_url}}/v2/favourites
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+###
+DELETE {{customer_base_url}}/v2/favourites?store_id=58
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+###
+POST {{customer_base_url}}/guest/add
+Content-Type: application/json
+userauth:{{userauth}}
+
+{
+            "name": "MADARA",
+            "gender": "Male",
+            "age": 50,
+            "phone": "9090807070"
+        }
+
+
+###
+GET {{customer_base_url}}/guest/all
+Content-Type: {{Content-Type}}
+userauth:{{userauth}}
+
+
+###
+GET {{customer_base_url}}/v2/getslotstatus?date=2026-03-05&saloon_id=58
+
+###
+GET {{customer_base_url}}v2/get/activecoupons
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+###
+GET {{customer_base_url}}/v2/reviews
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+
+###
+PATCH {{customer_base_url}}/v2/reviews?id=2
+Content-Type: application/json
+userauth:{{userauth}}
+
+{
+  "rating": 4.5,
+  "description": "Average service"
+}
+
+
+
+###
+DELETE {{customer_base_url}}/v2/reviews?id=2
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+
+
+###
+# User App V2 - Get All Stores (No Filter)
+GET {{customer_base_url}}v2/get-all-stores
+Content-Type: application/json
+
+
+###
+# User App V2 - Get All Stores (Filter by Category)
+GET {{customer_base_url}}v2/get-all-stores?category=1
+Content-Type: application/json
+
+###
+# User App V2 - Get All Stores (Filter by Gender)
+GET {{customer_base_url}}v2/get-all-stores?gender=male
+Content-Type: application/json
+
+###
+# User App V2 - Get All Stores (Combined Filter)
+GET {{customer_base_url}}v2/get-all-stores?gender=male&category=1
+Content-Type: application/json
+
+###
+# User App V2 - Get All Stores (Invalid Category - Negative)
+GET {{customer_base_url}}v2/get-all-stores?category=invalid
+Content-Type: application/json
+
+###
+# User App V2 - Get All Stores (Invalid Limit - Negative)
+GET {{customer_base_url}}v2/get-all-stores?limit=999
+Content-Type: application/json
+
+###
+# User App V2 - Get All Stores (Invalid Page - Negative)
+GET {{customer_base_url}}v2/get-all-stores?page=0
+Content-Type: application/json
+
+### Get Top Salons - No Parameters (Default)
+GET {{customer_base_url}}v2/salons/top?lat=13.0827?&lng=80.2707&minRating=4
+Content-Type: application/json
+
+### Get Top Salons - Male
+GET {{customer_base_url}}v2/salons/top?lat=13.0827&lng=80.2707&minPrice=200&maxPrice=500
+Content-Type: application/json
+
+### Get Top Salons - Female
+GET {{customer_base_url}}v2/salons/top?search=haircut
+Content-Type: application/json
+
+### Get Top Salons - Unisex
+GET {{customer_base_url}}v2/salons/top?gender=unisex
+Content-Type: application/json
+
+### Get Top Salons - Pagination (Page 2, Limit 5)
+GET {{customer_base_url}}v2/salons/top?page=2&limit=5
+Content-Type: application/json
+
+### Get Top Salons - Negative Page (Invalid)
+GET {{customer_base_url}}v2/salons/top?page=-1
+Content-Type: application/json
+
+### Get Top Salons - Invalid Limit (String)
+GET {{customer_base_url}}v2/salons/top?limit=abc
+Content-Type: application/json
+
+### Get Top Salons - Combined Parameters
+GET {{customer_base_url}}v2/salons/top?gender=male&page=1&limit=5
+Content-Type: application/json
+
+
+### Get Nearby Stores - Default
+POST {{customer_base_url}}v2/store/nearby
+Content-Type: application/json
+
+{
+  "lat": 13.0827,
+  "lng": 80.2707
+}
+
+### Get Nearby Stores - Pagination & Gender
+POST {{customer_base_url}}v2/store/nearby
+Content-Type: application/json
+
+{
+  "lat": 13.0827,
+  "lng": 80.2707,
+  # "gender": "male",
+  "page": 1,
+  "limit": 5
+}
+
+### Get Nearby Stores - Missing Coordinates (Error)
+POST {{customer_base_url}}v2/store/nearby
+Content-Type: application/json
+
+{
+  "gender": "unisex"
+}
+
+### Get Nearby Stores - Invalid Pagination (Error)
+POST {{customer_base_url}}v2/store/nearby
+Content-Type: application/json
+
+{
+  "lat": 13.0827,
+  "lng": 80.2707,
+   "limit": 1
+  
+}
+
+
+###
+GET {{customer_base_url}}/v2/profile
+Content-Type: application/json
+userauth:{{userauth}}
+
+
+###
+PATCH {{customer_base_url}}/v2/profile
+Content-Type: application/json
+userauth:{{userauth}}
+
+{
+  "firstname":"MR", 
+  "lastname":"DEMIGOD",
+   "email":"ramanavalar2001@gmail.com", 
+   "gender":"male", 
+   "dob":"11-04-2001",
+    "city":"chennai", 
+    "country":"India"
+}
+
+
+####
+DELETE  {{customer_base_url}}/v2/profile
+Content-Type: application/json
+userauth:{{userauth2}}
+
+### V2 - Create Order
+POST {{customer_base_url}}v2/createorder
+Content-Type: application/json
+userauth: {{userauth}}
+
+{
+    "booking_date": "2026-03-05",
+    "slot_id": 1,
+    "services": [
+        { "service_id": 26 }
+    ],
+    "is_combo": false,
+    "booking_for": "myself",
+    "professional_id": 1,
+    "store_id": 58,
+    "gst": 18,
+    "platform_fee": 10
+}
+
+### V2 - Create Order (Multiple Services)
+POST {{customer_base_url}}v2/createorder
+Content-Type: application/json
+userauth: {{userauth2}}
+
+{
+    "booking_date": "2026-03-04",
+    "slot_id": 8,
+    "services": [
+        { "service_id": 26 },
+        { "service_id": 27 }
+    ],
+    "is_combo": false,
+    "booking_for": "myself",
+    "professional_id": 1,
+    "store_id": 58,
+    "gst": 18,
+    "platform_fee": 10
+}
+
+### V2 - Payment Success
+POST {{customer_base_url}}v2/paymentsuccess
+Content-Type: application/json
+userauth: {{userauth2}}
+
+{
+    "razorpay_order_id": "order_SNBmUnOUYd69Hg",
+    "razorpay_payment_id": "pay_PeGv8Zk6Z2Z2Z2",
+    "razorpay_signature": "signature_PeGv8Zk6Z2Z2Z2"
+}
+
+####
+POST {{customer_base_url}}/getallapointments
+Content-Type: application/json
+userauth: {{userauth}}
+
+### V2 Guest - Add
+POST {{customer_base_url}}v2/guest/add
+Content-Type: application/json
+userauth: {{userauth}}
+
+{
+    "name": "Guest User",
+    "gender": "male",
+    "age": 25,
+    "phone": "9876543210"
+}
+
+### V2 Guest - All
+GET {{customer_base_url}}v2/guest/all
+Content-Type: application/json
+userauth: {{userauth}}
+
+### V2 Guest - Update
+PATCH {{customer_base_url}}v2/guest/update
+Content-Type: application/json
+userauth: {{userauth}}
+
+{
+    "guestId": 1,
+    "name": "Guest User Updated",
+    "gender": "male",
+    "age": 26,
+    "phone": "9876543211"
+}
+
+
+### V2 Guest - Update
+PATCH {{customer_base_url}}v2/guest/update
+Content-Type: application/json
+userauth: {{userauth}}
+
+{
+  "guestId": 18,
+  "status": "inactive"
+}
+
+### V2 - Create Order (For Guest - Pre-existing)
+POST {{customer_base_url}}v2/createorder
+Content-Type: application/json
+userauth: {{userauth2}}
+
+{
+    "booking_date": "2026-03-05",
+    "slot_id": 1,
+    "services": [
+        { "service_id": 26 }
+    ],
+    "is_combo": false,
+    "booking_for": "someone_else",
+    "guest_id": 18,
+    "professional_id": 1,
+    "store_id": 58,
+    "gst": 18,
+    "platform_fee": 10
+}
+
+### V2 - Create Order (For Guest - New)
+POST {{customer_base_url}}v2/createorder
+Content-Type: application/json
+userauth: {{userauth}}
+
+{
+    "booking_date": "2026-03-05",
+    "slot_id": 1,
+    "services": [
+        { "service_id": 26 }
+    ],
+    "is_combo": false,
+    "booking_for": "someone_else",
+    "guest_name": "tambi",
+    "guest_phone": "9000000000",
+    "guest_gender": "female",
+    "professional_id": 1,
+    "store_id": 58,
+    "gst": 18,
+    "platform_fee": 10
+}
+
+
+####
+GET {{customer_base_url}}v2/get-all-stores?lat=11.8643&lng=77.9460
+Content-Type: application/json
