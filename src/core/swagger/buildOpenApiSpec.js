@@ -185,7 +185,7 @@ export function buildOpenApiSpec(options = {}) {
     servers: [
       { url: serverUrl, description: "Current environment" },
       { url: "http://localhost:5678", description: "Local default" },
-      { url: "https://api.gloup.in", description: "Production" },
+      { url: "https://api.v1.gloup.in", description: "Production" },
     ],
     tags: [
       { name: "System", description: "Health & utilities" },
