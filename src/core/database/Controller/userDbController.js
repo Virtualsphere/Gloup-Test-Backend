@@ -2297,10 +2297,10 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
       replacements.longitude = lng;
 
       distanceSelect = `
-      ST_Distance_Sphere(
+      MIN(ST_Distance_Sphere(
         PA.location,
         POINT(:longitude, :latitude)
-      ) / 1000 AS distance
+      )) / 1000 AS distance
     `;
     }
 
@@ -2327,10 +2327,10 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
     IF(F.store_id IS NULL, 0, 1) AS isFavorite,
 
-    PA.latitude,
-    PA.longitude,
-    PA.addressLine1,
-    PA.city,
+    MAX(PA.latitude) AS latitude,
+    MAX(PA.longitude) AS longitude,
+    MAX(PA.addressLine1) AS addressLine1,
+    MAX(PA.city) AS city,
 
     ${distanceSelect}
 
