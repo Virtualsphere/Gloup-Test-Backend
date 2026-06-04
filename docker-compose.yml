@@ -14,13 +14,20 @@ services:
       MYSQL_PASSWORD: ${DB_PASSWORD:-'Gloup#123'}
     ports:
       - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-pGloup#123"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     volumes:
-      - ./sql_backup/gloupProdDB_backup.sql:/docker-entrypoint-initdb.d/init.sql
+     # - ./sql_backup/gloupProdDB_backup.sql:/docker-entrypoint-initdb.d/init.sql
       - db_data:/var/lib/mysql
 
   app:
     depends_on:
-      - db
+        db:
+          condition:  service_healthy
     build:
       context: .
       dockerfile: Dockerfile
@@ -33,6 +40,10 @@ services:
     environment:
       NODE_ENV: production
       DB_HOST: db
+      PRIVATE_KEY: /app/src/core/utils/AuthKey_3L95Q89942.p8
+      CLIENT_ID: com.gloup.userapp
+      TEAM_ID: HP59PZAVRP
+      KEY_ID: 3L95Q89942
     # HOST_PORT = browser URL port; APP_PORT = port inside container (must match .env APP_PORT).
     ports:
       - "${HOST_PORT:-5678}:${APP_PORT:-5678}"
