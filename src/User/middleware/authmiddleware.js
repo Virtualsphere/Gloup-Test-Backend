@@ -428,7 +428,7 @@ userauthmiddleware.user = {
   updateprofile: async ({ body, file, user }) => {
     console.log("🚀 ~ body:", body)
     try {
-      const pic = file ? `/upload/profileimage/${file.filename}` : undefined;
+      const pic = file ? file.path : undefined;
 
       const res = await userDbController.auth.updateprofile(body, pic, user.id);
       if (res === undefined) {

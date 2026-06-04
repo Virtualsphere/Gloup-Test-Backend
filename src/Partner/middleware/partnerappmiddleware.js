@@ -198,17 +198,17 @@ partnerappmiddleware.addstore = {
       const baseFolder = `store/${user.id}`;
       
       const imageUploadPromises = (files?.images || []).map(file => 
-        uploadToS3(file, `${baseFolder}/images`).then(res => "/" + res.key)
+        uploadToS3(file, `${baseFolder}/images`).then(res => res.url)
       );
 
       const docUploadPromises = (files?.documents || []).map(file => 
-        uploadToS3(file, `${baseFolder}/docs`).then(res => "/" + res.key)
+        uploadToS3(file, `${baseFolder}/docs`).then(res => res.url)
       );
 
       // Handle logo upload
       let logoPromise = Promise.resolve(null);
       if (files?.logo && files.logo.length > 0) {
-        logoPromise = uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => "/" + res.key);
+        logoPromise = uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => res.url);
       }
 
       // Execute all uploads concurrently. If any fails, the error will be thrown and handled by the catch block.
@@ -287,7 +287,7 @@ partnerappmiddleware.addstore = {
       const baseFolder = `store/${user.id}`;
       
       const imageUploadPromises = (files?.images || []).map(file => 
-        uploadToS3(file, `${baseFolder}/images`).then(res => "/" + res.key)
+        uploadToS3(file, `${baseFolder}/images`).then(res => res.url)
       );
 
       const docsToUpload = [
@@ -296,13 +296,13 @@ partnerappmiddleware.addstore = {
       ];
 
       const docUploadPromises = docsToUpload.map(file => 
-        uploadToS3(file, `${baseFolder}/docs`).then(res => "/" + res.key)
+        uploadToS3(file, `${baseFolder}/docs`).then(res => res.url)
       );
 
       // Handle logo upload
       let logoPromise = Promise.resolve(null);
       if (files?.logo && files.logo.length > 0) {
-        logoPromise = uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => "/" + res.key);
+        logoPromise = uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => res.url);
       }
 
       // Execute all uploads concurrently. Fails if any individual upload fails.
@@ -368,7 +368,7 @@ partnerappmiddleware.addstore = {
       let finalImages = store.images ? JSON.parse(store.images) : [];
       if (files?.images && files.images.length > 0) {
         const imageUploadPromises = files.images.map(file => 
-          uploadToS3(file, `${baseFolder}/images`).then(res => "/" + res.key)
+          uploadToS3(file, `${baseFolder}/images`).then(res => res.url)
         );
         const newUploadedImages = await Promise.all(imageUploadPromises);
         finalImages =
@@ -380,7 +380,7 @@ partnerappmiddleware.addstore = {
       let finalDocs = store.docs ? JSON.parse(store.docs) : [];
       if (files?.documents && files.documents.length > 0) {
         const docUploadPromises = files.documents.map(file => 
-          uploadToS3(file, `${baseFolder}/docs`).then(res => "/" + res.key)
+          uploadToS3(file, `${baseFolder}/docs`).then(res => res.url)
         );
         const newUploadedDocs = await Promise.all(docUploadPromises);
         finalDocs =
@@ -392,7 +392,7 @@ partnerappmiddleware.addstore = {
       // Handle logo upload
       let finalLogo = store.logo;
       if (files?.logo && files.logo.length > 0) {
-        finalLogo = await uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => "/" + res.key);
+        finalLogo = await uploadToS3(files.logo[0], `${baseFolder}/logo`).then(res => res.url);
       } else if (body.remove_logo === "true") {
         finalLogo = null;
       }

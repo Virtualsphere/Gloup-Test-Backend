@@ -9,7 +9,7 @@ COPY package.json pnpm-lock.yaml ./
 # Use system Chromium in the runtime image; skip Puppeteer's bundled download (~300MB+).
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 
-RUN pnpm install --frozen-lockfile --prod
+RUN pnpm install --no-frozen-lockfile --prod
 
 # --- runtime ---
 FROM node:22-bookworm-slim AS runner

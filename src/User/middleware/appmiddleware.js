@@ -2785,7 +2785,7 @@ userappmiddleware.user = {
             }
 
             const { firstname, lastname, email, phone, age, gender, dob, city, country } = body;
-            const profilePic = file ? `/upload/profileimage/${file.filename}` : body.profilePic;
+            const profilePic = file ? file.path : body.profilePic;
 
             // Basic validation
             if (email && !/^\S+@\S+\.\S+$/.test(email)) {
