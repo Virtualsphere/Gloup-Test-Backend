@@ -1,6 +1,6 @@
 import { Router } from "express";
 import require from "requirejs";
-import { login, logout, verifyadmin } from "../controller/authcontroller.js";
+import { login, logout, verifyadmin, changePassword } from "../controller/authcontroller.js";
 const rateLimit = require("express-rate-limit");
 
 const msg = {
@@ -21,3 +21,4 @@ export const adminauthroutes = Router()
 
 adminauthroutes.post("/login",apiLimiter,login);
 adminauthroutes.post("/logout",verifyadmin,logout);
+adminauthroutes.post("/change-password",verifyadmin,changePassword);

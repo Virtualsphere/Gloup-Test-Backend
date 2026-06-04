@@ -186,6 +186,26 @@ adminDbController.auth = {
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to logout");
     }
+  },
+  updatePassword: async (id, hashedPassword) => {
+    try {
+      return await adminDbController.Models.admin.update(
+        { password: hashedPassword },
+        { where: { id: id } }
+      );
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to update password");
+    }
+  },
+  destroyAllSessions: async (userId) => {
+    try {
+      return await adminDbController.Models.adminSession.update(
+        { status: "inactive" },
+        { where: { user_id: userId } }
+      );
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to destroy all sessions");
+    }
   }
 }
 
