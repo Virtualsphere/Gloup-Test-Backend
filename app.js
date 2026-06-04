@@ -25,28 +25,18 @@ import { setupSwagger } from "./src/core/swagger/setupSwagger.js";
 
 const app = express();
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://admin.gloup.in",
-  "https://gloup.in",
-  "https://www.gloup.in"
-];
-
 app.use(cors({
-  origin: function (origin, callback) {
-    console.log("Incoming Origin:", origin);
-
-    if (!origin) return callback(null, true);
-
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-
-    return callback(null, true); // TEMP allow all
-  },
-  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization", "adminauth", "userauth"],
-  credentials: true
+  origin: [
+    'https://gloup.in',
+    'https://www.gloup.in',
+    'https://admin.gloup.in',
+    'http://localhost:3000',
+    'http://localhost:3001',
+    'http://localhost:5173'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'adminauth', 'userauth']
 }));
 
 app.options('*', cors());
