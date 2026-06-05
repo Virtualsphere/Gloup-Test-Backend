@@ -27,8 +27,8 @@ approutes.post("/updateMultiplePartner", verifyadmin, updateMultiplePartner);
 approutes.post("/deletePartner", verifyadmin, deletePartner);
 //approutes.post("/createpartner", verifyadmin, upload.fields([{ name: 'images', maxCount: 6 }, { name: 'documents', maxCount: 2 }, { name: "logo", maxCount: 1 }]), imageSizeMiddleware, createPartner);
 // approutes.post('/editpartner', verifyadmin, upload.fields([{ name: 'images', maxCount: 6 }, { name: 'documents', maxCount: 2 }, { name: "logo", maxCount: 1 }]), imageSizeMiddleware, editPartner);
-approutes.post("/createpartner", verifyadmin, S3upload.fields([{ name: 'images', maxCount: 6 }, { name: 'documents', maxCount: 2 }, { name: "logo", maxCount: 1 }]), createPartner);
-approutes.post('/editpartner', verifyadmin, S3upload.fields([{ name: 'images', maxCount: 6 }, { name: 'documents', maxCount: 2 }, { name: "logo", maxCount: 1 }]), editPartner);
+approutes.post("/createpartner", verifyadmin, S3upload.fields([{ name: 'images', maxCount: 15 }, { name: 'documents', maxCount: 5 }, { name: "logo", maxCount: 1 }]), createPartner);
+approutes.post('/editpartner', verifyadmin, S3upload.fields([{ name: 'images', maxCount: 15 }, { name: 'documents', maxCount: 5 }, { name: "logo", maxCount: 1 }]), editPartner);
 approutes.post('/getpartnerverification/:id', verifyadmin, verifypartnerdetails);
 approutes.post('/getverifypartner', verifyadmin, getverifyPartnerlist);
 
