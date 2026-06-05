@@ -35,7 +35,7 @@ adminauthmiddleware.auth = {
 
           const match = await bcrypt.compare(password, dbpassword);
           if (!match) {
-            return ("password incorrect");
+            throw Error.AuthenticationFailed("password incorrect");
           }
           const findSession = await adminDbController.auth.checksession(user.id)
           console.log("🚀 ~ findSession:", findSession)
@@ -95,7 +95,7 @@ adminauthmiddleware.auth = {
         }
       });
 
-      throw Error.SomethingWentWrong("Failed");
+      throw error;
     }
   },
   verifyadmin: async ({ headers }) => {
