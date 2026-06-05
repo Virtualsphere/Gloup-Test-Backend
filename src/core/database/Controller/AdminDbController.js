@@ -905,16 +905,19 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to get cancelled orders")
     }
   },
- getBookingsDetails: async (data) => {
+  getBookingsDetails: async (data) => {
   try {
     const page = Number(data.page) || 1;
     const limit = Number(data.limit) || 10;
     const offset = (page - 1) * limit;
+    
+    const dateFilter = (data.fromDate && data.toDate) ? `AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate` : '';
     const statusFilter = data.status ? `AND a.status = :status` : '';
 
     const query = `
       SELECT DISTINCT
         a.id,
+        a.booking_date,
         c.firstname AS user_name,
         d.name AS salon_name,
         a.status,
@@ -927,34 +930,40 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
       INNER JOIN Store d ON a.store_id = d.id
-      WHERE DATE(a.booking_date) BETWEEN :fromDate AND :toDate
+      WHERE 1=1
+      ${dateFilter}
       ${statusFilter}
       ORDER BY a.booking_date DESC
       LIMIT :limit OFFSET :offset
     `;
 
+    const replacements = {
+      limit,
+      offset
+    };
+    if (data.fromDate && data.toDate) {
+      replacements.fromDate = data.fromDate;
+      replacements.toDate = data.toDate;
+    }
+    if (data.status) {
+      replacements.status = data.status;
+    }
+
     const rows = await adminDbController.connection.query(query, {
-      replacements: {
-        fromDate: data.fromDate,
-        toDate: data.toDate,
-        limit,
-        offset,
-        status: data.status
-      },
+      replacements,
       type: Sequelize.QueryTypes.SELECT,
     });
 
     const totalQuery = `
       SELECT COUNT(DISTINCT a.id) AS totalCount
       FROM appointments a
-      WHERE a.booking_date BETWEEN :fromDate AND :toDate
+      WHERE 1=1
+      ${dateFilter}
+      ${statusFilter}
     `;
 
     const totalResult = await adminDbController.connection.query(totalQuery, {
-      replacements: {
-        fromDate: data.fromDate,
-        toDate: data.toDate,
-      },
+      replacements,
       type: Sequelize.QueryTypes.SELECT,
     });
 
