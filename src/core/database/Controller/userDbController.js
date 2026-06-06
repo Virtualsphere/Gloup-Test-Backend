@@ -3611,7 +3611,7 @@ END AS distance
       return await userDbController.Models.appointments.create(orderData, { transaction });
     } catch (error) {
       console.error("createOrderV2 Error:", error);
-      throw Error.InternalError("Failed to create order");
+      throw Error.InternalError("Failed to create order: " + (error.message || error));
     }
   },
 

@@ -1139,10 +1139,12 @@ userappmiddleware.user = {
 
             let calculatedSubTotal = 0;
             dbServices.forEach(s => {
-                calculatedSubTotal += (s.discounted_amount > 0 ? s.discounted_amount : s.amount);
+                const discountedAmount = parseFloat(s.discounted_amount) || 0;
+                const baseAmount = parseFloat(s.amount) || 0;
+                calculatedSubTotal += (discountedAmount > 0 ? discountedAmount : baseAmount);
             });
             dbCombos.forEach(c => {
-                calculatedSubTotal += c.amount;
+                calculatedSubTotal += parseFloat(c.amount) || 0;
             });
 
             if (calculatedSubTotal === 0) {
@@ -1168,7 +1170,7 @@ userappmiddleware.user = {
             }
 
             // Add GST and Fees
-            const totalWithTaxes = finalTotal + (gst || 0) + (platform_fee || 0);
+            const totalWithTaxes = finalTotal + (parseFloat(gst) || 0) + (parseFloat(platform_fee) || 0);
 
             let razorpayOrderId = null;
             let paymentStatus = "pending";
@@ -1211,7 +1213,7 @@ userappmiddleware.user = {
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
                 gst: gst || 0,
-                status: paymentStatus === "success" ? "booked" : "pending",
+                status: paymentStatus === "success" ? "booked" : "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
                 created_at: new Date(),
