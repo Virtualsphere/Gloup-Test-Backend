@@ -45,6 +45,14 @@ export const OPENAPI_SCHEMAS = {
       password: { type: "string", format: "password", example: "your_password" },
     },
   },
+  AdminChangePasswordRequest: {
+    type: "object",
+    required: ["oldPassword", "newPassword"],
+    properties: {
+      oldPassword: { type: "string", format: "password", example: "old_password123" },
+      newPassword: { type: "string", format: "password", example: "new_password123" },
+    },
+  },
   StoreIdRequest: {
     type: "object",
     required: ["store_id"],
