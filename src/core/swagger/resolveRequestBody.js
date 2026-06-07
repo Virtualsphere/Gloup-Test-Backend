@@ -62,6 +62,7 @@ const EXACT_BODY_MAP = {
   "POST /admin/app/editpartner": "AdminCreatePartnerMultipart",
   "POST /admin/app/addbanner": "BannerUploadMultipart",
   "POST /admin/app/addcategory": "CategoryImageMultipart",
+  "POST /admin/app/updateservicecategoryimage": "UpdateServiceCategoryImageMultipart",
   "POST /api/upload": "S3UploadMultipart",
 
   "POST /user/auth/updateuser": "ProfileImageMultipart",

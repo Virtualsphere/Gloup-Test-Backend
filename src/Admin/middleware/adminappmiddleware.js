@@ -1714,5 +1714,37 @@ await Promise.all(
             console.log("🚀 ~ addpartnersubscription:async ~ error:", error)
             throw Error.SomethingWentWrong("Failed to add partner subscription")
         }
+    },
+    updateservicecategoryimage: async ({ body, user, file }) => {
+        try {
+            if (!body.category_id) {
+                throw Error.BadRequest("category_id is required");
+            }
+            if (!file || !file.originalname) {
+                throw Error.NotFound("No file found");
+            }
+            
+            // Upload to S3 (GCS actually)
+            const uploaded = await uploadToS3(file, "uploads/common/service-category/" + body.category_id);
+            
+            if (!uploaded || !uploaded.url || !uploaded.key) {
+                throw new Error("Upload failed");
+            }
+            
+            const updated = await adminDbController.app.updateservicecategoryimage(body.category_id, uploaded.key);
+            
+            if (updated) {
+                return {
+                    message: "Category Image Updated Successfully",
+                    image: "https://storage.googleapis.com/gloup-images/" + uploaded.key
+                };
+            } else {
+                throw Error.NotFound("No Category Found");
+            }
+        } catch (error) {
+            console.log("🚀 ~ updateservicecategoryimage:async ~ error:", error);
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to update category image");
+        }
     }
 }

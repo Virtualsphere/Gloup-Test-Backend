@@ -482,4 +482,12 @@ export const MULTIPART_SCHEMAS = {
       file: { type: "string", format: "binary" },
     },
   },
+  UpdateServiceCategoryImageMultipart: {
+    type: "object",
+    required: ["category_id", "image"],
+    properties: {
+      category_id: { type: "integer", example: 19 },
+      image: { type: "string", format: "binary" },
+    },
+  },
 };

@@ -320,6 +320,18 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to update category");
     }
   },
+  updateservicecategoryimage: async (category_id, imageKey) => {
+    try {
+      const result = await adminDbController.Models.Servicecategory.update({
+        imageKey: imageKey,
+      }, {
+        where: { id: category_id }
+      });
+      return result[0] > 0;
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to update service category image");
+    }
+  },
   deletecoupon: async (data) => {
     try {
 
