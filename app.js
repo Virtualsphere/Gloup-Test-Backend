@@ -50,6 +50,8 @@ app.use("/upload", express.static(path.join(__dirname, "./upload")));
 app.use("/api", uploadRoute);
 
 //Parsing incoming requests
+// Razorpay webhook needs raw body for signature verification — must come BEFORE express.json()
+app.use("/user/webhook/razorpay", express.raw({ type: "application/json" }));
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
