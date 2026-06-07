@@ -346,7 +346,7 @@ appointments.init({
     allowNull: true,
   },
   profesional_id: {
-    type: DataTypes.BIGINT,
+    type: DataTypes.INTEGER,
     allowNull: true,
   },
   razorpay_id: {
@@ -415,11 +415,11 @@ appointment_items.init({
     allowNull: false,
   },
   service_id: {
-    type: DataTypes.BIGINT,
+    type: DataTypes.INTEGER,
     allowNull: true,
   },
   appointment_id: {
-    type: DataTypes.BIGINT,
+    type: DataTypes.INTEGER,
     allowNull: true,
   },
   service_amount: {

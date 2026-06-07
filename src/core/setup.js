@@ -11,7 +11,7 @@ export const setup = async (gloablConfig) => {
     await processBlock(dbConnection, chalk.green('Database Authenticated  ✔️ '), chalk.red('Database Connection Failed ✖️'));
     
     //Sync Db Models
-    dbSync();
+    await processBlock(dbSync, chalk.green('Database Tables Synced  ✔️ '), chalk.red('Database Sync Failed ✖️'));
     
     // Set App Configurations Globals
     await processBlock(Configurations, chalk.green('Configurations Validated  ✔️ ✔️ '),  chalk.red('Configurations Invalid ✖️'));
@@ -25,7 +25,18 @@ const processBlock = async (func,successTxt, errorTxt) => {
         Logger.info(successTxt)
     } catch (error) {
         Logger.error(errorTxt)
-        throw new Error(error)
+        if (error?.original) {
+            Logger.error(JSON.stringify({
+                name: error.name,
+                errno: error.original.errno,
+                code: error.original.code,
+                sqlState: error.original.sqlState,
+                sqlMessage: error.original.sqlMessage,
+                sql: error.sql,
+            }));
+        }
+        Logger.error(error?.stack || error?.message || String(error))
+        throw error
     }
 }
 
