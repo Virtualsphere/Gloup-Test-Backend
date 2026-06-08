@@ -1212,7 +1212,7 @@ userappmiddleware.user = {
                 is_discounted: is_discounted,
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
-                gst: gst || 0,
+                gst: gst || 5,
                 status: paymentStatus === "success" ? "booked" : "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
