@@ -21,7 +21,7 @@ services:
       retries: 10
       start_period: 30s
     volumes:
-     # - ./sql_backup/gloupProdDB_backup.sql:/docker-entrypoint-initdb.d/init.sql
+     - ./sql_backup/gloupProdDB_backup.sql:/docker-entrypoint-initdb.d/init.sql
       - db_data:/var/lib/mysql
 
   app:

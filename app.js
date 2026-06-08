@@ -118,7 +118,7 @@ setup(AppConfig).then((config) => {
   CronHelper.initCronJobs();
   Logger.info(chalk.green(`Scheduled tasks initialized`));
 }).catch((error) => {
-  Logger.error(JSON.stringify(error));
-  process.abort();
+  Logger.error(error?.stack || error?.message || String(error));
+  process.exit(1);
 }
 );

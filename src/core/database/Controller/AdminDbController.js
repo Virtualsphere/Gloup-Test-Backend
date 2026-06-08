@@ -989,8 +989,8 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
   }
 },
 getBookingsDetailsById: async (data) => {
-    try {
-      const query = `
+  try {
+    const query = `
       SELECT
           a.id,
           COALESCE(c.firstname, '') AS user_name,
@@ -1003,10 +1003,7 @@ getBookingsDetailsById: async (data) => {
           a.status,
           DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
           CONCAT(e.from,'-',e.to) AS slot_timing,
-          a.discounted_amount AS discount_amount,
-          ROUND(((a.discounted_amount) * a.gst / 100), 2) AS gst_amount,
-          a.amount  AS subtotal_amount,
-          (a.amount - a.discounted_amount) AS payable_amount,
+          a.gst,
           DATE_FORMAT(a.created_at, '%d %b, %Y') AS order_date,
           a.razorpay_id,
           a.payment_status,
@@ -1017,7 +1014,7 @@ getBookingsDetailsById: async (data) => {
           ss.service_name,
           ss.amount,
           ss.discounted_amount,
-          ss.amount - ss.discounted_amount As subtotal
+          (ss.amount - ss.discounted_amount) AS subtotal
 
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
@@ -1026,57 +1023,88 @@ getBookingsDetailsById: async (data) => {
       INNER JOIN PartnerAddress f ON d.address_id = f.id
       LEFT JOIN appointment_items ai ON a.id = ai.appointment_id
       LEFT JOIN StoreServices ss ON ai.service_id = ss.id
-      WHERE a.id = :id`;
-     
-      const rows = await adminDbController.connection.query(query, {
-        replacements: { id: data.id },
-        type: Sequelize.QueryTypes.SELECT,
-      });
+      WHERE a.id = :id
+    `;
 
-      if (!rows.length) return null;
+    const rows = await adminDbController.connection.query(query, {
+      replacements: { id: data.id },
+      type: Sequelize.QueryTypes.SELECT,
+    });
 
-      const booking = {
-        id: rows[0].id,
-        user_name: rows[0].user_name,
-        contact_number: rows[0].contact_number,
-        email: rows[0].email,
-        salon_name: rows[0].salon_name,
-        salon_address: rows[0].salon_address,
-        salon_phone: rows[0].salon_phone,
-        salon_mail: rows[0].salon_mail,
-        status: rows[0].status,
-        booking_datetime: rows[0].booking_datetime,
-        slot_timing: rows[0].slot_timing,
-        totalServiceAmount: rows[0].totalServiceAmount,
-        gst_amount: rows[0].gst_amount,
-        discount_amount: rows[0].discount_amount,
-        subtotal_amount: rows[0].subtotal_amount,
-        payable_amount: rows[0].payable_amount,
-        order_date: rows[0].order_date,
-        razorpay_id: rows[0].razorpay_id,
-        payment_status: rows[0].payment_status,
-        payment_id: rows[0].payment_id,
-        appointment_items: [],
-      };
+    if (!rows.length) return null;
 
-      rows.forEach(row => {
-        if (row.service_id) {
-          booking.appointment_items.push({
-            appointment_item_id: row.appointment_item_id,
-            service_id: row.service_id,
-            service_name: row.service_name,
-            service_amount: row.amount,
-            service_discount_amount: row.discounted_amount,
-            service_subtotal: row.subtotal
-          });
+    const booking = {
+      id: rows[0].id,
+      user_name: rows[0].user_name,
+      contact_number: rows[0].contact_number,
+      email: rows[0].email,
+      salon_name: rows[0].salon_name,
+      salon_address: rows[0].salon_address,
+      salon_phone: rows[0].salon_phone,
+      salon_mail: rows[0].salon_mail,
+      status: rows[0].status,
+      booking_datetime: rows[0].booking_datetime,
+      slot_timing: rows[0].slot_timing,
+      order_date: rows[0].order_date,
+      razorpay_id: rows[0].razorpay_id,
+      payment_status: rows[0].payment_status,
+      payment_id: rows[0].payment_id,
+      appointment_items: [],
+    };
+
+    let totalAmount = 0;
+    let totalDiscount = 0;
+
+    rows.forEach((row) => {
+      if (row.service_id) {
+        const serviceSubtotal =
+          Number(row.amount) - Number(row.discounted_amount);
+
+        totalAmount += serviceSubtotal;
+        totalDiscount += Number(row.discounted_amount);
+
+        booking.appointment_items.push({
+          appointment_item_id: row.appointment_item_id,
+          service_id: row.service_id,
+          service_name: row.service_name,
+          service_amount: Number(row.amount),
+          service_discount_amount: Number(row.discounted_amount),
+          service_subtotal: serviceSubtotal,
+        });
       }
-      });
-      return booking;
-    } catch (error) {
-      console.log("getBookingsDetailsById DB error:", error);
-      throw Error.SomethingWentWrong("Failed to fetch booking details by ID");
-    }
-  },
+    });
+
+    // Use 5% GST when gst is 0 or null
+    const gstRate =
+      rows[0].gst && Number(rows[0].gst) > 0
+        ? Number(rows[0].gst)
+        : 5;
+
+    // GST on total service amount after discounts
+    const gstAmount = Number(
+      ((totalAmount * gstRate) / 100).toFixed(2)
+    );
+
+    // Total amount + GST
+    const subtotalAmount = Number(
+      (totalAmount + gstAmount).toFixed(2)
+    );
+
+    booking.gst_rate = gstRate;
+    booking.total_amount = Number(totalAmount.toFixed(2));
+    booking.discount_amount = Number(totalDiscount.toFixed(2));
+    booking.gst_amount = gstAmount;
+    booking.subtotal_amount = Number(rows[0].amount || 0);
+    booking.payable_amount = subtotalAmount;
+
+    return booking;
+  } catch (error) {
+    console.log("getBookingsDetailsById DB error:", error);
+    throw Error.SomethingWentWrong(
+      "Failed to fetch booking details by ID"
+    );
+  }
+},
 updateBookingStatus: async ({ body }) => {
   try {
     const { id, status } = body;
