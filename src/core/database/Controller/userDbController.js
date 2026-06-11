@@ -3520,19 +3520,22 @@ END AS distance
       if (firstname !== undefined) payload.firstname = firstname;
       if (lastname !== undefined) payload.lastname = lastname;
       if (email !== undefined) payload.email = email;
-      if (phone !== undefined) payload.phone = phone;
-      if (age !== undefined) payload.age = age;
+      if (phone !== undefined) payload.phone = (phone === "" || phone === "null") ? null : phone;
+      if (age !== undefined) payload.age = (age === "" || age === "null") ? null : age;
       if (gender !== undefined) payload.gender = gender;
       if (dob !== undefined) payload.date_of_birth = dob;
       if (city !== undefined) payload.city = city;
       if (country !== undefined) payload.country = country;
       if (profilePic !== undefined) payload.profilePic = profilePic;
       console.log(payload);
-      const [affectedRows] = await userDbController.Models.User.update(payload, {
-        where: { id: userId, status: 'active' }
-      });
 
-      return affectedRows > 0;
+      if (Object.keys(payload).length > 0) {
+        await userDbController.Models.User.update(payload, {
+          where: { id: userId, status: 'active' }
+        });
+      }
+
+      return true;
     } catch (error) {
       console.error("updateProfileV2 error:", error);
       throw Error.InternalError("Failed to update user profile");
