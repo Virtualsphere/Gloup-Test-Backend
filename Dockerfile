@@ -25,9 +25,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         chromium \
         dumb-init \
+        curl \
         ca-certificates \
         fonts-liberation \
-        libasound2 \
+        libasound2
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=deps /app/node_modules ./node_modules

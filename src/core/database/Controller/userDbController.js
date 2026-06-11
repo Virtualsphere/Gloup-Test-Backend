@@ -3538,6 +3538,9 @@ END AS distance
       return true;
     } catch (error) {
       console.error("updateProfileV2 error:", error);
+      if (error.name === 'SequelizeUniqueConstraintError') {
+        throw Error.BadRequest("Email is already in use by another account");
+      }
       throw Error.InternalError("Failed to update user profile");
     }
   },
