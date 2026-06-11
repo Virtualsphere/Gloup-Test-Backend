@@ -11,8 +11,15 @@ export const connection = new Sequelize({
     username: database.username,
     password: database.password,
     dialect: "mysql",
-    timezone: '+05:30' ,
+    timezone: '+05:30',
     logging: false,
+    pool: {
+        max: 20,
+        min: 5,
+        acquire: 60000,
+        idle: 10000,
+        evict: 1000
+    }
     // logging: //////console.log,
 });
 
