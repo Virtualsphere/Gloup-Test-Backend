@@ -2,35 +2,43 @@ services:
   db:
     image: mysql:8.0
     restart: unless-stopped
+
     env_file:
       - .env
+
     environment:
       MYSQL_ROOT_PASSWORD: Gloup#123
       MYSQL_DATABASE: gloupProdDB
+
     ports:
       - "3306:3306"
+
+    volumes:
+      - db_data:/var/lib/mysql
+
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pGloup#123"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
-    volumes:
-      - db_data:/var/lib/mysql
 
   app:
-    depends_on:
-      db:
-        condition: service_healthy
     build:
       context: .
       dockerfile: Dockerfile
+
     image: gloup-api:${IMAGE_TAG:-latest}
+
     restart: unless-stopped
-    volumes:
-      - ./upload:/app/upload
+
+    depends_on:
+      db:
+        condition: service_healthy
+
     env_file:
       - .env
+
     environment:
       NODE_ENV: production
       DB_HOST: db
@@ -41,22 +49,31 @@ services:
       TEAM_ID: HP59PZAVRP
       KEY_ID: 3L95Q89942
       GOOGLE_APPLICATION_CREDENTIALS: /app/config/gcs-credentials.json
+
     ports:
       - "${HOST_PORT:-5678}:${APP_PORT:-5678}"
+
+    volumes:
+      - ./upload:/app/upload
+
     healthcheck:
-      [
-      "CMD",
-      "node",
-      "-e",
-      "fetch('http://127.0.0.1:5678/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
-    ]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5678/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 90s
+
     shm_size: "256mb"
+
     security_opt:
       - no-new-privileges:true
+
     tmpfs:
       - /tmp:noexec,nosuid,size=100m
 
