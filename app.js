@@ -23,7 +23,22 @@ import { setupSwagger } from "./src/core/swagger/setupSwagger.js";
 
 
 
+import promBundle from "express-prom-bundle";
 const app = express();
+
+// Configure Prometheus metrics middleware
+const metricsMiddleware = promBundle({
+  includeMethod: true, 
+  includePath: true, 
+  includeStatusCode: true, 
+  includeUp: true,
+  customLabels: {project_name: 'gloup_api'},
+  promClient: {
+    collectDefaultMetrics: {
+    }
+  }
+});
+app.use(metricsMiddleware);
 
 app.use((req, res, next) => {
   const start = Date.now();
