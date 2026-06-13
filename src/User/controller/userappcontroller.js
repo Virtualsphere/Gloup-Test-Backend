@@ -864,7 +864,7 @@ export const getAllSalons = async (req, res) => {
       userId: req.user?.id || null
     });
 
-    console.log(`Execution time: ${Date.now() - startTime}ms`);
+    // console.log(`Execution time: ${Date.now() - startTime}ms`);
 
     return res.status(200).json({
       success: true,

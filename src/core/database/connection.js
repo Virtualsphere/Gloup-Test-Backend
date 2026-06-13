@@ -23,8 +23,19 @@ export const connection = new Sequelize({
     // logging: //////console.log,
 });
 
+setInterval(() => {
+  console.log("Pool size:", connection.connectionManager.pool.size);
+  console.log("Pool available:", connection.connectionManager.pool.available);
+  console.log("Pool borrowed:", connection.connectionManager.pool.borrowed);
+  console.log("Pool pending:", connection.connectionManager.pool.pending);
+}, 5000);
 
-
+try {
+    await connection.authenticate();
+    console.log("🚀 ~ Connection has been established successfully.");
+} catch (error) {
+    console.log("🚀 ~ Unable to connect to the database:", error);
+}
 
 export const rootuser = config.defaultdata;
 export const mailerFunction = config.mailTransporter;
