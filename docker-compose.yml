@@ -107,8 +107,12 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=admin
     depends_on:
       - prometheus
-
-
+  redis:
+    image: redis:7-alpine
+    container_name: gloup-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
 volumes:
   db_data:
   grafana_data:

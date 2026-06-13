@@ -4,9 +4,7 @@ import { connection } from "../connection.js";
 import * as Models from "../models/index.js";
 import { deleteuser, gettransactions, validatecoupon } from "../../../User/controller/userappcontroller.js";
 import { getdeviceId } from "../../../User/controller/userauthcontroller.js";
-import NodeCache from 'node-cache';
-
-const storeCache = new NodeCache({ stdTTL: 120, checkperiod: 30 });
+import redisClient from '../redisClient.js';
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -182,6 +180,7 @@ userDbController.auth = {
   },
   createSession: async (token, device, customerId) => {
     try {
+      await redisClient.setEx(`session:${token}`, 30 * 24 * 60 * 60, customerId.toString()); // 30 days
       return await userDbController.Models.UserSession.create({
         user_id: customerId,
         token: token,
@@ -236,12 +235,20 @@ userDbController.auth = {
   },
   findsession: async (token) => {
     try {
-      return await userDbController.Models.UserSession.findOne({
+      const cachedUserId = await redisClient.get(`session:${token}`);
+      if (cachedUserId) return { token: token, user_id: cachedUserId, status: 'active' };
+
+      const dbSession = await userDbController.Models.UserSession.findOne({
         where: {
           token: token
         },
         raw: true
-      })
+      });
+
+      if (dbSession && dbSession.status === 'active') {
+         await redisClient.setEx(`session:${token}`, 30 * 24 * 60 * 60, dbSession.user_id.toString());
+      }
+      return dbSession;
     } catch (error) {
       throw Error.InternalError();
     }
@@ -262,6 +269,7 @@ userDbController.auth = {
   },
   destroysession: async (token) => {
     try {
+      await redisClient.del(`session:${token}`);
       return await userDbController.Models.UserSession.update({
         status: "expired"
       }, {
@@ -271,7 +279,6 @@ userDbController.auth = {
         raw: true
       })
     } catch (error) {
-      //console.log("🚀 ~ error:", error)
       throw Error.InternalError();
     }
   },
@@ -2087,8 +2094,8 @@ WHERE S.status = 'active'
     page = 1
   }) => {
     const cacheKey = `nearby_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
-    const cached = storeCache.get(cacheKey);
-    if (cached) return cached;
+    const cached = await redisClient.get(cacheKey);
+    if (cached) return JSON.parse(cached);
 
     const offset = (page - 1) * limit;
     const earthRadiusKm = 6371;
@@ -2245,7 +2252,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     ]);
 
     const result = { rawData: stores, totalRecords: totalResult[0]?.total || 0 };
-    storeCache.set(cacheKey, result);
+    await redisClient.setEx(cacheKey, 120, JSON.stringify(result));
     return result;
   },
   getAllSalons: async ({
@@ -2259,8 +2266,8 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     userId = null
   }) => {
     const cacheKey = `salons_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
-    const cached = storeCache.get(cacheKey);
-    if (cached) return cached;
+    const cached = await redisClient.get(cacheKey);
+    if (cached) return JSON.parse(cached);
 
     const offset = (page - 1) * limit;
 
@@ -2412,7 +2419,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     ]);
 
     const result = { rawData: stores, totalRecords: totalResult[0].total };
-    storeCache.set(cacheKey, result);
+    await redisClient.setEx(cacheKey, 120, JSON.stringify(result));
     return result;
   },
   // getTopSalons: async ({ limit, page, gender, userId, lat, lng }) => {
