@@ -12,7 +12,10 @@ export const connection = new Sequelize({
     password: database.password,
     dialect: "mysql",
     timezone: '+05:30',
-    logging: false,
+    logging: (sql, timing) => {
+        console.log(`[SQL ${timing}ms]`, sql);
+    },
+    benchmark: true,
     pool: {
         max: 20,
         min: 5,
@@ -24,10 +27,10 @@ export const connection = new Sequelize({
 });
 
 setInterval(() => {
-  console.log("Pool size:", connection.connectionManager.pool.size);
-  console.log("Pool available:", connection.connectionManager.pool.available);
-  console.log("Pool borrowed:", connection.connectionManager.pool.borrowed);
-  console.log("Pool pending:", connection.connectionManager.pool.pending);
+    console.log("Pool size:", connection.connectionManager.pool.size);
+    console.log("Pool available:", connection.connectionManager.pool.available);
+    console.log("Pool borrowed:", connection.connectionManager.pool.borrowed);
+    console.log("Pool pending:", connection.connectionManager.pool.pending);
 }, 5000);
 
 try {
