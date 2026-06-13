@@ -93,9 +93,9 @@ approutes.post("/getbanner", getbanner);
 // version 2 
 approutes.get('/v2/getbanner', getBannerV2);
 // store nearby, top store, all stores, store details
-approutes.post("/v2/store/nearby", storeListingLimiter, OptionalUserAuthenticate, getnearbystoresv2);
-approutes.get("/v2/get-all-stores", storeListingLimiter, OptionalUserAuthenticate, getAllSalons);
-approutes.get("/v2/salons/top", storeListingLimiter, OptionalUserAuthenticate, getTopSalons);
+approutes.post("/v2/store/nearby", OptionalUserAuthenticate, getnearbystoresv2);
+approutes.get("/v2/get-all-stores", OptionalUserAuthenticate, getAllSalons);
+approutes.get("/v2/salons/top", OptionalUserAuthenticate, getTopSalons);
 approutes.post("/v2/salons/map-markers-clustered", OptionalUserAuthenticate, getMapMarkersClustered);
 approutes.post("/v2/store/details", getstoredetailsv2);
 approutes.post("/v2/services/top-categories", getTopCategoryServicesBySex);
