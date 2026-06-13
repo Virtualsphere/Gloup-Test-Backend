@@ -30,13 +30,6 @@ import { addaminities } from "../../Partner/controller/partnerappcontroller.js";
 
 export const approutes = Router();
 
-const storeListingLimiter = rateLimit({
-  windowMs: 60 * 1000,    // 1 minute window
-  max: 30,                 // 30 requests per minute per IP
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: 'Too many requests, please try again later.' }
-});
 
 
 approutes.post("/getuserprofile", UserAuthenticate, getprofile);
@@ -124,7 +117,7 @@ approutes.delete("/v2/reviews", UserAuthenticate, deleteReviewV2);
 approutes.post("/v2/guest/add", UserAuthenticate, addGuestDetails);
 approutes.get("/v2/guest/all", UserAuthenticate, getGuestDetails);
 approutes.patch("/v2/guest/update", UserAuthenticate, updateGuestDetails);
-approutes.get('/v2/guest',UserAuthenticate,)
+approutes.get('/v2/guest', UserAuthenticate,)
 
 // Profile
 approutes.get("/v2/profile", UserAuthenticate, getProfileV2);
