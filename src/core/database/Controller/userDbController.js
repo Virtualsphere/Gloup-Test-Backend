@@ -2150,14 +2150,14 @@ SELECT
         POINT(:longitude, :latitude)
     ) / 1000 AS distance,
 
-    IFNULL(AVG(R.rating), 0) AS rating,
-    COUNT(DISTINCT R.id) AS reviewCount,
+    IFNULL(R.rating_avg, 0) AS rating,
+    IFNULL(R.review_count, 0) AS reviewCount,
 
-    MIN(SS.discounted_amount) AS servicePrice,
-    MIN(SS.service_name) AS serviceName,
+    SS.servicePrice,
+    SS.serviceName,
+    SS.categories,
 
-    GROUP_CONCAT(DISTINCT SC.name) AS categories,
-    GROUP_CONCAT(DISTINCT L.code) AS languageCodes,
+    L.languageCodes,
 
     PA.addressLine1,
     PA.addressLine2,
@@ -2174,23 +2174,28 @@ JOIN PartnerAddress PA
     ON PA.store_id = S.id
     AND PA.status = 'active'
 
-LEFT JOIN Reviews R 
-    ON R.store_id = S.id
-    AND R.status = 'active'
+LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
+    FROM Reviews WHERE status = 'active' GROUP BY store_id
+) R ON R.store_id = S.id
 
-LEFT JOIN StoreServices SS 
-    ON SS.store_id = S.id
-    AND SS.status = 'active'
+LEFT JOIN (
+    SELECT ss.store_id, 
+           MIN(ss.discounted_amount) AS servicePrice, 
+           MIN(ss.service_name) AS serviceName,
+           GROUP_CONCAT(DISTINCT sc.name) AS categories
+    FROM StoreServices ss
+    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+) SS ON SS.store_id = S.id
 
-LEFT JOIN Servicecategory SC 
-    ON SC.id = SS.service_category
-
-LEFT JOIN StoreLanguages SL 
-    ON SL.store_id = S.id
-
-LEFT JOIN Languages L 
-    ON L.id = SL.language_id
-    AND L.status = 'active'
+LEFT JOIN (
+    SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
+    FROM StoreLanguages sl
+    JOIN Languages l ON l.id = sl.language_id AND l.status = 'active'
+    GROUP BY sl.store_id
+) L ON L.store_id = S.id
 
 LEFT JOIN Favourites F
     ON F.store_id = S.id
@@ -2211,8 +2216,6 @@ WHERE
         PA.location,
         POINT(:longitude, :latitude)
     ) <= :radiusInMeters
-
-GROUP BY S.id, PA.id
 
 ORDER BY distance ASC
 
@@ -2279,7 +2282,12 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
     // ✅ Category filter
     if (category) {
-      conditions.push(`SS.service_category = :category`);
+      conditions.push(`EXISTS (
+        SELECT 1 FROM StoreServices ss_filter 
+        WHERE ss_filter.store_id = S.id 
+          AND ss_filter.service_category = :category 
+          AND ss_filter.status = 'active'
+      )`);
       replacements.category = category;
     }
 
@@ -2297,10 +2305,10 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
       replacements.longitude = lng;
 
       distanceSelect = `
-      MIN(ST_Distance_Sphere(
+      ST_Distance_Sphere(
         PA.location,
         POINT(:longitude, :latitude)
-      )) / 1000 AS distance
+      ) / 1000 AS distance
     `;
     }
 
@@ -2316,21 +2324,21 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     S.is_premium,
     S.store_type,
 
-    IFNULL(AVG(R.rating), 0) AS rating,
-    COUNT(DISTINCT R.id) AS reviewCount,
+    IFNULL(R.rating_avg, 0) AS rating,
+    IFNULL(R.review_count, 0) AS reviewCount,
 
-    MIN(SS.discounted_amount) AS servicePrice,
-    MIN(SS.service_name) AS serviceName,
+    SS.servicePrice,
+    SS.serviceName,
+    SS.categories,
 
-    GROUP_CONCAT(DISTINCT SC.name) AS categories,
-    GROUP_CONCAT(DISTINCT L.code) AS languageCodes,
+    L.languageCodes,
 
     IF(F.store_id IS NULL, 0, 1) AS isFavorite,
 
-    MAX(PA.latitude) AS latitude,
-    MAX(PA.longitude) AS longitude,
-    MAX(PA.addressLine1) AS addressLine1,
-    MAX(PA.city) AS city,
+    PA.latitude,
+    PA.longitude,
+    PA.addressLine1,
+    PA.city,
 
     ${distanceSelect}
 
@@ -2338,20 +2346,28 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   ${addressJoin}
 
-  LEFT JOIN Reviews R 
-    ON R.store_id = S.id AND R.status = 'active'
+  LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
+    FROM Reviews WHERE status = 'active' GROUP BY store_id
+  ) R ON R.store_id = S.id
 
-  LEFT JOIN StoreServices SS 
-    ON SS.store_id = S.id AND SS.status = 'active'
+  LEFT JOIN (
+    SELECT ss.store_id, 
+           MIN(ss.discounted_amount) AS servicePrice, 
+           MIN(ss.service_name) AS serviceName,
+           GROUP_CONCAT(DISTINCT sc.name) AS categories
+    FROM StoreServices ss
+    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+  ) SS ON SS.store_id = S.id
 
-  LEFT JOIN Servicecategory SC 
-    ON SC.id = SS.service_category
-
-  LEFT JOIN StoreLanguages SL 
-    ON SL.store_id = S.id
-
-  LEFT JOIN Languages L 
-    ON L.id = SL.language_id AND L.status = 'active'
+  LEFT JOIN (
+    SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
+    FROM StoreLanguages sl
+    JOIN Languages l ON l.id = sl.language_id AND l.status = 'active'
+    GROUP BY sl.store_id
+  ) L ON L.store_id = S.id
 
   LEFT JOIN Favourites F 
     ON F.store_id = S.id 
@@ -2359,8 +2375,6 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     AND F.status = 'active'
 
   ${whereClause}
-
-  GROUP BY S.id
 
   ORDER BY ${lat && lng
         ? 'distance IS NULL, distance ASC'
@@ -2373,10 +2387,6 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     const countQuery = `
   SELECT COUNT(DISTINCT S.id) AS total
   FROM Store S
-
-  ${category
-        ? "LEFT JOIN StoreServices SS ON SS.store_id = S.id AND SS.status = 'active'"
-        : ""}
 
   ${addressJoin}
 
