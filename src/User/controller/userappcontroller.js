@@ -733,7 +733,6 @@ export const addwallet = async (req, res) => {
 // this is get banner controller 
 export const getBannerV2 = async (req, res) => {
   try {
-    console.log('api started')
     const banners = await userappmiddleware.user.getBannerV2();
     return res.status(200).json({
       success: true,
@@ -786,6 +785,7 @@ export const getnearbystoresv2 = async (req, res) => {
       user: req.user || null
     });
 
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
     return res.status(200).json({
       success: true,
       data
@@ -866,6 +866,7 @@ export const getAllSalons = async (req, res) => {
 
     // console.log(`Execution time: ${Date.now() - startTime}ms`);
 
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
     return res.status(200).json({
       success: true,
       pagination: result.pagination,
@@ -998,8 +999,9 @@ export const getTopSalons = async (req, res) => {
 
     const result = await userappmiddleware.user.getTopSalons(filters);
 
-    console.log(`getTopSalons executed in ${Date.now() - startTime}ms`);
 
+
+    res.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=30');
     return res.status(200).json({
       success: true,
       pagination: result.pagination,

@@ -12,32 +12,30 @@ export const connection = new Sequelize({
     password: database.password,
     dialect: "mysql",
     timezone: '+05:30',
-    logging: (sql, timing) => {
-        console.log(`[SQL ${timing}ms]`, sql);
-    },
-    benchmark: true,
+    logging: false,
+    benchmark: false,
     pool: {
-        max: 20,
-        min: 5,
-        acquire: 60000,
+        max: 50,
+        min: 10,
+        acquire: 30000,
         idle: 10000,
-        evict: 1000
+        evict: 1000,
+        handleDisconnects: true
     }
-    // logging: //////console.log,
 });
 
 setInterval(() => {
-    console.log("Pool size:", connection.connectionManager.pool.size);
-    console.log("Pool available:", connection.connectionManager.pool.available);
-    console.log("Pool borrowed:", connection.connectionManager.pool.borrowed);
-    console.log("Pool pending:", connection.connectionManager.pool.pending);
-}, 5000);
+    const pool = connection.connectionManager.pool;
+    if (pool.pending > 5) {
+        console.warn(`⚠️ DB pool under pressure — pending: ${pool.pending}, borrowed: ${pool.borrowed}/${pool.size}`);
+    }
+}, 10000);
 
 try {
     await connection.authenticate();
-    console.log("🚀 ~ Connection has been established successfully.");
+    console.log("Connection has been established successfully.");
 } catch (error) {
-    console.log("🚀 ~ Unable to connect to the database:", error);
+    console.error("Unable to connect to the database:", error);
 }
 
 export const rootuser = config.defaultdata;

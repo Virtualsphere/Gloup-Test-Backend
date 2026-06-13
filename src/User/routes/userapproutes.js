@@ -30,6 +30,14 @@ import { addaminities } from "../../Partner/controller/partnerappcontroller.js";
 
 export const approutes = Router();
 
+const storeListingLimiter = rateLimit({
+  windowMs: 60 * 1000,    // 1 minute window
+  max: 30,                 // 30 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests, please try again later.' }
+});
+
 
 approutes.post("/getuserprofile", UserAuthenticate, getprofile);
 approutes.post("/getallstores", getallstores);
@@ -92,9 +100,9 @@ approutes.post("/getbanner", getbanner);
 // version 2 
 approutes.get('/v2/getbanner', getBannerV2);
 // store nearby, top store, all stores, store details
-approutes.post("/v2/store/nearby", OptionalUserAuthenticate, getnearbystoresv2);
-approutes.get("/v2/get-all-stores", OptionalUserAuthenticate, getAllSalons);
-approutes.get("/v2/salons/top", OptionalUserAuthenticate, getTopSalons);
+approutes.post("/v2/store/nearby", storeListingLimiter, OptionalUserAuthenticate, getnearbystoresv2);
+approutes.get("/v2/get-all-stores", storeListingLimiter, OptionalUserAuthenticate, getAllSalons);
+approutes.get("/v2/salons/top", storeListingLimiter, OptionalUserAuthenticate, getTopSalons);
 approutes.post("/v2/salons/map-markers-clustered", OptionalUserAuthenticate, getMapMarkersClustered);
 approutes.post("/v2/store/details", getstoredetailsv2);
 approutes.post("/v2/services/top-categories", getTopCategoryServicesBySex);

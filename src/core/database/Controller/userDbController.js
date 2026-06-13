@@ -4,8 +4,9 @@ import { connection } from "../connection.js";
 import * as Models from "../models/index.js";
 import { deleteuser, gettransactions, validatecoupon } from "../../../User/controller/userappcontroller.js";
 import { getdeviceId } from "../../../User/controller/userauthcontroller.js";
+import NodeCache from 'node-cache';
 
-
+const storeCache = new NodeCache({ stdTTL: 120, checkperiod: 30 });
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -2085,6 +2086,10 @@ WHERE S.status = 'active'
     limit = 10,
     page = 1
   }) => {
+    const cacheKey = `nearby_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const cached = storeCache.get(cacheKey);
+    if (cached) return cached;
+
     const offset = (page - 1) * limit;
     const earthRadiusKm = 6371;
 
@@ -2239,10 +2244,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
       connection.query(countSql, { replacements, type: Sequelize.QueryTypes.SELECT })
     ]);
 
-    return {
-      rawData: stores,
-      totalRecords: totalResult[0]?.total || 0
-    };
+    const result = { rawData: stores, totalRecords: totalResult[0]?.total || 0 };
+    storeCache.set(cacheKey, result);
+    return result;
   },
   getAllSalons: async ({
     page = 1,
@@ -2254,6 +2258,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     search,
     userId = null
   }) => {
+    const cacheKey = `salons_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const cached = storeCache.get(cacheKey);
+    if (cached) return cached;
 
     const offset = (page - 1) * limit;
 
@@ -2404,10 +2411,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
       })
     ]);
 
-    return {
-      rawData: stores,
-      totalRecords: totalResult[0].total
-    };
+    const result = { rawData: stores, totalRecords: totalResult[0].total };
+    storeCache.set(cacheKey, result);
+    return result;
   },
   // getTopSalons: async ({ limit, page, gender, userId, lat, lng }) => {
   //   const offset = (page - 1) * limit;
@@ -3167,13 +3173,6 @@ END AS distance
     AND S.status = 'active'
   `;
 
-  console.log("========== FILTER DEBUG ==========");
-  console.log("Input Filters:", {
-    categoryId,
-    sex,
-    budget,
-    rating,
-  });
 
   // Category Filter
   if (categoryId) {
@@ -3181,8 +3180,6 @@ END AS distance
       AND S.service_category = :categoryId
     `;
     replacements.categoryId = categoryId;
-
-    console.log("✅ Category Filter Applied:", categoryId);
   } else {
     whereConditions += `
       AND (
@@ -3190,10 +3187,6 @@ END AS distance
         OR C.name LIKE '%-F'
       )
     `;
-
-    console.log(
-      "✅ Default Gender Category Filter Applied (-M / -F)"
-    );
   }
 
   // Gender Filter
@@ -3204,8 +3197,6 @@ END AS distance
         OR S.service_for = 'male'
       )
     `;
-
-    console.log("✅ Male Filter Applied");
   }
 
   if (sex === "female") {
@@ -3215,8 +3206,6 @@ END AS distance
         OR S.service_for = 'female'
       )
     `;
-
-    console.log("✅ Female Filter Applied");
   }
 
   // Budget Filter
@@ -3231,13 +3220,6 @@ END AS distance
 
     replacements.minBudget = minBudget;
     replacements.maxBudget = maxBudget;
-
-    console.log(
-      "✅ Budget Filter Applied:",
-      minBudget,
-      "-",
-      maxBudget
-    );
   }
 
   // Rating Filter
@@ -3247,8 +3229,6 @@ END AS distance
     `;
 
     replacements.rating = rating;
-
-    console.log("✅ Rating Filter Applied:", rating);
   }
 
   const query = `
@@ -3342,32 +3322,10 @@ END AS distance
     ranked.id DESC
 `;
 
-  console.log("\n========== FINAL QUERY ==========");
-  console.log(query);
-
-  console.log("\n========== REPLACEMENTS ==========");
-  console.log(replacements);
-
   const result = await connection.query(query, {
     replacements,
     type: Sequelize.QueryTypes.SELECT,
   });
-
-  console.log("\n========== RESULT COUNT ==========");
-  console.log(result.length);
-
-  console.log("\n========== FIRST 20 MATCHES ==========");
-  console.table(
-    result.slice(0, 20).map((r) => ({
-      store_id: r.id,
-      store_name: r.name,
-      service_id: r.service_id,
-      service_name: r.service_name,
-      discounted_amount: r.discounted_amount,
-      service_category: r.service_category,
-      category_name: r.category_name,
-    }))
-  );
 
   return result;
 },

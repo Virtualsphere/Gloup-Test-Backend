@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import helmet from "helmet";
@@ -25,6 +26,7 @@ import { setupSwagger } from "./src/core/swagger/setupSwagger.js";
 
 import promBundle from "express-prom-bundle";
 const app = express();
+app.use(compression());
 
 // Configure Prometheus metrics middleware
 const metricsMiddleware = promBundle({
@@ -40,17 +42,7 @@ const metricsMiddleware = promBundle({
 });
 app.use(metricsMiddleware);
 
-app.use((req, res, next) => {
-  const start = Date.now();
 
-  res.on('finish', () => {
-    console.log(
-      `${req.method} ${req.originalUrl} ${Date.now() - start}ms`
-    );
-  });
-
-  next();
-});
 app.use(cors({
   origin: [
     'https://gloup.in',

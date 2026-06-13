@@ -155,7 +155,7 @@ UserSession.init({
     allowNull: true,
   },
   token: {
-    type: DataTypes.TEXT('long'),
+    type: DataTypes.STRING(512),
     allowNull: true,
   },
   ipv4: {
