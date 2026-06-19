@@ -933,6 +933,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         c.firstname AS user_name,
         d.name AS salon_name,
         a.status,
+        a.payment_status,
         DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
         a.amount AS service_amount,
         a.discounted_amount AS discount_amount,
