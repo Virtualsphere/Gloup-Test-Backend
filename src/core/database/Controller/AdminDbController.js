@@ -923,7 +923,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     const limit = Number(data.limit) || 10;
     const offset = (page - 1) * limit;
     
-    const dateFilter = (data.fromDate && data.toDate) ? `AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate` : '';
+    const dateFilter = (data.fromDate && data.toDate) ? `AND DATE(a.created_at) BETWEEN :fromDate AND :toDate` : '';
     const statusFilter = data.status ? `AND a.status = :status` : '';
 
     const query = `
@@ -946,7 +946,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       WHERE 1=1
       ${dateFilter}
       ${statusFilter}
-      ORDER BY a.booking_date DESC
+      ORDER BY a.created_at DESC, a.id DESC
       LIMIT :limit OFFSET :offset
     `;
 
