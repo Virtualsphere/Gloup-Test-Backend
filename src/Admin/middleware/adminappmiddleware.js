@@ -385,14 +385,20 @@ Adminappmiddleware.app = {
 
     /**
      * Send push notification to a single user or partner (store).
-     * Body: recipient_type ("user"|"partner"), recipient_id (or user_id / partner_id / store_id), title, description
+     * Body: recipient_type ("user"|"partner"|"store"), recipient_id (or user_id / partner_id / store_id), title, description
      */
     sendTargetedNotification: async ({ body }) => {
         try {
             const { title, description } = body;
-            const recipientType = (body.recipient_type || body.sent_to || "")
+            const rawRecipientType = (body.recipient_type || body.sent_to || "")
                 .toLowerCase()
                 .trim();
+            const recipientTypeByAlias = {
+                user: "user",
+                partner: "partner",
+                store: "partner",
+            };
+            const recipientType = recipientTypeByAlias[rawRecipientType];
             const recipientId = parseInt(
                 body.recipient_id ?? body.user_id ?? body.partner_id ?? body.store_id,
                 10
@@ -401,9 +407,9 @@ Adminappmiddleware.app = {
             if (!title?.trim() || !description?.trim()) {
                 throw Error.BadRequest("title and description are required");
             }
-            if (!recipientType || !["user", "partner"].includes(recipientType)) {
+            if (!recipientType) {
                 throw Error.BadRequest(
-                    "recipient_type must be 'user' or 'partner'"
+                    "recipient_type must be 'user', 'partner', or 'store'"
                 );
             }
             if (!recipientId || isNaN(recipientId)) {
@@ -452,8 +458,8 @@ Adminappmiddleware.app = {
             const adminNotification =
                 await adminDbController.app.addnotificationlogsadmin({
                     store_id: partnerId,
-                    notification_type: "targeted",
-                    sent_to: recipientType,
+                    notification_type: "general",
+                    sent_to: recipientType === "user" ? "user" : "store",
                     title: trimmedTitle,
                     description: trimmedDescription,
                     date: new Date(),

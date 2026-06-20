@@ -12,6 +12,8 @@ const __dirname = path.resolve();
 import dotenv from "dotenv";
 dotenv.config();
 
+import "./src/core/utils/notifier.js";
+
 //require routers only for development
 // import { adminRouter } from "./src/Admin/routes/index.Routes.js";
 // import { getStarted } from "./src/App/controller/authController.js";

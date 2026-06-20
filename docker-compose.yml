@@ -41,6 +41,7 @@ services:
 
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
       DB_HOST: db
       DB_USERNAME: root
       DB_PASSWORD: Gloup#123
@@ -50,11 +51,16 @@ services:
       KEY_ID: 3L95Q89942
       GOOGLE_APPLICATION_CREDENTIALS: /app/config/gcs-credentials.json
 
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
+
     ports:
       - "${HOST_PORT:-5678}:${APP_PORT:-5678}"
 
     volumes:
       - ./upload:/app/upload
+      - ./config/firebase.json:/app/config/firebase.json:ro
 
     healthcheck:
       test:

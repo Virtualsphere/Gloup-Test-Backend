@@ -580,7 +580,7 @@ adminDbController.app = {
         description: data?.description || null,
       })
     } catch (error) {
-      //console.log("🚀 ~ addnotificationlogsadmin:async ~ error:", error)
+      console.error("addnotificationlogsadmin error:", error?.parent?.sqlMessage || error.message)
       throw Error.SomethingWentWrong("Failed to add notification logs");
     }
   },

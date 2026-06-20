@@ -8,6 +8,9 @@
     "scripts": {
         "start": "nodemon app.js",
         "start:prod": "node app.js",
+        "start:host": "node app.js",
+        "infra:up": "docker compose up -d db redis",
+        "infra:down": "docker compose stop db redis",
         "deploy": "pm2 start app.js --name 'GloUp (3010)'",
         "lint": "eslint . --max-warnings=0",
         "lint:fix": "eslint . --fix",
