@@ -929,6 +929,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     const query = `
       SELECT DISTINCT
         a.id,
+        a.created_at,
         a.booking_date,
         c.firstname AS user_name,
         d.name AS salon_name,
