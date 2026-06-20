@@ -2249,10 +2249,9 @@ userappmiddleware.user = {
         const radius = 10;
 
         // Gender filter logic:
-        // male -> only male
-        // female -> only female
-        // unisex -> male, female, unisex
-        // null/invalid -> all (handled in DB controller)
+        // male -> male + unisex salons
+        // female -> female + unisex salons
+        // unisex -> unisex salons only
         let genderFilter = null;
         if (gender) {
             const g = gender.toLowerCase().trim();
@@ -2621,11 +2620,18 @@ userappmiddleware.user = {
     },
 
     // Get Stores By Category
-    getStoresByServiceCategory: async ({ body }) => {
+    getStoresByServiceCategory: async (req) => {
 
     try {
 
+        const body = req.body || {};
+        const query = req.query || {};
         const { category_id, sex, budget, rating } = body;
+
+        const parsedLat =
+            body.lat ?? body.latitude ?? query.lat ?? query.latitude;
+        const parsedLng =
+            body.lng ?? body.longitude ?? query.lng ?? query.longitude;
 
         const stores =
         await userDbController.app.getStoresByServiceCategory(
@@ -2634,6 +2640,14 @@ userappmiddleware.user = {
                 sex,
                 budget,
                 rating,
+                lat:
+                    parsedLat != null && parsedLat !== "" && !isNaN(Number(parsedLat))
+                        ? Number(parsedLat)
+                        : null,
+                lng:
+                    parsedLng != null && parsedLng !== "" && !isNaN(Number(parsedLng))
+                        ? Number(parsedLng)
+                        : null,
             }
         );
 

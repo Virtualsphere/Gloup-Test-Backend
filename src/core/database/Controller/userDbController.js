@@ -5,6 +5,10 @@ import * as Models from "../models/index.js";
 import { deleteuser, gettransactions, validatecoupon } from "../../../User/controller/userappcontroller.js";
 import { getdeviceId } from "../../../User/controller/userauthcontroller.js";
 import redisClient from '../redisClient.js';
+import {
+  storeGenderCondition,
+  storeGenderWhereSql,
+} from "../../utils/storeGenderFilter.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -2093,7 +2097,7 @@ WHERE S.status = 'active'
     limit = 10,
     page = 1
   }) => {
-    const cacheKey = `nearby_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const cacheKey = `nearby_v4_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2132,17 +2136,7 @@ WHERE S.status = 'active'
       offset
     };
 
-    let genderCondition = "";
-    if (gender) {
-      const g = gender.toLowerCase().trim();
-      if (g === 'male') {
-        genderCondition = "AND LOWER(S.store_type) = 'male'";
-      } else if (g === 'female') {
-        genderCondition = "AND LOWER(S.store_type) = 'female'";
-      } else if (g === 'unisex') {
-        genderCondition = "AND LOWER(S.store_type) IN ('male', 'female', 'unisex')";
-      }
-    }
+    const genderCondition = storeGenderWhereSql("S.store_type", gender);
 
     const sql = `
 SELECT 
@@ -2265,7 +2259,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     search,
     userId = null
   }) => {
-    const cacheKey = `salons_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const cacheKey = `salons_v6_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2275,12 +2269,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
     const conditions = ["S.status = 'active'", "S.completion_status = 'completed'"];
 
-    // ✅ Gender filter (basic - assumes cleaned data or normalized column)
-    if (gender) {
-      conditions.push(`
-      (S.store_type = :gender OR S.store_type = 'unisex')
-    `);
-      replacements.gender = gender;
+    const genderCondition = storeGenderCondition("S.store_type", gender);
+    if (genderCondition) {
+      conditions.push(genderCondition);
     }
 
     // ✅ Search filter
@@ -2562,12 +2553,10 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     replacements.neLng = northEast.lng;
 
     // Gender filter
-    if (gender && gender !== 'all') {
-      if (gender === 'unisex') {
-        whereConditions.push(`S.store_type = 'unisex'`);
-      } else {
-        whereConditions.push(`(S.store_type = :gender OR S.store_type = 'unisex')`);
-        replacements.gender = gender;
+    if (gender && gender !== "all") {
+      const genderCondition = storeGenderCondition("S.store_type", gender);
+      if (genderCondition) {
+        whereConditions.push(genderCondition);
       }
     }
 
@@ -2747,7 +2736,7 @@ END AS distance
   WHERE S.status = 'active'
   and S.completion_status = 'completed'
 
-  AND (:gender IS NULL OR LOWER(S.store_type) = :gender)
+  ${storeGenderWhereSql("S.store_type", gender)}
 
   AND (
   :lat IS NULL
@@ -2775,15 +2764,60 @@ END AS distance
   `;
 
     const countSql = `
-    SELECT COUNT(*) AS total
-    FROM Store S
-    WHERE S.status = 'active'
-    and S.completion_status = 'completed'
+  SELECT COUNT(DISTINCT S.id) AS total
+  FROM Store S
+  LEFT JOIN PartnerAddress PA
+    ON PA.store_id = S.id
+    AND PA.status = 'active'
+  LEFT JOIN (
+    SELECT store_id,
+           AVG(rating) AS rating_avg,
+           COUNT(id) AS review_count
+    FROM Reviews
+    WHERE status = 'active'
+    GROUP BY store_id
+  ) R ON R.store_id = S.id
+  LEFT JOIN (
+    SELECT store_id,
+           MIN(discounted_amount) AS min_price
+    FROM StoreServices
+    WHERE status = 'active'
+    GROUP BY store_id
+  ) SS ON SS.store_id = S.id
+  LEFT JOIN (
+    SELECT SS.store_id,
+           GROUP_CONCAT(DISTINCT SC.name) AS categories
+    FROM StoreServices SS
+    JOIN Servicecategory SC
+      ON SC.id = SS.service_category
+    WHERE SS.status = 'active'
+    GROUP BY SS.store_id
+  ) C ON C.store_id = S.id
+  WHERE S.status = 'active'
+  AND S.completion_status = 'completed'
+  ${storeGenderWhereSql("S.store_type", gender)}
+  AND (
+    :lat IS NULL
+    OR (
+      PA.latitude BETWEEN :minLat AND :maxLat
+      AND PA.longitude BETWEEN :minLng AND :maxLng
+    )
+  )
+  AND (:minRating IS NULL OR R.rating_avg >= :minRating)
+  AND (:minPrice IS NULL OR SS.min_price >= :minPrice)
+  AND (:maxPrice IS NULL OR SS.min_price <= :maxPrice)
+  AND (
+    :search IS NULL
+    OR (
+      S.name LIKE :search
+      OR C.categories LIKE :search
+    )
+  )
   `;
 
     const [stores, totalResult] = await Promise.all([
       connection.query(sql, { replacements, type: Sequelize.QueryTypes.SELECT }),
-      connection.query(countSql, { type: Sequelize.QueryTypes.SELECT })
+      connection.query(countSql, { replacements, type: Sequelize.QueryTypes.SELECT })
     ]);
 
     return {
@@ -3171,12 +3205,32 @@ END AS distance
   sex = null,
   budget = null,
   rating = null,
+  lat = null,
+  lng = null,
 }) => {
 
-  const replacements = {};
+  const replacements = {
+    latitude: lat,
+    longitude: lng,
+  };
+
+  const hasGeo = lat != null && lng != null && !isNaN(lat) && !isNaN(lng);
+
+  const distanceSelect = hasGeo
+    ? `
+      CASE
+        WHEN PA.latitude IS NOT NULL AND PA.longitude IS NOT NULL THEN
+          ST_Distance_Sphere(
+            PA.location,
+            POINT(:longitude, :latitude)
+          ) / 1000
+        ELSE NULL
+      END AS distance,`
+    : `NULL AS distance,`;
 
   let whereConditions = `
     ST.status = 'active'
+    AND ST.completion_status = 'completed'
     AND S.status = 'active'
   `;
 
@@ -3281,10 +3335,12 @@ END AS distance
       PA.longitude,
       PA.radius,
 
+      ${distanceSelect}
+
       -- Service
       S.id AS service_id,
-      S.service_name,
-      S.discounted_amount,
+      S.service_name AS serviceName,
+      S.discounted_amount AS servicePrice,
       S.service_category,
       C.name AS category_name,
 
@@ -3305,6 +3361,7 @@ END AS distance
 
     LEFT JOIN PartnerAddress PA
       ON PA.store_id = ST.id
+      AND PA.status = 'active'
 
     LEFT JOIN (
       SELECT
@@ -3324,6 +3381,7 @@ END AS distance
   WHERE ranked.rn = 1
 
   ORDER BY
+    ${hasGeo ? "ranked.distance IS NULL, ranked.distance ASC," : ""}
     ranked.is_premium DESC,
     ranked.rating DESC,
     ranked.id DESC

@@ -840,14 +840,12 @@ export const getAllSalons = async (req, res) => {
     const parsedLat = lat && !isNaN(Number(lat)) ? Number(lat) : null;
     const parsedLng = lng && !isNaN(Number(lng)) ? Number(lng) : null;
 
-    // Gender handling
+    // Gender handling: male / female / unisex all apply a filter; omit param for no filter
     let genderFilter = null;
     if (gender) {
       const g = gender.toLowerCase();
-      if (g === "male" || g === "female") {
+      if (g === "male" || g === "female" || g === "unisex") {
         genderFilter = g;
-      } else if (g === "unisex") {
-        genderFilter = null;
       } else {
         return res.status(400).json({ success: false, message: "Invalid gender" });
       }

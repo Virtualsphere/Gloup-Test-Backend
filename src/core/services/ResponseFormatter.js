@@ -576,7 +576,10 @@ export function formatNearbyStores(stores = []) {
       logo: media.logo,
       images: media.images,
       rating: parseFloat(Number(store.rating || 0).toFixed(1)),
-      distance: parseFloat(Number(store.distance || 0).toFixed(2)),
+      distance:
+        store.distance != null && store.distance !== ""
+          ? parseFloat(Number(store.distance).toFixed(2))
+          : null,
       isPremium: !!store.is_premium,
       isFavorite: !!store.isFavorite,
       serviceName: store.serviceName || null,
