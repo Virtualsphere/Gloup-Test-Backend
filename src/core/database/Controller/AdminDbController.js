@@ -1983,7 +1983,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
       );
 
       if (existing.length > 0) {
-        throw new Error("Partner already exists");
+        throw new Error("Partner already exists with matching data");
       }
 
       // -------------------------------
@@ -2128,7 +2128,9 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
 
       // 🧾 FILE + CONSOLE
       logger.error(`createpartner error: ${error.message}`, {
-        stack: error.stack
+        stack: error.stack,
+        code: error.code,
+        parent: error?.parent?.sqlMessage,
       });
 
       // 🧾 DATABASE
