@@ -3,9 +3,10 @@ import require from "requirejs";
 const rateLimit = require("express-rate-limit");
 import { verifyadmin } from "../controller/authcontroller.js";
 import { upload, categoryupload, bannerupload, bannerimage, profileimage, imageSizeMiddleware, categoryimage } from "../../core/utils/imageResizer.js";
-import { addbanner, addcategory, addcoupons, addnotification, sendTargetedNotification, getnotificationbyid, addpayouts, addsubscription, createPartner, createService, deletebanner, deletecategory, deletePartner, deletereviewrequest, editPartner, editService,getAdvancedSearch, getallcategory, getallcoupons, getallnotification, getallpartner, getallpartnerdetails, getallsubscription, getalluserbooking, getallusers, getbanner,getBookings, getCancelledOrders, getCategoryRevenue, getCustomers, getdashboard,getFilteredStores, getFilterReport, getMonthlyReport, getpayoutlogs, getrefundrequests, getRegisteredStore, getRevenueCategory, getRevenueCategoryGrowth, getreviewrequest,getSalons, getservices, getStoreBySearch, getStoresByStatus, getTopPerformingSalon, updatecoupons, updateMultiplePartner, updateMultipleStore, updatepartner, updaterefundrequests,updatereviewrequest, updateSalon, updatesubscription, updateuser, getverifyPartnerlist,verifypartnerdetails, getBookingsDetails, getBookingsDetailsById, updatebookingstatus, downloadBookingPDF,updaterefundBooking, getservicecategorylist, updateservicecategoryimage, createdefaulttimeslot, blockAndUnblockSlot, getBlockedSlots,getlanguage, getserviceprovidedfor, getallpartnersubscription, getpartnersubscriptionbyid, updatepartnersubscription, deletepartnersubscription, addpartnersubscription, getallpartnersubscriptionfeatures, deleteservice } from "../controller/adminappcontroller.js";
+import { addbanner, bookingSSE, addcategory, addcoupons, addnotification, sendTargetedNotification, getnotificationbyid, addpayouts, addsubscription, createPartner, createService, deletebanner, deletecategory, deletePartner, deletereviewrequest, editPartner, editService,getAdvancedSearch, getallcategory, getallcoupons, getallnotification, getallpartner, getallpartnerdetails, getallsubscription, getalluserbooking, getallusers, getbanner,getBookings, getCancelledOrders, getCategoryRevenue, getCustomers, getdashboard,getFilteredStores, getFilterReport, getMonthlyReport, getpayoutlogs, getrefundrequests, getRegisteredStore, getRevenueCategory, getRevenueCategoryGrowth, getreviewrequest,getSalons, getservices, getStoreBySearch, getStoresByStatus, getTopPerformingSalon, updatecoupons, updateMultiplePartner, updateMultipleStore, updatepartner, updaterefundrequests,updatereviewrequest, updateSalon, updatesubscription, updateuser, getverifyPartnerlist,verifypartnerdetails, getBookingsDetails, getBookingsDetailsById, updatebookingstatus, downloadBookingPDF,updaterefundBooking, getservicecategorylist, updateservicecategoryimage, createdefaulttimeslot, blockAndUnblockSlot, getBlockedSlots,getlanguage, getserviceprovidedfor, getallpartnersubscription, getpartnersubscriptionbyid, updatepartnersubscription, deletepartnersubscription, addpartnersubscription, getallpartnersubscriptionfeatures, deleteservice } from "../controller/adminappcontroller.js";
 import { getservicecategory } from "../../Partner/controller/partnerappcontroller.js";
 import { S3upload } from "../../core/utils/s3/s3Upload.js";
+import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 
 
 
@@ -99,6 +100,16 @@ approutes.post('/deletecoupons', verifyadmin, updatecoupons);
 approutes.post("/getBookings", verifyadmin, getBookings);
 approutes.post("/getBookingsDetails", verifyadmin, getBookingsDetails);
 approutes.post("/getBookingsDetailsById", verifyadmin, getBookingsDetailsById);
+approutes.get("/bookings/sse", verifyadmin, bookingSSE);
+// TEMP — remove before production
+approutes.get("/bookings/sse/test", verifyadmin, (req, res) => {
+  broadcastNewBooking({
+    id: Math.floor(Math.random() * 1000),
+    payable_amount: 850,
+    status: "booked",
+  });
+  res.json({ success: true, message: "Test booking broadcasted" });
+});
 approutes.post("/updateBookingStatus", verifyadmin, updatebookingstatus);
 approutes.post("/downloadBookingPDF/:id", verifyadmin, downloadBookingPDF);
 approutes.post("/refundbookings", verifyadmin, updaterefundBooking);

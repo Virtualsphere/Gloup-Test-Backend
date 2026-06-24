@@ -14,6 +14,7 @@ import { connection } from "../../core/database/connection.js";
 import { FirebaseService } from "../../core/utils/notifier.js";
 import axios from "axios";
 import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
+import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 
 
 
@@ -1250,6 +1251,12 @@ userappmiddleware.user = {
             }
 
             await transaction.commit();
+
+            broadcastNewBooking({
+                id: appointment.id,
+                payable_amount: totalWithTaxes,
+                status: appointmentData.status,
+            });
 
             return {
                 order_id: appointment.id,

@@ -98,12 +98,13 @@ adminauthmiddleware.auth = {
       throw error;
     }
   },
-  verifyadmin: async ({ headers }) => {
+  verifyadmin: async ({ headers, query }) => {
     try {
-      if (headers.hasOwnProperty("adminauth")) {
+      const adminauth = headers.adminauth || query?.adminauth;
+      if (adminauth) {
         //check authentication
         const passwordSecret = process.env.passwordSecret;
-        const findSession = await adminDbController.auth.findsession(headers.adminauth);
+        const findSession = await adminDbController.auth.findsession(adminauth);
         if (findSession != null && findSession != undefined && findSession.status == "active") {
           //decrypt token
           var plain = CryptoJS.AES.decrypt(findSession.token, passwordSecret);

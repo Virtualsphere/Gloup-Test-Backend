@@ -28,7 +28,14 @@ import { setupSwagger } from "./src/core/swagger/setupSwagger.js";
 
 import promBundle from "express-prom-bundle";
 const app = express();
-app.use(compression());
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.path.includes("/bookings/sse")) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 
 // Configure Prometheus metrics middleware
 const metricsMiddleware = promBundle({

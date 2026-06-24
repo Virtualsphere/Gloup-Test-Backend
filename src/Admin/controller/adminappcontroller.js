@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { ApplicationResponse } from "../../core/inc/response/ApplicationResponse.js";
 import { ApplicationResult } from "../../core/result.js";
 import { Adminappmiddleware } from "../middleware/adminappmiddleware.js";
+import { addClient, removeClient } from "../../core/utils/sseManager.js";
 dotenv.config(); 
 
 
@@ -782,6 +783,25 @@ export const getdashboard = async(req, res) => {
         });
 }    
 
+export const bookingSSE = (req, res) => {
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.flushHeaders();
+
+  // Send a heartbeat every 30s to keep connection alive
+  const heartbeat = setInterval(() => {
+    res.write(": heartbeat\n\n");
+  }, 30000);
+
+  addClient(res);
+
+  req.on("close", () => {
+    clearInterval(heartbeat);
+    removeClient(res);
+  });
+};
 
 export const getBookingsDetails = async(req, res) => {
     Adminappmiddleware.app.getBookingsDetails(req)
