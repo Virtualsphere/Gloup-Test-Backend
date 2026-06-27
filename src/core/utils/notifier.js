@@ -235,6 +235,37 @@ export const FirebaseService = {
             }
 
             const tokens = [...new Set(body.token)].filter(Boolean);
+            const screenValue = body.screen ?? (value ? String(value) : "");
+            const collapseKey = body.collapseKey
+                ? String(body.collapseKey).slice(0, 64)
+                : undefined;
+
+            const androidNotification = {
+                sound: "default",
+            };
+            if (collapseKey) {
+                androidNotification.tag = collapseKey;
+            }
+
+            const android = {
+                priority: "high",
+                notification: androidNotification,
+            };
+            if (collapseKey) {
+                android.collapseKey = collapseKey;
+            }
+
+            const apns = {
+                payload: {
+                    aps: {
+                        contentAvailable: true,
+                        sound: "default",
+                    },
+                },
+            };
+            if (collapseKey) {
+                apns.headers = { "apns-collapse-id": collapseKey };
+            }
 
             const message = {
                 tokens: tokens,
@@ -248,24 +279,11 @@ export const FirebaseService = {
                     click_action: "FLUTTER_NOTIFICATION_CLICK",
                     sound: "default",
                     status: "done",
-                    screen: value ? String(value) : "",
+                    screen: screenValue,
                 },
 
-                android: {
-                    priority: "high",
-                    notification: {
-                        sound: "default",
-                    },
-                },
-
-                apns: {
-                    payload: {
-                        aps: {
-                            contentAvailable: true,
-                            sound: "default",
-                        },
-                    },
-                },
+                android,
+                apns,
             };
 
             const response = await sendMulticast(message);

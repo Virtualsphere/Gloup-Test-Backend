@@ -5,18 +5,11 @@ import { authentications } from "../../core/utils/jwt.js";
 import { NodeMailerfunction } from "../../core/utils/nodemailer.js";
 import { messagingFunction } from "../../core/utils/msg91.js";
 import { userDbController } from "../../core/database/Controller/userDbController.js";
-import admin from "firebase-admin";
-import { createRequire } from "module";
-// const require = createRequire(import.meta.url);
-// const firebaseAdmin = admin.initializeApp({
-//     credential: admin.credential.cert(require("../../../config/firebase.json")),
-// });
-
-import { FirebaseService } from "../../core/utils/notifier.js";
-var CryptoJS = require("crypto-js");
-import dotenv from "dotenv";
+import {
+    persistNormalizedUserToken,
+} from "../../core/utils/fcmTokenService.js";
+import { sendPushNotification } from "../../core/utils/pushNotificationService.js";
 import cron from 'node-cron';
-dotenv.config();
 
 
 
@@ -98,28 +91,26 @@ export class CronHelper {
 
                 if (todayorders.length === 0) return;
 
-                const tokenArray = [];
-                const store = todayorders[0].store;
-
                 for (const order of todayorders) {
-                    if (!order.device_id) continue;
+                    if (!order.device_id || !order.user_id) continue;
 
-                    let new_array = Array.isArray(order.device_id)
-                        ? order.device_id
-                        : JSON.parse(order.device_id);
+                    const token = await persistNormalizedUserToken(
+                        order.user_id,
+                        order.device_id
+                    );
+                    if (!token) continue;
 
-                    for (const device_id of new_array) {
-                        tokenArray.push(device_id);
-                    }
+                    const storeName = order.name || "your salon";
+
+                    await sendPushNotification({
+                        dedupeKey: `cron:appointment:${datelimit}:${order.user_id}`,
+                        recipients: [{ token, user_id: order.user_id }],
+                        title: "Hey You Have an Appointment Today",
+                        body: `Your Booking with ${storeName} has been confirmed`,
+                        collapseKey: `cron_${datelimit}_${order.user_id}`,
+                        persistLogs: false,
+                    });
                 }
-
-                const notify = {
-                    token: tokenArray,
-                    eventTitle: "Hey You Have an Appointment Today",
-                    eventDescription: `Your Booking with ${store.name} has been confirmed`,
-                };
-
-                await FirebaseService.notifyOrderStatus(notify);
 
             } catch (error) {
                 console.error("Error in cron job:", error);

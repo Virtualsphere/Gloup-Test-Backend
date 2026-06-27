@@ -51,6 +51,30 @@ export function getLatestFcmToken(deviceField) {
     return tokens.length ? tokens[tokens.length - 1] : null;
 }
 
+/** Keep only the latest token from a stored device_id / deviceId field. */
+export function normalizeStoredTokens(deviceField) {
+    const latest = getLatestFcmToken(deviceField);
+    return latest ? [latest] : [];
+}
+
+export async function persistNormalizedUserToken(userId, deviceField) {
+    const before = extractFcmTokens(deviceField);
+    const normalized = normalizeStoredTokens(deviceField);
+    if (before.length > 1 && normalized.length === 1) {
+        await userDbController.auth.addDeviceId(normalized, userId);
+    }
+    return normalized[0] || null;
+}
+
+export async function persistNormalizedPartnerToken(partnerId, deviceField) {
+    const before = extractFcmTokens(deviceField);
+    const normalized = normalizeStoredTokens(deviceField);
+    if (before.length > 1 && normalized.length === 1) {
+        await partnerDbController.auth.addDeviceId(normalized, partnerId);
+    }
+    return normalized[0] || null;
+}
+
 /** Dedupe by token string; keep last metadata object per token. */
 export function dedupeTokenObjects(tokenObjects) {
     const map = new Map();
@@ -142,6 +166,8 @@ export async function deliverMulticastPush({
     title,
     description,
     persistLogs = true,
+    collapseKey,
+    screen,
 }) {
     if (!tokenObjects?.length) {
         return {
@@ -177,11 +203,16 @@ export async function deliverMulticastPush({
         const chunk = tokenObjects.slice(i, i + chunkSize);
         const tokenList = chunk.map((obj) => obj.token);
 
-        const response = await FirebaseService.notifyOrderStatus({
-            token: tokenList,
-            eventTitle: title,
-            eventDescription: description,
-        });
+        const response = await FirebaseService.notifyOrderStatus(
+            {
+                token: tokenList,
+                eventTitle: title,
+                eventDescription: description,
+                collapseKey,
+                screen,
+            },
+            screen
+        );
 
         if (!response) {
             totalFailure += chunk.length;

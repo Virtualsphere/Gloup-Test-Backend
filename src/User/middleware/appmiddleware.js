@@ -11,7 +11,7 @@ var CryptoJS = require("crypto-js");
 import dotenv from "dotenv";
 import { addfavourites, deletereview, getwalletamount, initiaterefund, topsaloons } from "../controller/userappcontroller.js";
 import { connection } from "../../core/database/connection.js";
-import { FirebaseService } from "../../core/utils/notifier.js";
+import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
 import axios from "axios";
 import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
@@ -1282,47 +1282,21 @@ userappmiddleware.user = {
             const appointment = await userDbController.app.getbooking_2(razorpay_order_id, user.id);
             if (!appointment) throw Error.SomethingWentWrong("Appointment not found");
 
+            if (
+                appointment.payment_status === "success" ||
+                appointment.payment_status === "sucssess"
+            ) {
+                return {
+                    success: true,
+                    message: "Payment successfully verified and order confirmed",
+                };
+            }
+
             transaction = await connection.transaction();
 
             await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature);
 
-            // Trigger notifications
-            const store = await userDbController.app.getstore(appointment.store_id);
-            const deviceToken = await userDbController.app.getdeviceId(user.id);
-
-            if (deviceToken && deviceToken.device_id) {
-                let tokenArray;
-                try {
-                    tokenArray = Array.isArray(deviceToken.device_id) ? deviceToken.device_id : JSON.parse(deviceToken.device_id);
-                } catch (e) {
-                    tokenArray = [deviceToken.device_id];
-                }
-                const notify = {
-                    token: tokenArray,
-                    eventTitle: `Order Confirmed`,
-                    eventDescription: `Your Booking with ${store.name} has been confirmed`,
-                };
-                await userDbController.app.addnotificationlogs(notify, user.id, store);
-                await FirebaseService.notifyOrderStatus(notify);
-            }
-
-            // Partner notification
-            const partnerDevice = await userDbController.app.getdeviceIdbypartner(appointment.store_id);
-            if (partnerDevice && partnerDevice.deviceId) {
-                let partnerTokenArray;
-                try {
-                    partnerTokenArray = Array.isArray(partnerDevice.deviceId) ? partnerDevice.deviceId : JSON.parse(partnerDevice.deviceId);
-                } catch (e) {
-                    partnerTokenArray = [partnerDevice.deviceId];
-                }
-                const notify_p = {
-                    token: partnerTokenArray,
-                    eventTitle: `New Booking`,
-                    eventDescription: `You have received a new booking from ${user.firstname}`,
-                };
-                await userDbController.app.addnotificationlogspartner(notify_p, appointment.id, user, store);
-                await FirebaseService.notifyOrderStatus(notify_p);
-            }
+            await sendBookingConfirmedNotifications(appointment);
 
             await transaction.commit();
 
@@ -1486,79 +1460,34 @@ userappmiddleware.user = {
     paymentsucssess: async ({ body, user }) => {
         console.log("🚀 ~ paymentsucssess: ~ body:", body)
         try {
-            // Validate Razorpay signature
             const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = body;
-            //            const generated_signature = crypto.createHmac('sha256', config.payment.secret)
-            //                .update(razorpay_order_id + '|' + razorpay_payment_id)
-            //                .digest('hex');
 
-            //            if (generated_signature !== razorpay_signature) {
-            //                throw Error.SomethingWentWrong("Invalid payment signature");
-            //            }
-            // Update booking status in DB
+            const getbooking = await userDbController.app.getbooking_2(razorpay_order_id, user.id);
+            if (!getbooking) {
+                throw Error.SomethingWentWrong("Appointment not found");
+            }
+
+            if (
+                getbooking.payment_status === "success" ||
+                getbooking.payment_status === "sucssess"
+            ) {
+                return "payment sucssessfull";
+            }
+
             const response = await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature);
             console.log("🚀 ~ response:", response)
-
-            // Get booking details
-            const getbooking = await userDbController.app.getbooking_2(razorpay_order_id, user.id);
-            console.log("🚀 ~ getbooking:", getbooking)
 
             if (!response) {
                 throw Error.SomethingWentWrong("could not update booking")
             }
 
-            // Send notification to user
             const getdata = await userDbController.app.getordredetails(razorpay_order_id);
             console.log("🚀 ~ getdata:", getdata)
 
-            // Get store details
-            const store = await userDbController.app.getstore(getdata.store_id)
+            await userDbController.app.addwalletamount(getdata.store_id, getdata.amount);
 
-            // Get user's device token
-            const gettoken = await userDbController.app.getdeviceId(user.id);
+            await sendBookingConfirmedNotifications(getdata);
 
-            const token = gettoken.device_id;
-            // Parse token to array if necessary
-            const tokenArray = Array.isArray(token) ? token : JSON.parse(token);
-
-            // Prepare notification payload
-            const notify = {
-                token: tokenArray,
-                eventTitle: `Order Confirmed`,
-                eventDescription: `Your Booking with ${store.name} has been confirmed`,
-            };
-            // Log notification in DB
-            const addnotificationlogs = await userDbController.app.addnotificationlogs(notify, user.id, store);
-            // Send notification via Firebase
-            const res = await FirebaseService.notifyOrderStatus(notify);
-
-            // Partner notification 
-
-            // Get partner's device token
-            const addwallet = await userDbController.app.addwalletamount(getdata.store_id, getdata.amount);
-
-            // Get partner's device token
-            const getdeviceId = await userDbController.app.getdeviceIdbypartner(getdata.store_id);
-
-            const token_1 = getdeviceId.deviceId;
-
-            // Parse token to array if necessary
-            const tokenArr_1 = Array.isArray(token_1) ? token_1 : JSON.parse(token_1);
-
-            // Get user details
-            const getuser = await userDbController.app.getuser(body, user.id);
-
-            // Prepare notification payload for partner
-            const notify_1 = {
-                token: tokenArr_1,
-                eventTitle: `Order Confirmed`,
-                eventDescription: `Your Got a new Booking from ${getuser.firstname} ${getuser.lastname}`,
-            };
-            // Log notification in DB for partner
-            const addnotificationlogs_1 = await userDbController.app.addnotificationlogspartner(notify_1, getdata.id, user, store);
-            // Send notification via Firebase to partner
-            const res_1 = await FirebaseService.notifyOrderStatus(notify_1);
-            // Return success message
             return "payment sucssessfull"
         } catch (error) {
             ////console.log("🚀 ~ paymentsucssess: ~ error:", error)

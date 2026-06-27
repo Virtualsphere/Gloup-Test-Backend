@@ -1,7 +1,7 @@
 import crypto from "crypto";
 import Razorpay from "razorpay";
 import { userDbController } from "../../core/database/Controller/userDbController.js";
-import { FirebaseService } from "../../core/utils/notifier.js";
+import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -133,7 +133,7 @@ async function handlePaymentCaptured(payload) {
 
         // ─── Send notifications (best-effort) ──────────────────────────
         try {
-            await sendBookingNotifications(appointment);
+            await sendBookingConfirmedNotifications(appointment);
         } catch (notifyError) {
             console.error(`[Webhook] Notification error (non-fatal):`, notifyError);
         }
@@ -174,65 +174,5 @@ async function handlePaymentFailed(payload) {
         }
     } catch (error) {
         console.error("[Webhook] Error handling payment.failed:", error);
-    }
-}
-
-/**
- * Send push notifications for a confirmed booking.
- * This mirrors the logic in paymentsucssess / paymentsuccessV2.
- */
-async function sendBookingNotifications(appointment) {
-    // ─── User notification ──────────────────────────────────────────
-    const store = await userDbController.app.getstore(appointment.store_id);
-    if (!store) {
-        console.warn(`[Webhook] Store ${appointment.store_id} not found, skipping notifications`);
-        return;
-    }
-
-    const userDevice = await userDbController.app.getdeviceId(appointment.user_id);
-    if (userDevice && userDevice.device_id) {
-        let tokenArray;
-        try {
-            tokenArray = Array.isArray(userDevice.device_id)
-                ? userDevice.device_id
-                : JSON.parse(userDevice.device_id);
-        } catch {
-            tokenArray = [userDevice.device_id];
-        }
-
-        const userNotify = {
-            token: tokenArray,
-            eventTitle: "Order Confirmed",
-            eventDescription: `Your Booking with ${store.name} has been confirmed`,
-        };
-
-        await userDbController.app.addnotificationlogs(userNotify, appointment.user_id, store);
-        await FirebaseService.notifyOrderStatus(userNotify);
-        console.log(`[Webhook] User ${appointment.user_id} notified`);
-    }
-
-    // ─── Partner notification ───────────────────────────────────────
-    const partnerDevice = await userDbController.app.getdeviceIdbypartner(appointment.store_id);
-    if (partnerDevice && partnerDevice.deviceId) {
-        let partnerTokenArray;
-        try {
-            partnerTokenArray = Array.isArray(partnerDevice.deviceId)
-                ? partnerDevice.deviceId
-                : JSON.parse(partnerDevice.deviceId);
-        } catch {
-            partnerTokenArray = [partnerDevice.deviceId];
-        }
-
-        const user = await userDbController.app.getuser(null, appointment.user_id);
-
-        const partnerNotify = {
-            token: partnerTokenArray,
-            eventTitle: "New Booking",
-            eventDescription: `You have received a new booking from ${user?.firstname || "a customer"}`,
-        };
-
-        await userDbController.app.addnotificationlogspartner(partnerNotify, appointment.id, user, store);
-        await FirebaseService.notifyOrderStatus(partnerNotify);
-        console.log(`[Webhook] Partner (store ${appointment.store_id}) notified`);
     }
 }

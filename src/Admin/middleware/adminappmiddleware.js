@@ -11,10 +11,12 @@ import { userDbController } from "../../core/database/Controller/userDbControlle
 import { addbanner, addcategory, deletecategory, getallcategory, getallcoupons, getallsubscription, getBookings, getBookingsDetails, getrefundrequests, updateuser, getBookingsDetailsById, downloadBookingPDF, getallpartner } from "../controller/adminappcontroller.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
 import {
-    deliverMulticastPush,
-    extractFcmTokens,
     getLatestFcmToken,
 } from "../../core/utils/fcmTokenService.js";
+import {
+    hashNotificationContent,
+    sendPushNotification,
+} from "../../core/utils/pushNotificationService.js";
 import { admin } from "../../core/database/models/Admin.js";
 import Razorpay from "razorpay";
 import { uploadToS3, S3upload } from "../../core/utils/s3/s3Upload.js";
@@ -203,12 +205,15 @@ Adminappmiddleware.app = {
             /* ------------------------------------------
                Helper: Send Firebase Notification
             -------------------------------------------*/
-            const sendNotification = async (tokenObjects) => {
+            const sendNotification = async (tokenObjects, notificationId) => {
                 if (!tokenObjects.length) return;
-                await deliverMulticastPush({
-                    tokenObjects,
+                await sendPushNotification({
+                    dedupeKey: `admin:${notificationId}`,
+                    recipients: tokenObjects,
                     title,
-                    description,
+                    body: description,
+                    collapseKey: `admin_${notificationId}`,
+                    persistLogs: true,
                 });
             };
             /* ------------------------------------------
@@ -301,7 +306,7 @@ Adminappmiddleware.app = {
 
                 tokenArray = Array.from(uniqueTokensMap.values());
 
-                await sendNotification(tokenArray);
+                await sendNotification(tokenArray, notificationId);
 
                  /* ------------------------------------------
                 STEP 4: Save Logs
@@ -369,7 +374,7 @@ Adminappmiddleware.app = {
                     });
                 });
 
-                await sendNotification(tokenArray);
+                await sendNotification(tokenArray, notificationId);
 
                 await userDbController.app.addnotificationlogs_1(userLogs);
 
@@ -502,12 +507,17 @@ Adminappmiddleware.app = {
 
             const pushResult =
                 tokenObjects.length > 0
-                    ? await deliverMulticastPush({
-                          tokenObjects,
+                    ? await sendPushNotification({
+                          dedupeKey: `admin:${notificationId}`,
+                          rapidDedupeKey: `admin:rapid:${recipientType}:${recipientId}:${hashNotificationContent(trimmedTitle, trimmedDescription)}`,
+                          recipients: tokenObjects,
                           title: trimmedTitle,
-                          description: trimmedDescription,
+                          body: trimmedDescription,
+                          collapseKey: `admin_${notificationId}`,
+                          persistLogs: true,
                       })
                     : {
+                          skipped: false,
                           attempted: 0,
                           successCount: 0,
                           failureCount: 0,
