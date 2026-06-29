@@ -258,7 +258,6 @@ export const FirebaseService = {
             const apns = {
                 payload: {
                     aps: {
-                        contentAvailable: true,
                         sound: "default",
                     },
                 },

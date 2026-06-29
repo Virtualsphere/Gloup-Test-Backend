@@ -26,14 +26,30 @@ export function isPrunableFcmError(errorCode) {
  */
 export function extractFcmTokens(deviceField) {
     if (!deviceField) return [];
-    try {
-        const tokens = Array.isArray(deviceField)
-            ? deviceField
-            : JSON.parse(deviceField);
-        return tokens.filter(Boolean);
-    } catch {
-        return [];
+
+    if (Array.isArray(deviceField)) {
+        return deviceField.map((t) => String(t).trim()).filter(Boolean);
     }
+
+    if (typeof deviceField === "string") {
+        const trimmed = deviceField.trim();
+        if (!trimmed) return [];
+
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (Array.isArray(parsed)) {
+                return parsed.map((t) => String(t).trim()).filter(Boolean);
+            }
+            if (typeof parsed === "string" && parsed) {
+                return [parsed.trim()];
+            }
+        } catch {
+            // Stored as a raw token string (not JSON)
+            return [trimmed];
+        }
+    }
+
+    return [];
 }
 
 /**
@@ -100,6 +116,23 @@ export function latestTokenOnlyPerRecipient(tokenObjects) {
         byRecipient.set(key, obj);
     }
     return Array.from(byRecipient.values());
+}
+
+/**
+ * One FCM token string → one push (same phone may appear as user + partner).
+ */
+export function uniqueTokenOnly(tokenObjects) {
+    const seen = new Set();
+    const unique = [];
+
+    for (const obj of tokenObjects) {
+        const token = obj?.token ? String(obj.token).trim() : "";
+        if (!token || seen.has(token)) continue;
+        seen.add(token);
+        unique.push({ ...obj, token });
+    }
+
+    return unique;
 }
 
 /**
@@ -179,8 +212,8 @@ export async function deliverMulticastPush({
         };
     }
 
-    tokenObjects = latestTokenOnlyPerRecipient(
-        dedupeTokenObjects(tokenObjects)
+    tokenObjects = uniqueTokenOnly(
+        latestTokenOnlyPerRecipient(dedupeTokenObjects(tokenObjects))
     );
 
     if (!tokenObjects.length) {

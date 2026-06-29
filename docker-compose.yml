@@ -53,6 +53,7 @@ services:
       GCS_PROJECT_ID: project-981a5f33-4fa3-4d79-ab5
       GCS_BUCKET: gloup-images
       GCS_BASE_URL: https://storage.googleapis.com/gloup-images
+      REDIS_URL: redis://gloup-redis:6379
 
     dns:
       - 8.8.8.8

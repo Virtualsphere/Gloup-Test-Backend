@@ -209,6 +209,7 @@ Adminappmiddleware.app = {
                 if (!tokenObjects.length) return;
                 await sendPushNotification({
                     dedupeKey: `admin:${notificationId}`,
+                    rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}`,
                     recipients: tokenObjects,
                     title,
                     body: description,

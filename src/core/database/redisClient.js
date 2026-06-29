@@ -1,8 +1,10 @@
 import { createClient } from 'redis';
 
-const redisClient = createClient({
-    url: 'redis://gloup-redis:6379' // Points to the redis container in docker-compose
-});
+const redisUrl =
+    process.env.REDIS_URL ||
+    `redis://${process.env.REDIS_HOST || "gloup-redis"}:6379`;
+
+const redisClient = createClient({ url: redisUrl });
 
 redisClient.on('error', err => console.error('Redis Client Error', err));
 redisClient.on('connect', () => console.log('Redis Client Connected'));

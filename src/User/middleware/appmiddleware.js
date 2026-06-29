@@ -1294,9 +1294,15 @@ userappmiddleware.user = {
 
             transaction = await connection.transaction();
 
-            await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature);
+            const rowsUpdated = await userDbController.app.updatebooking(
+                razorpay_order_id,
+                razorpay_payment_id,
+                razorpay_signature
+            );
 
-            await sendBookingConfirmedNotifications(appointment);
+            if (rowsUpdated) {
+                await sendBookingConfirmedNotifications(appointment);
+            }
 
             await transaction.commit();
 
@@ -1478,7 +1484,7 @@ userappmiddleware.user = {
             console.log("🚀 ~ response:", response)
 
             if (!response) {
-                throw Error.SomethingWentWrong("could not update booking")
+                return "payment sucssessfull";
             }
 
             const getdata = await userDbController.app.getordredetails(razorpay_order_id);

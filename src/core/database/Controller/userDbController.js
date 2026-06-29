@@ -1934,7 +1934,10 @@ WHERE S.status = 'active'
         razorpay_signature: razorpaysignature || null
       }, {
         where: {
-          razorpay_id: id
+          razorpay_id: id,
+          payment_status: {
+            [Op.notIn]: ["success", "sucssess"],
+          },
         }
       })
       console.log(rowsAffected);

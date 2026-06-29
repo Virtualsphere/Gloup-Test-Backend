@@ -45,6 +45,7 @@ async function addPartnerBookingLogIfNew(
 
 /**
  * Send booking-confirmed push + in-app logs once per appointment (user + partner).
+ * Uses a Set so the same FCM token never receives more than one push per booking.
  */
 export async function sendBookingConfirmedNotifications(appointment) {
     const store = await userDbController.app.getstore(appointment.store_id);
@@ -56,6 +57,7 @@ export async function sendBookingConfirmedNotifications(appointment) {
     }
 
     const appointmentId = appointment.id;
+    const tokensSentThisBooking = new Set();
 
     const userDevice = await userDbController.app.getdeviceId(
         appointment.user_id
@@ -66,7 +68,9 @@ export async function sendBookingConfirmedNotifications(appointment) {
             userDevice.device_id
         );
 
-        if (token) {
+        if (token && !tokensSentThisBooking.has(token)) {
+            tokensSentThisBooking.add(token);
+
             const userNotify = {
                 token: [token],
                 eventTitle: "Order Confirmed",
@@ -100,7 +104,9 @@ export async function sendBookingConfirmedNotifications(appointment) {
             partnerDevice.deviceId
         );
 
-        if (token) {
+        if (token && !tokensSentThisBooking.has(token)) {
+            tokensSentThisBooking.add(token);
+
             const user = await userDbController.app.getuser(
                 null,
                 appointment.user_id

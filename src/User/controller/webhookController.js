@@ -118,8 +118,20 @@ async function handlePaymentCaptured(payload) {
             return;
         }
 
-        // ─── Update appointment to booked ───────────────────────────────
-        await userDbController.app.updatebooking(razorpayOrderId, razorpayPaymentId, null);
+        // ─── Update appointment to booked (atomic — only first caller wins) ─
+        const rowsUpdated = await userDbController.app.updatebooking(
+            razorpayOrderId,
+            razorpayPaymentId,
+            null
+        );
+
+        if (!rowsUpdated) {
+            console.log(
+                `[Webhook] Appointment ${appointment.id} already processed by another handler, skipping`
+            );
+            return;
+        }
+
         console.log(`[Webhook] Appointment ${appointment.id} updated to booked/success`);
 
         // ─── Credit store wallet ────────────────────────────────────────
