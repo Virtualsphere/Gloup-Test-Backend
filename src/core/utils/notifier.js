@@ -2,6 +2,7 @@ import admin from "firebase-admin";
 import { createRequire } from "module";
 import { getFcmAccessTokenViaFetch } from "./fcmOAuth.js";
 import { sendEachForMulticastViaHttpV1 } from "./fcmHttpV1.js";
+import { logPushDebug, maskToken } from "./pushDebug.js";
 
 const require = createRequire(import.meta.url);
 
@@ -240,6 +241,14 @@ export const FirebaseService = {
                 ? String(body.collapseKey).slice(0, 64)
                 : undefined;
 
+            logPushDebug(body.debugTraceId, "fcm_send", {
+                tokenCount: tokens.length,
+                tokens,
+                notificationOnly: Boolean(body.notificationOnly),
+                collapseKey,
+                title: body.eventTitle?.slice(0, 80),
+            });
+
             const androidNotification = {
                 sound: "default",
             };
@@ -274,16 +283,16 @@ export const FirebaseService = {
                     body: body.eventDescription || "",
                 },
 
-                data: {
-                    click_action: "FLUTTER_NOTIFICATION_CLICK",
-                    sound: "default",
-                    status: "done",
-                    screen: screenValue,
-                },
-
                 android,
                 apns,
             };
+
+            if (!body.notificationOnly) {
+                message.data = {
+                    click_action: "FLUTTER_NOTIFICATION_CLICK",
+                    screen: screenValue,
+                };
+            }
 
             const response = await sendMulticast(message);
 

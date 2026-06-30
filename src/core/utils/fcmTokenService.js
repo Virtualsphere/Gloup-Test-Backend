@@ -2,6 +2,7 @@ import { adminDbController } from "../database/Controller/AdminDbController.js";
 import { userDbController } from "../database/Controller/userDbController.js";
 import { partnerDbController } from "../database/Controller/partnerDbController.js";
 import { FirebaseService } from "./notifier.js";
+import { logPushDebug } from "./pushDebug.js";
 
 /** FCM error codes that mean the token should be removed from storage */
 export const FCM_PRUNABLE_ERRORS = [
@@ -201,6 +202,8 @@ export async function deliverMulticastPush({
     persistLogs = true,
     collapseKey,
     screen,
+    notificationOnly = false,
+    debugTraceId,
 }) {
     if (!tokenObjects?.length) {
         return {
@@ -232,9 +235,27 @@ export async function deliverMulticastPush({
     const allFailedForPrune = [];
     const chunkSize = 500;
 
+    const totalChunks = Math.ceil(tokenObjects.length / chunkSize);
+
+    logPushDebug(debugTraceId, "multicast_prepare", {
+        uniqueTokenCount: tokenObjects.length,
+        chunkSize,
+        totalChunks,
+        notificationOnly,
+        collapseKey,
+    });
+
     for (let i = 0; i < tokenObjects.length; i += chunkSize) {
-        const chunk = tokenObjects.slice(i, i + chunkSize);
+        const chunkIndex = Math.floor(i / chunkSize) + 1;
+        const chunk = uniqueTokenOnly(tokenObjects.slice(i, i + chunkSize));
         const tokenList = chunk.map((obj) => obj.token);
+
+        logPushDebug(debugTraceId, "multicast_chunk", {
+            chunkIndex,
+            totalChunks,
+            tokensInChunk: tokenList.length,
+            tokens: tokenList,
+        });
 
         const response = await FirebaseService.notifyOrderStatus(
             {
@@ -243,14 +264,26 @@ export async function deliverMulticastPush({
                 eventDescription: description,
                 collapseKey,
                 screen,
+                notificationOnly,
+                debugTraceId,
             },
             screen
         );
 
         if (!response) {
+            logPushDebug(debugTraceId, "multicast_chunk_failed", {
+                chunkIndex,
+                reason: "null_response",
+            });
             totalFailure += chunk.length;
             continue;
         }
+
+        logPushDebug(debugTraceId, "multicast_chunk_result", {
+            chunkIndex,
+            successCount: response.successCount || 0,
+            failureCount: response.failureCount || 0,
+        });
 
         totalSuccess += response.successCount || 0;
         totalFailure += response.failureCount || 0;

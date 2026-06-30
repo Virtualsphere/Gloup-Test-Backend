@@ -6,6 +6,7 @@ import {
     latestTokenOnlyPerRecipient,
     uniqueTokenOnly,
 } from "./fcmTokenService.js";
+import { logPushDebug, maskToken, summarizeRecipients } from "./pushDebug.js";
 
 const DEFAULT_DEDUPE_TTL_SECONDS = 86400;
 const RAPID_DEDUPE_TTL_SECONDS = 60;
@@ -127,7 +128,11 @@ async function acquireTokenPushLock(token, title, body, collapseKey) {
             NX: true,
             EX: TOKEN_DEDUPE_TTL_SECONDS,
         });
-        return result === "OK";
+        if (result !== "OK") {
+            inMemoryDedupe.delete(key);
+            return false;
+        }
+        return true;
     } catch {
         return true;
     }
@@ -160,8 +165,22 @@ export async function sendPushNotification({
     screen,
     collapseKey,
     persistLogs = true,
+    notificationOnly = false,
+    debugTraceId,
+    debugContext,
 }) {
+    logPushDebug(debugTraceId, "send_start", {
+        context: debugContext || "unknown",
+        dedupeKey,
+        rapidDedupeKey,
+        title: title?.slice(0, 80),
+        recipientCountIn: recipients?.length || 0,
+        notificationOnly,
+        recipientsIn: summarizeRecipients(recipients),
+    });
+
     if (!recipients?.length) {
+        logPushDebug(debugTraceId, "send_abort", { reason: "no_recipients" });
         return { ...EMPTY_RESULT, skipped: false };
     }
 
@@ -171,7 +190,13 @@ export async function sendPushNotification({
 
     let tokenObjects = normalizeRecipients(recipients);
 
+    logPushDebug(debugTraceId, "after_normalize", {
+        recipientCountOut: tokenObjects.length,
+        recipientsOut: summarizeRecipients(tokenObjects),
+    });
+
     if (!tokenObjects.length) {
+        logPushDebug(debugTraceId, "send_abort", { reason: "no_tokens_after_normalize" });
         return { ...EMPTY_RESULT, skipped: false };
     }
 
@@ -181,7 +206,10 @@ export async function sendPushNotification({
             RAPID_DEDUPE_TTL_SECONDS
         );
         if (!acquired) {
-            console.log(`[Push] Skipped rapid duplicate: ${rapidDedupeKey}`);
+            logPushDebug(debugTraceId, "send_skipped", {
+                reason: "rapid_dedupe",
+                rapidDedupeKey,
+            });
             return {
                 ...EMPTY_RESULT,
                 skipped: true,
@@ -193,7 +221,10 @@ export async function sendPushNotification({
     if (dedupeKey) {
         const acquired = await acquirePushDedupeLock(dedupeKey);
         if (!acquired) {
-            console.log(`[Push] Skipped duplicate event: ${dedupeKey}`);
+            logPushDebug(debugTraceId, "send_skipped", {
+                reason: "already_sent",
+                dedupeKey,
+            });
             return {
                 ...EMPTY_RESULT,
                 skipped: true,
@@ -203,6 +234,7 @@ export async function sendPushNotification({
     }
 
     const allowedRecipients = [];
+    const blockedTokens = [];
     for (const recipient of tokenObjects) {
         const tokenAllowed = await acquireTokenPushLock(
             recipient.token,
@@ -213,21 +245,33 @@ export async function sendPushNotification({
         if (tokenAllowed) {
             allowedRecipients.push(recipient);
         } else {
-            console.log(
-                `[Push] Skipped duplicate token within ${TOKEN_DEDUPE_TTL_SECONDS}s: ${hashToken(recipient.token)}`
-            );
+            blockedTokens.push(maskToken(recipient.token));
         }
+    }
+
+    if (blockedTokens.length) {
+        logPushDebug(debugTraceId, "token_lock_blocked", {
+            blockedCount: blockedTokens.length,
+            blockedTokens,
+        });
     }
 
     tokenObjects = allowedRecipients;
 
     if (!tokenObjects.length) {
+        logPushDebug(debugTraceId, "send_skipped", { reason: "token_dedupe" });
         return {
             ...EMPTY_RESULT,
             skipped: true,
             skipReason: "token_dedupe",
         };
     }
+
+    logPushDebug(debugTraceId, "fcm_dispatch", {
+        fcmSendCount: tokenObjects.length,
+        collapseKey: effectiveCollapseKey,
+        tokens: tokenObjects.map((r) => r.token),
+    });
 
     try {
         const result = await deliverMulticastPush({
@@ -237,6 +281,17 @@ export async function sendPushNotification({
             persistLogs,
             collapseKey: effectiveCollapseKey,
             screen,
+            notificationOnly,
+            debugTraceId,
+        });
+
+        logPushDebug(debugTraceId, "send_complete", {
+            skipped: false,
+            attempted: result.attempted,
+            successCount: result.successCount,
+            failureCount: result.failureCount,
+            prunedInvalidTokens: result.prunedInvalidTokens,
+            failureReasons: result.failureReasons,
         });
 
         return {
@@ -244,6 +299,9 @@ export async function sendPushNotification({
             ...result,
         };
     } catch (error) {
+        logPushDebug(debugTraceId, "send_error", {
+            message: error.message,
+        });
         if (dedupeKey) {
             await releasePushDedupeLock(dedupeKey);
         }

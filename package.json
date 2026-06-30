@@ -11,6 +11,7 @@
         "start:host": "node app.js",
         "infra:up": "docker compose up -d db redis",
         "infra:down": "docker compose stop db redis",
+        "fcm:reset-test-tokens": "node scripts/reset-fcm-tokens-for-test.mjs",
         "deploy": "pm2 start app.js --name 'GloUp (3010)'",
         "lint": "eslint . --max-warnings=0",
         "lint:fix": "eslint . --fix",

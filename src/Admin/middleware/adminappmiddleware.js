@@ -12,11 +12,18 @@ import { addbanner, addcategory, deletecategory, getallcategory, getallcoupons, 
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
 import {
     getLatestFcmToken,
+    uniqueTokenOnly,
 } from "../../core/utils/fcmTokenService.js";
 import {
     hashNotificationContent,
     sendPushNotification,
 } from "../../core/utils/pushNotificationService.js";
+import {
+    createPushTraceId,
+    findDuplicateTokens,
+    logPushDebug,
+    summarizeRecipients,
+} from "../../core/utils/pushDebug.js";
 import { admin } from "../../core/database/models/Admin.js";
 import Razorpay from "razorpay";
 import { uploadToS3, S3upload } from "../../core/utils/s3/s3Upload.js";
@@ -205,9 +212,9 @@ Adminappmiddleware.app = {
             /* ------------------------------------------
                Helper: Send Firebase Notification
             -------------------------------------------*/
-            const sendNotification = async (tokenObjects, notificationId) => {
-                if (!tokenObjects.length) return;
-                await sendPushNotification({
+            const sendNotification = async (tokenObjects, notificationId, traceId) => {
+                if (!tokenObjects.length) return null;
+                return sendPushNotification({
                     dedupeKey: `admin:${notificationId}`,
                     rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}`,
                     recipients: tokenObjects,
@@ -215,6 +222,9 @@ Adminappmiddleware.app = {
                     body: description,
                     collapseKey: `admin_${notificationId}`,
                     persistLogs: true,
+                    notificationOnly: true,
+                    debugTraceId: traceId,
+                    debugContext: `admin_broadcast:${sent_to}`,
                 });
             };
             /* ------------------------------------------
@@ -247,12 +257,25 @@ Adminappmiddleware.app = {
                 });
 
                 const notificationId = adminNotification.id;
+                const pushTraceId = createPushTraceId("broadcast");
+
+                logPushDebug(pushTraceId, "broadcast_start", {
+                    notificationId,
+                    sent_to,
+                    notification_type,
+                    title: title?.slice(0, 80),
+                    activeUsersQueried: users.length,
+                    activePartnersQueried: partners.length,
+                });
+
+                const userTokenEntries = [];
+                const partnerTokenEntries = [];
 
                 if (sent_to === "all" || sent_to === "user") {
                     users.forEach(userItem => {
                         const token = getLatestFcmToken(userItem.device_id);
                         if (token) {
-                            tokenArray.push({
+                            userTokenEntries.push({
                                 token,
                                 user_id: userItem?.dataValues?.user_id,
                                 partner_id: null,
@@ -276,7 +299,7 @@ Adminappmiddleware.app = {
                     partners.forEach(partnerItem => {
                         const token = getLatestFcmToken(partnerItem.deviceId);
                         if (token) {
-                            tokenArray.push({
+                            partnerTokenEntries.push({
                                 token,
                                 user_id: null,
                                 partner_id: partnerItem?.dataValues?.store_id,
@@ -296,6 +319,13 @@ Adminappmiddleware.app = {
                     });
                 }
 
+                tokenArray = [...userTokenEntries, ...partnerTokenEntries];
+
+                const crossListDuplicates = findDuplicateTokens(
+                    userTokenEntries,
+                    partnerTokenEntries
+                );
+
                 //Remove Duplicate Tokens
                 const uniqueTokensMap = new Map();
 
@@ -305,9 +335,30 @@ Adminappmiddleware.app = {
                     }
                 });
 
-                tokenArray = Array.from(uniqueTokensMap.values());
+                const beforeUniqueCount = tokenArray.length;
+                tokenArray = uniqueTokenOnly(Array.from(uniqueTokensMap.values()));
 
-                await sendNotification(tokenArray, notificationId);
+                logPushDebug(pushTraceId, "broadcast_tokens_built", {
+                    userTokensWithDevice: userTokenEntries.length,
+                    partnerTokensWithDevice: partnerTokenEntries.length,
+                    crossListDuplicateTokens: crossListDuplicates.length,
+                    crossListDuplicates: summarizeRecipients(crossListDuplicates),
+                    beforeUniqueCount,
+                    afterUniqueCount: tokenArray.length,
+                    finalRecipients: summarizeRecipients(tokenArray),
+                    inAppUserLogsToInsert: userLogs.length,
+                    inAppPartnerLogsToInsert: partnerLogs.length,
+                });
+
+                const pushResult = await sendNotification(
+                    tokenArray,
+                    notificationId,
+                    pushTraceId
+                );
+
+                logPushDebug(pushTraceId, "broadcast_push_finished", {
+                    pushResult: pushResult || { note: "no_tokens_sent" },
+                });
 
                  /* ------------------------------------------
                 STEP 4: Save Logs
@@ -352,6 +403,7 @@ Adminappmiddleware.app = {
                         date: new Date(),
                     });
                 const notificationId = adminNotification.id;
+                const pushTraceId = createPushTraceId("subscription");
 
                 users.forEach((userItem) => {
                     const token = getLatestFcmToken(userItem.device_id);
@@ -375,7 +427,7 @@ Adminappmiddleware.app = {
                     });
                 });
 
-                await sendNotification(tokenArray, notificationId);
+                await sendNotification(tokenArray, notificationId, pushTraceId);
 
                 await userDbController.app.addnotificationlogs_1(userLogs);
 
@@ -472,6 +524,16 @@ Adminappmiddleware.app = {
                 });
 
             const notificationId = adminNotification.id;
+            const pushTraceId = createPushTraceId("targeted");
+
+            logPushDebug(pushTraceId, "targeted_start", {
+                notificationId,
+                recipientType,
+                recipientId,
+                recipientName,
+                tokenCount: tokens.length,
+                tokens,
+            });
 
             if (recipientType === "user") {
                 await userDbController.app.addnotificationlogs_1([
@@ -516,6 +578,9 @@ Adminappmiddleware.app = {
                           body: trimmedDescription,
                           collapseKey: `admin_${notificationId}`,
                           persistLogs: true,
+                          notificationOnly: true,
+                          debugTraceId: pushTraceId,
+                          debugContext: `admin_targeted:${recipientType}`,
                       })
                     : {
                           skipped: false,
@@ -525,6 +590,10 @@ Adminappmiddleware.app = {
                           prunedInvalidTokens: 0,
                           failureReasons: [],
                       };
+
+            logPushDebug(pushTraceId, "targeted_push_finished", {
+                pushResult,
+            });
 
             let message = "In-app notification saved.";
             if (pushResult.attempted === 0) {
