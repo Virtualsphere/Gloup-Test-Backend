@@ -1214,7 +1214,7 @@ userappmiddleware.user = {
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
                 gst: 5,
-                status: paymentStatus === "success" ? "booked" : "booked",
+                status: paymentStatus === "success" ? "booked" : "pending",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
                 created_at: new Date(),
@@ -1245,18 +1245,7 @@ userappmiddleware.user = {
             }
 
 
-            // 6. Add Used Coupon Record
-            if (is_discounted && discount_id) {
-                await userDbController.app.addUsedCoupons(discount_id, user.id);
-            }
-
             await transaction.commit();
-
-            broadcastNewBooking({
-                id: appointment.id,
-                payable_amount: totalWithTaxes,
-                status: appointmentData.status,
-            });
 
             return {
                 order_id: appointment.id,
@@ -1301,6 +1290,25 @@ userappmiddleware.user = {
             );
 
             if (rowsUpdated) {
+                if (appointment.is_discounted && appointment.discount_id) {
+                    const couponUsage = await userDbController.app.getCouponUsageCount1(
+                        { coupon_id: appointment.discount_id },
+                        user.id
+                    );
+                    if (!couponUsage) {
+                        await userDbController.app.addUsedCoupons(
+                            appointment.discount_id,
+                            user.id
+                        );
+                    }
+                }
+
+                broadcastNewBooking({
+                    id: appointment.id,
+                    payable_amount: appointment.amount,
+                    status: "booked",
+                });
+
                 await sendBookingConfirmedNotifications(appointment);
             }
 
@@ -1313,6 +1321,33 @@ userappmiddleware.user = {
         } catch (error) {
             console.error("paymentsuccessV2 ERROR:", error);
             if (transaction) await transaction.rollback();
+            throw error;
+        }
+    },
+
+    cancelPendingOrderV2: async ({ body, user }) => {
+        try {
+            const { order_id } = body;
+
+            if (!order_id) {
+                throw Error.SomethingWentWrong("Order id is required");
+            }
+
+            const released = await userDbController.app.releasePendingAppointment({
+                appointmentId: order_id,
+                userId: user.id,
+            });
+
+            if (!released) {
+                throw Error.SomethingWentWrong("No pending booking found to release");
+            }
+
+            return {
+                success: true,
+                message: "Booking cancelled and slot released",
+            };
+        } catch (error) {
+            console.error("cancelPendingOrderV2 ERROR:", error);
             throw error;
         }
     },

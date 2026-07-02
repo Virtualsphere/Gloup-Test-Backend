@@ -79,8 +79,24 @@ helperfunction.validations = {
 export class CronHelper {
     static initCronJobs() {
         this.scheduleSubscriptionUpdates();
+        this.schedulePendingAppointmentExpiry();
 
         // Add other cron jobs here
+    }
+
+    static schedulePendingAppointmentExpiry() {
+        cron.schedule('*/2 * * * *', async () => {
+            try {
+                const expiredCount = await userDbController.app.expirePendingAppointments();
+                if (expiredCount > 0) {
+                    console.log(`[Cron] Released ${expiredCount} expired pending appointment(s)`);
+                }
+            } catch (error) {
+                console.error("Error in pending appointment expiry cron:", error);
+            }
+        }, {
+            timezone: 'Asia/Kolkata'
+        });
     }
 
     static scheduleSubscriptionUpdates() {

@@ -1818,6 +1818,104 @@ WHERE S.status = 'active'
       throw Error.SomethingWentWrong();
     }
   },
+  releasePendingAppointment: async ({ appointmentId, userId }) => {
+    try {
+      const appointment = await userDbController.Models.appointments.findOne({
+        where: {
+          id: appointmentId,
+          user_id: userId,
+        },
+      });
+
+      if (!appointment) {
+        return null;
+      }
+
+      if (appointment.payment_status !== "pending") {
+        return null;
+      }
+
+      const releasableStatuses = ["pending", "booked"];
+      if (!releasableStatuses.includes(appointment.status)) {
+        return null;
+      }
+
+      await userDbController.Models.appointments.update(
+        {
+          status: "cancelled",
+          payment_status: "failed",
+          updated_at: new Date(),
+        },
+        {
+          where: {
+            id: appointmentId,
+            user_id: userId,
+            payment_status: "pending",
+          },
+        }
+      );
+
+      if (appointment.is_discounted && appointment.discount_id) {
+        await userDbController.Models.UsedCoupons.destroy({
+          where: {
+            coupon_id: appointment.discount_id,
+            user_id: userId,
+          },
+        });
+      }
+
+      return appointment;
+    } catch (error) {
+      throw Error.SomethingWentWrong();
+    }
+  },
+  expirePendingAppointments: async () => {
+    try {
+      const expired = await connection.query(
+        `
+          SELECT id, user_id, discount_id, is_discounted
+          FROM appointments
+          WHERE payment_status = 'pending'
+            AND status IN ('pending', 'booked')
+            AND created_at < NOW() - INTERVAL 5 MINUTE
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      if (!expired.length) {
+        return 0;
+      }
+
+      await connection.query(
+        `
+          UPDATE appointments
+          SET status = 'cancelled',
+              payment_status = 'failed',
+              updated_at = NOW()
+          WHERE payment_status = 'pending'
+            AND status IN ('pending', 'booked')
+            AND created_at < NOW() - INTERVAL 5 MINUTE
+        `,
+        { type: Sequelize.QueryTypes.UPDATE }
+      );
+
+      for (const appointment of expired) {
+        if (appointment.is_discounted && appointment.discount_id) {
+          await userDbController.Models.UsedCoupons.destroy({
+            where: {
+              coupon_id: appointment.discount_id,
+              user_id: appointment.user_id,
+            },
+          });
+        }
+      }
+
+      return expired.length;
+    } catch (error) {
+      console.error("expirePendingAppointments error:", error);
+      throw Error.SomethingWentWrong();
+    }
+  },
   initiaterefund: async (get_order, data, id) => {
     try {
       return await userDbController.Models.refund_requests.create({

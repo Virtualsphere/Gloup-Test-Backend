@@ -134,6 +134,19 @@ async function handlePaymentCaptured(payload) {
 
         console.log(`[Webhook] Appointment ${appointment.id} updated to booked/success`);
 
+        if (appointment.is_discounted && appointment.discount_id) {
+            const couponUsage = await userDbController.app.getCouponUsageCount1(
+                { coupon_id: appointment.discount_id },
+                appointment.user_id
+            );
+            if (!couponUsage) {
+                await userDbController.app.addUsedCoupons(
+                    appointment.discount_id,
+                    appointment.user_id
+                );
+            }
+        }
+
         // ─── Credit store wallet ────────────────────────────────────────
         try {
             await userDbController.app.addwalletamount(appointment.store_id, appointment.amount);
@@ -178,11 +191,11 @@ async function handlePaymentFailed(payload) {
 
         // Only update if still pending
         if (appointment.payment_status === "pending") {
-            await userDbController.Models.appointments.update(
-                { payment_status: "failed", status: "failed" },
-                { where: { razorpay_id: razorpayOrderId } }
-            );
-            console.log(`[Webhook] Appointment ${appointment.id} marked as failed`);
+            await userDbController.app.releasePendingAppointment({
+                appointmentId: appointment.id,
+                userId: appointment.user_id,
+            });
+            console.log(`[Webhook] Appointment ${appointment.id} released after payment failure`);
         }
     } catch (error) {
         console.error("[Webhook] Error handling payment.failed:", error);

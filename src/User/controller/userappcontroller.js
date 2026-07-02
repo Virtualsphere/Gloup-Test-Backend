@@ -1388,3 +1388,19 @@ export const paymentsuccessV2 = async (req, res) => {
     });
   }
 };
+
+export const cancelPendingOrderV2 = async (req, res) => {
+  try {
+    const data = await userappmiddleware.user.cancelPendingOrderV2(req);
+    return res.status(200).json({
+      success: true,
+      message: data.message,
+      data
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
