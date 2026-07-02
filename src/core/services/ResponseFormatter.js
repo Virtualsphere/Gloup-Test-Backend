@@ -617,16 +617,12 @@ export const formatSalonList = ({
 
       // Build address only if at least one field has a value
       let address = null;
-      if (store.addressLine1 || store.area || store.city || store.zipcode) {
+      if (store.area || store.city) {
         const parts = [];
-        if (store.addressLine1) parts.push(store.addressLine1);
         if (store.area) parts.push(store.area);
         if (store.city) parts.push(store.city);
 
         let addressStr = parts.join(", ");
-        if (store.zipcode) {
-          addressStr += ` - ${store.zipcode}`;
-        }
         address = addressStr;
       }
 
@@ -683,16 +679,12 @@ export const formatTopSalons = ({
 
       // Build address only if at least one field has a value
       let address = null;
-      if (store.addressLine1 || store.area || store.city || store.zipcode) {
+      if (store.area || store.city) {
         const parts = [];
-        if (store.addressLine1) parts.push(store.addressLine1);
         if (store.area) parts.push(store.area);
         if (store.city) parts.push(store.city);
 
         let addressStr = parts.join(", ");
-        if (store.zipcode) {
-          addressStr += ` - ${store.zipcode}`;
-        }
         address = addressStr;
       }
 

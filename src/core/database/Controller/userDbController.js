@@ -2447,6 +2447,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     PA.longitude,
     PA.addressLine1,
     PA.city,
+    PA.area,
 
     ${distanceSelect}
 
