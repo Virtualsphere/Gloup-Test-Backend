@@ -1806,7 +1806,11 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
                     WHERE a.slot_id = s.id
                     AND a.store_id = s.store_id
                     AND DATE(a.booking_date) = :selected_date
-                    AND a.status NOT IN ('cancelled')
+                    AND (
+                      a.status IN ('confirmed', 'completed')
+                      OR (a.status = 'booked' AND a.payment_status IN ('success', 'sucssess'))
+                      OR (a.payment_status = 'pending' AND a.created_at >= NOW() - INTERVAL 5 MINUTE)
+                    )
                 ) AS is_booked,
 
                 /* Is Blocked */

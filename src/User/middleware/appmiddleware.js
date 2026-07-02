@@ -1214,7 +1214,7 @@ userappmiddleware.user = {
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
                 gst: 5,
-                status: paymentStatus === "success" ? "booked" : "pending",
+                status: "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
                 created_at: new Date(),

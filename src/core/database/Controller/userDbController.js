@@ -14,6 +14,17 @@ const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages,
 const { Op, Sequelize } = require("sequelize");
 var randomize = require('randomatic');
 
+// Slot is occupied when paid, or unpaid checkout is still within the 5-minute hold.
+// Uses payment_status (not status='pending') so production DB enum needs no migration.
+const SLOT_OCCUPANCY_SQL = `
+  (
+    status IN ('confirmed', 'completed')
+    OR (status = 'booked' AND payment_status IN ('success', 'sucssess'))
+    OR (payment_status = 'pending' AND created_at >= NOW() - INTERVAL 5 MINUTE)
+  )
+`;
+const SLOT_OCCUPANCY_SQL_ALIASED = SLOT_OCCUPANCY_SQL.replace(/\bstatus\b/g, 'a.status').replace(/\bpayment_status\b/g, 'a.payment_status').replace(/\bcreated_at\b/g, 'a.created_at');
+
 const formatDuration = (duration) => {
   if (!duration) return null;
 
@@ -1447,10 +1458,7 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
              LEFT JOIN appointments a ON a.slot_id = s.id 
              AND DATE(a.booking_date) = :date 
              AND a.store_id = :store_id 
-             AND (
-               a.status IN ('booked', 'confirmed', 'completed') 
-               OR (a.status = 'pending' AND a.created_at >= NOW() - INTERVAL 5 MINUTE)
-             )
+             AND ${SLOT_OCCUPANCY_SQL_ALIASED}
              WHERE s.status = 'active' AND s.store_id = :store_id
              GROUP BY s.id, s.from, s.to
              HAVING COUNT(a.id) < :quantity`;
@@ -1467,10 +1475,7 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
              LEFT JOIN appointments a ON a.slot_id = s.id 
              AND DATE(a.booking_date) = :date 
              AND a.store_id = :store_id 
-             AND (
-               a.status IN ('booked', 'confirmed', 'completed') 
-               OR (a.status = 'pending' AND a.created_at >= NOW() - INTERVAL 5 MINUTE)
-             )
+             AND ${SLOT_OCCUPANCY_SQL_ALIASED}
              WHERE s.status = 'active' AND s.store_id = :store_id
              GROUP BY s.id, s.from, s.to
              HAVING COUNT(a.id) >= :quantity`;
@@ -1502,10 +1507,7 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
           FROM appointments
           WHERE store_id = :store_id 
             AND DATE(booking_date) = :date 
-            AND (
-              status IN ('booked', 'confirmed', 'completed') 
-              OR (status = 'pending' AND created_at >= NOW() - INTERVAL 5 MINUTE)
-            )
+            AND ${SLOT_OCCUPANCY_SQL}
           GROUP BY slot_id
         ) sub ON s.id = sub.slot_id
         LEFT JOIN SlotBlockedDates b ON s.id = b.slot_id AND b.blocked_date = :date

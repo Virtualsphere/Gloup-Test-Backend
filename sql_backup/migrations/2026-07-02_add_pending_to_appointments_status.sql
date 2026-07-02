@@ -1,0 +1,10 @@
+-- OPTIONAL migration (not required for the current slot-hold fix).
+--
+-- The app now uses status='booked' + payment_status='pending' for unpaid checkouts,
+-- so this ALTER is only needed if you later want status='pending' in the DB enum.
+--
+-- ALTER TABLE `appointments`
+--   MODIFY COLUMN `status`
+--   ENUM('booked','confirmed','completed','cancelled','refunded','pending')
+--   COLLATE utf8mb4_general_ci
+--   NOT NULL DEFAULT 'booked';
