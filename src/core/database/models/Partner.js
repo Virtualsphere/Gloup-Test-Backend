@@ -91,6 +91,10 @@ Store.init({
     type: DataTypes.STRING,
     allowNull: true
   },
+  whatsapp_number: {
+    type: DataTypes.STRING,
+    allowNull: true
+  },
   wallet_remaining: {
     type: DataTypes.BIGINT,
     defaultValue: 0

@@ -15,7 +15,7 @@ import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotif
 import axios from "axios";
 import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
-
+import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 
 
 const admin = require('firebase-admin');
@@ -1310,6 +1310,7 @@ userappmiddleware.user = {
                 });
 
                 await sendBookingConfirmedNotifications(appointment);
+                await sendBookingConfirmedWhatsApp(appointment.id);
             }
 
             await transaction.commit();
@@ -1528,6 +1529,7 @@ userappmiddleware.user = {
             await userDbController.app.addwalletamount(getdata.store_id, getdata.amount);
 
             await sendBookingConfirmedNotifications(getdata);
+            await sendBookingConfirmedWhatsApp(getdata.id);
 
             return "payment sucssessfull"
         } catch (error) {

@@ -2014,6 +2014,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         wallet_remaining: 0,
         description: data.description || null,
         deviceId: data.deviceId,
+        whatsapp_number: data.whatsapp_number || data.phone || null,
         otp: null,
         otpExpiration: null,
         apple_sub: null
@@ -2246,6 +2247,7 @@ editpartner: async (data, images, docs) => {
         category_id: data.category_id,
         completion_status: data.completion_status,
         status: data.status,
+        whatsapp_number: data.whatsapp_number,
         images: JSON.stringify(newImageFileName),
         docs: JSON.stringify(newDocFileName),
         logo: newLogoFileName,
