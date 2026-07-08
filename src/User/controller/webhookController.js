@@ -2,6 +2,7 @@ import crypto from "crypto";
 import Razorpay from "razorpay";
 import { userDbController } from "../../core/database/Controller/userDbController.js";
 import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
+import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -161,6 +162,12 @@ async function handlePaymentCaptured(payload) {
             await sendBookingConfirmedNotifications(appointment);
         } catch (notifyError) {
             console.error(`[Webhook] Notification error (non-fatal):`, notifyError);
+        }
+
+        try {
+            await sendBookingConfirmedWhatsApp(appointment.id);
+        } catch (whatsappError) {
+            console.error(`[Webhook] WhatsApp notification error (non-fatal):`, whatsappError);
         }
     } catch (error) {
         console.error("[Webhook] Error handling payment.captured:", error);
