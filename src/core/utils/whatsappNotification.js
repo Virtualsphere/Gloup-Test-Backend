@@ -6,6 +6,40 @@ dotenv.config();
 
 const MSG91_BASE_URL = "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/bulk/";
 const INTEGRATED_NUMBER = process.env.MSG91_WHATSAPP_NUMBER || "917538808796";
+const INDIA_COUNTRY_CODE = "91";
+
+function formatIndianMobileNumber(raw) {
+  if (!raw) return null;
+
+  // Strip everything except digits (drops +, spaces, dashes, parens, etc.)
+  let digits = String(raw).replace(/\D/g, "");
+
+  if (!digits) return null;
+
+  // Strip a single leading 0 (common local-format prefix, e.g. "09876543210")
+  if (digits.length === 11 && digits.startsWith("0")) {
+    digits = digits.slice(1);
+  }
+
+  // Already has country code (12 digits, starts with 91) -> validate the rest
+  if (digits.length === 12 && digits.startsWith(INDIA_COUNTRY_CODE)) {
+    const localPart = digits.slice(2);
+    if (/^[6-9]\d{9}$/.test(localPart)) {
+      return digits;
+    }
+    console.warn(`[WhatsApp] Number has country code but invalid local part: "${raw}"`);
+    return null;
+  }
+
+  // Plain 10-digit Indian mobile number (starts 6-9) -> prepend country code
+  if (digits.length === 10 && /^[6-9]\d{9}$/.test(digits)) {
+    return INDIA_COUNTRY_CODE + digits;
+  }
+
+  // Anything else (wrong length, landline, garbled data) — don't guess, just bail
+  console.warn(`[WhatsApp] Could not normalize to a valid Indian mobile number: "${raw}"`);
+  return null;
+}
 
 /**
  * Generic MSG91 WhatsApp template sender
@@ -16,8 +50,10 @@ async function sendWhatsAppTemplate({ templateName, languageCode, namespace, to,
       console.error("[WhatsApp] AUTHKEY not configured, skipping send");
       return null;
     }
-    if (!to) {
-      console.warn(`[WhatsApp] No 'to' number provided for template ${templateName}, skipping`);
+
+    const formattedTo = formatIndianMobileNumber(to);
+    if (!formattedTo) {
+      console.warn(`[WhatsApp] Invalid/missing 'to' number for template ${templateName}, skipping`);
       return null;
     }
 
@@ -36,7 +72,7 @@ async function sendWhatsAppTemplate({ templateName, languageCode, namespace, to,
           namespace: namespace || null,
           to_and_components: [
             {
-              to: [to],
+              to: [formattedTo],
               components,
             },
           ],
@@ -51,7 +87,7 @@ async function sendWhatsAppTemplate({ templateName, languageCode, namespace, to,
       },
     });
 
-    console.log(`[WhatsApp] Sent template "${templateName}" to ${to}`, response.data);
+    console.log(`[WhatsApp] Sent template "${templateName}" to ${formattedTo}`, response.data);
     return response.data;
   } catch (error) {
     console.error(
