@@ -1388,7 +1388,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
     LEFT JOIN User u ON a.user_id = u.id
     LEFT JOIN Stylist sty ON a.profesional_id = sty.id
     WHERE a.store_id = :store_id
-    AND a.payment_status = 'sucssess'
+    AND a.payment_status IN ('success', 'sucssess')
     ORDER BY a.booking_date DESC;`;
 
         const result = await connection.query(sql, {
@@ -2276,12 +2276,26 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         const limit = parseInt(data.limit) || 10;
         const offset = (page - 1) * limit;
 
-        const whereClause = { store_id: storeId };
+        const whereClause = {
+          store_id: storeId,
+          // Paid bookings only (include legacy typo "sucssess")
+          payment_status: { [Op.in]: ["success", "sucssess"] },
+        };
 
-        // Date Filter
+        const startOfToday = Sequelize.literal("CURDATE()");
+        let listMode = null; // upcoming | past | null
+
+        // Date Filter (month/year or exact date)
         if (data.month && data.year) {
-          const start = new Date(data.year, data.month - 1, 1);
-          const end = new Date(data.year, data.month, 0, 23, 59, 59);
+          const start = new Date(Number(data.year), Number(data.month) - 1, 1);
+          const end = new Date(
+            Number(data.year),
+            Number(data.month),
+            0,
+            23,
+            59,
+            59,
+          );
 
           whereClause.booking_date = {
             [Op.between]: [start, end],
@@ -2297,49 +2311,95 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           };
         }
 
-        // Status Filter (Multi Support)
+        // Status / tab Filter (Multi Support)
+        // App tabs often send: upcoming | pending | past | All
         if (data.status && data.status !== "All") {
           const statuses = data.status
             .split(",")
-            .map((s) => s.trim().toLowerCase());
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
 
-          const mappedStatuses = statuses.map((s) => {
-            if (s === "pending") return "booked";
-            if (s === "done") return "completed";
-            return s;
-          });
+          const wantsUpcoming = statuses.some((s) =>
+            ["upcoming", "upcomming", "pending"].includes(s),
+          );
+          const wantsPast = statuses.some((s) => s === "past");
 
-          whereClause.status = { [Op.in]: mappedStatuses };
+          if (wantsUpcoming) {
+            listMode = "upcoming";
+            whereClause.status = { [Op.in]: ["booked", "confirmed"] };
+            // Keep today's + future bookings (old getallbookings used >, which hid today)
+            if (!whereClause.booking_date) {
+              whereClause.booking_date = { [Op.gte]: startOfToday };
+            }
+          } else if (wantsPast) {
+            listMode = "past";
+            whereClause[Op.and] = [
+              ...(whereClause[Op.and] || []),
+              {
+                [Op.or]: [
+                  {
+                    status: {
+                      [Op.in]: ["completed", "cancelled", "refunded"],
+                    },
+                  },
+                  {
+                    status: { [Op.in]: ["booked", "confirmed"] },
+                    booking_date: { [Op.lt]: startOfToday },
+                  },
+                ],
+              },
+            ];
+          } else {
+            const mappedStatuses = statuses.map((s) => {
+              if (s === "done") return "completed";
+              return s;
+            });
+            whereClause.status = { [Op.in]: mappedStatuses };
+          }
         }
 
-        // Search
+        // Search — resolve IDs in SQL so JOIN+LIMIT does not drop bookings
         if (data.search) {
           const searchTerm = `%${data.search}%`;
-
-          whereClause[Op.or] = [
-            { "$User.firstname$": { [Op.like]: searchTerm } },
-            { "$User.lastname$": { [Op.like]: searchTerm } },
+          const searchIds = await connection.query(
+            `
+            SELECT DISTINCT a.id
+            FROM appointments a
+            LEFT JOIN User u ON a.user_id = u.id
+            LEFT JOIN appointment_items ai ON a.id = ai.appointment_id
+            LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+            WHERE a.store_id = :storeId
+              AND a.payment_status IN ('success', 'sucssess')
+              AND (
+                u.firstname LIKE :q
+                OR u.lastname LIKE :q
+                OR ss.service_name LIKE :q
+              )
+            `,
             {
-              "$appointment_items.StoreService.service_name$": {
-                [Op.like]: searchTerm,
-              },
+              replacements: { storeId, q: searchTerm },
+              type: Sequelize.QueryTypes.SELECT,
             },
-          ];
+          );
+          whereClause.id = searchIds.length
+            ? { [Op.in]: searchIds.map((r) => r.id) }
+            : { [Op.in]: [-1] };
         }
 
-        // Gender Filter
+        // Gender Filter (on include, not broken $ nested syntax with separate)
+        const userInclude = {
+          model: User,
+          attributes: ["firstname", "lastname", "gender", "phone"],
+          required: false,
+        };
+
         if (data.gender && data.gender !== "All") {
           const gender = data.gender.toLowerCase();
-
-          if (gender === "unisex") {
-            whereClause["$User.gender$"] = {
-              [Op.in]: ["male", "female"],
-            };
-          } else {
-            whereClause["$User.gender$"] = {
-              [Op.eq]: gender,
-            };
-          }
+          userInclude.required = true;
+          userInclude.where =
+            gender === "unisex"
+              ? { gender: { [Op.in]: ["male", "female"] } }
+              : { gender: { [Op.eq]: gender } };
         }
 
         // Price Range Filter
@@ -2354,9 +2414,9 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           }
         }
 
-        // Simplified Sorting
+        // Sorting — upcoming should be soonest-first
         let sortColumn = "booking_date";
-        let sortDirection = "DESC";
+        let sortDirection = listMode === "upcoming" ? "ASC" : "DESC";
 
         if (data.sort === "lowtohigh") {
           sortColumn = "amount";
@@ -2372,26 +2432,26 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
               : "DESC";
         }
 
+        // separate: true on hasMany so LIMIT applies to appointments, not item rows
         const { count, rows } = await appointments.findAndCountAll({
           where: whereClause,
           limit,
           offset,
           distinct: true,
-          subQuery: false,
+          col: "id",
           order: [[sortColumn, sortDirection]],
           include: [
-            {
-              model: User,
-              attributes: ["firstname", "lastname", "gender", "phone"],
-            },
+            userInclude,
             {
               model: Stylist,
               as: "Stylist",
               attributes: ["name"],
+              required: false,
             },
             {
               model: appointment_items,
               attributes: ["service_amount"],
+              separate: true,
               include: [
                 {
                   model: StoreServices,
@@ -2402,10 +2462,8 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           ],
         });
 
-        // Format Response (NO extra DB queries)
         const bookings = rows.map((booking) => {
           const bookingData = booking.toJSON();
-
           const user = bookingData.User || {};
 
           const services = (bookingData.appointment_items || [])

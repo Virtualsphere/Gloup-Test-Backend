@@ -1252,7 +1252,7 @@ partnerappmiddleware.addstore = {
 
       for (const item of appoinments) {
         if (
-          new Date(item.booking_date).setHours(0, 0, 0, 0) >
+          new Date(item.booking_date).setHours(0, 0, 0, 0) >=
           new Date().setHours(0, 0, 0, 0)
         ) {
           item.status = "upcomming";
