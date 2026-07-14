@@ -17,7 +17,11 @@ import {
 } from "../../../Partner/controller/partnerappcontroller.js";
 import { addcategory } from "../../../Admin/controller/adminappcontroller.js";
 // import { cat } from "shelljs";
-import { formatDate } from "../../schema/formats.js";
+import {
+  formatSlotTime,
+  buildAppointmentDateTime,
+  toIstDatePart,
+} from "../../schema/formats.js";
 import { error } from "shelljs";
 import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
@@ -86,6 +90,16 @@ appointments.belongsTo(Stylist, {
 
 Stylist.hasMany(appointments, {
   foreignKey: "profesional_id",
+});
+
+// appointments → Slots (real appointment time lives on Slots.from / Slots.to)
+appointments.belongsTo(Slots, {
+  foreignKey: "slot_id",
+  as: "Slot",
+});
+
+Slots.hasMany(appointments, {
+  foreignKey: "slot_id",
 });
 
 // category →  service
@@ -2201,8 +2215,17 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
               model: User,
               attributes: ["firstname", "lastname", "gender", "phone"],
             },
+            {
+              model: Slots,
+              as: "Slot",
+              attributes: ["from", "to"],
+              required: false,
+            },
           ],
-          order: [["booking_date", "ASC"]],
+          order: [
+            [Sequelize.col("Slot.from"), "ASC"],
+            ["booking_date", "ASC"],
+          ],
         });
 
         // For each booking, fetch service names via appointment_items → StoreServices
@@ -2229,6 +2252,11 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             }))
             .filter((s) => s.name); // Filter out services without names if any
 
+          const slotFrom = bookingData.Slot?.from ?? null;
+          const slotTo = bookingData.Slot?.to ?? null;
+          const slot_from = formatSlotTime(slotFrom);
+          const slot_to = formatSlotTime(slotTo);
+
           // Extract user details
           const user = bookingData.User || {};
           result.push({
@@ -2236,8 +2264,15 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
               id: bookingData.id,
               store_id: bookingData.store_id,
               user_id: bookingData.user_id,
-              booking_date: bookingData.booking_date,
+              // Combined IST datetime (date + slot start) — avoids midnight UTC → 5:30 AM
+              booking_date: buildAppointmentDateTime(
+                bookingData.booking_date,
+                slotFrom,
+              ),
+              booking_day: toIstDatePart(bookingData.booking_date),
               slot_id: bookingData.slot_id,
+              slot_from,
+              slot_to,
               is_combo: bookingData.is_combo,
               profesional_id: bookingData.profesional_id,
               payment_status: bookingData.payment_status,
@@ -2449,6 +2484,12 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
               required: false,
             },
             {
+              model: Slots,
+              as: "Slot",
+              attributes: ["from", "to"],
+              required: false,
+            },
+            {
               model: appointment_items,
               attributes: ["service_amount"],
               separate: true,
@@ -2465,6 +2506,8 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         const bookings = rows.map((booking) => {
           const bookingData = booking.toJSON();
           const user = bookingData.User || {};
+          const slotFrom = bookingData.Slot?.from ?? null;
+          const slotTo = bookingData.Slot?.to ?? null;
 
           const services = (bookingData.appointment_items || [])
             .map((item) => ({
@@ -2477,8 +2520,14 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             booking: {
               id: bookingData.id,
               store_id: bookingData.store_id,
-              booking_date: formatDate(bookingData.booking_date),
+              booking_date: buildAppointmentDateTime(
+                bookingData.booking_date,
+                slotFrom,
+              ),
+              booking_day: toIstDatePart(bookingData.booking_date),
               slot_id: bookingData.slot_id,
+              slot_from: formatSlotTime(slotFrom),
+              slot_to: formatSlotTime(slotTo),
               is_combo: bookingData.is_combo,
               profesional_id: bookingData.profesional_id,
               payment_status: bookingData.payment_status,
