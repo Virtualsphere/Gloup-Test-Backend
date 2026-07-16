@@ -505,7 +505,26 @@ export const getCustomers = async(req, res) => {
                 res.status(response.status).json(response);
             });
         });
-} 
+}
+
+export const sendMarketingWhatsapp = async (req, res) => {
+    Adminappmiddleware.app.sendMarketingWhatsapp(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
 
 export const getRegisteredStore = async(req, res) => {
     Adminappmiddleware.app.getRegisteredStore(req)

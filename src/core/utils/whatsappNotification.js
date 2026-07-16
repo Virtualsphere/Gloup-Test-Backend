@@ -8,6 +8,11 @@ const MSG91_BASE_URL = "https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-
 const INTEGRATED_NUMBER = process.env.MSG91_WHATSAPP_NUMBER || "917538808796";
 const INDIA_COUNTRY_CODE = "91";
 
+// MSG91 bulk sends can include many "to" numbers per to_and_components entry,
+// but we still chunk requests so one bad/huge sheet can't produce one giant payload
+// and so a single failed batch doesn't take down the whole campaign.
+const MARKETING_BATCH_SIZE = 100;
+
 function formatIndianMobileNumber(raw) {
   if (!raw) return null;
 
@@ -99,10 +104,14 @@ async function sendWhatsAppTemplate({ templateName, languageCode, namespace, to,
   }
 }
 
+// NOTE: value must be the raw text to display — MSG91 does NOT want
+// literal angle brackets around it. (The "<{{param}}>" you see in MSG91's
+// docs is just documentation notation showing where a placeholder goes,
+// not literal characters to send.)
 function textComponent(paramName, value) {
   return {
     type: "text",
-    value: `<${value ?? ""}>`,
+    value: String(value ?? ""),
     parameter_name: paramName,
   };
 }
@@ -226,4 +235,130 @@ export async function sendBookingConfirmedWhatsApp(appointmentId) {
   }
 }
 
-export { sendWhatsAppTemplate, getBookingWhatsAppPayload };
+/* =======================================================================
+   MARKETING BROADCAST (gloup_marketing template)
+   ---------------------------------------------------------------------
+   Sends the same promo (image + service name + offer price) to a list of
+   recipients pulled from the marketing team's Excel sheet, with an
+   optional gender filter applied before sending.
+
+   NOTE: the "gloup_marketing" template (as currently defined in MSG91)
+   has no name/customer placeholder — only header_1 (image),
+   body_service_name and body_offer_price. So this sends the identical
+   message to everyone in the filtered list; the "name" column from the
+   sheet is used only for filtering/logging, not for personalizing the
+   message text. If you later add a body param for the customer's name
+   in the MSG91 template, this function would need to send one
+   to_and_components entry per recipient (with per-recipient components)
+   instead of batching many numbers into a single entry — that's a
+   meaningfully bigger number of API calls, so flag it before doing that.
+   ======================================================================= */
+
+/**
+ * @param {Object} params
+ * @param {{phone: string, name: string|null, gender: string}[]} params.recipients
+ * @param {string} params.serviceName
+ * @param {string|number} params.offerPrice
+ * @param {string} params.imageUrl - publicly accessible image URL for header_1
+ * @returns {Promise<object>} summary of the send
+ */
+export async function sendMarketingBroadcast({ recipients, serviceName, offerPrice, imageUrl }) {
+  if (!process.env.AUTHKEY) {
+    console.error("[WhatsApp] AUTHKEY not configured, skipping marketing send");
+    return {
+      skipped: true,
+      reason: "AUTHKEY not configured",
+      total_recipients_in_sheet: recipients.length,
+      valid_numbers: 0,
+      invalid_numbers: recipients.length,
+      batches_sent: 0,
+      batches_failed: 0,
+    };
+  }
+
+  const validNumbers = [];
+  const invalidNumbers = [];
+
+  recipients.forEach((r) => {
+    const formatted = formatIndianMobileNumber(r.phone);
+    if (formatted) {
+      validNumbers.push(formatted);
+    } else {
+      invalidNumbers.push(r.phone);
+    }
+  });
+
+  // De-dupe in case the sheet has repeated numbers
+  const uniqueNumbers = [...new Set(validNumbers)];
+
+  const components = {
+    header_1: {
+      type: "image",
+      value: imageUrl,
+    },
+    body_service_name: textComponent("service_name", serviceName),
+    body_offer_price: textComponent("offer_price", offerPrice),
+  };
+
+  const batches = [];
+  for (let i = 0; i < uniqueNumbers.length; i += MARKETING_BATCH_SIZE) {
+    batches.push(uniqueNumbers.slice(i, i + MARKETING_BATCH_SIZE));
+  }
+
+  let batchesSent = 0;
+  let batchesFailed = 0;
+  const errors = [];
+
+  for (const batch of batches) {
+    const payload = {
+      integrated_number: INTEGRATED_NUMBER,
+      content_type: "template",
+      payload: {
+        messaging_product: "whatsapp",
+        type: "template",
+        template: {
+          name: "gloup_marketing",
+          language: {
+            code: "en",
+            policy: "deterministic",
+          },
+          namespace: null,
+          to_and_components: [
+            {
+              to: batch,
+              components,
+            },
+          ],
+        },
+      },
+    };
+
+    try {
+      const response = await axios.post(MSG91_BASE_URL, payload, {
+        headers: {
+          "Content-Type": "application/json",
+          authkey: process.env.AUTHKEY,
+        },
+      });
+      batchesSent++;
+      console.log(`[WhatsApp Marketing] Sent batch of ${batch.length} numbers`, response.data);
+    } catch (error) {
+      batchesFailed++;
+      const errData = error?.response?.data || error.message;
+      errors.push({ batch_size: batch.length, error: errData });
+      console.error("[WhatsApp Marketing] Batch failed:", errData);
+    }
+  }
+
+  return {
+    total_recipients_in_sheet: recipients.length,
+    valid_numbers: uniqueNumbers.length,
+    invalid_numbers: invalidNumbers.length,
+    invalid_numbers_sample: invalidNumbers.slice(0, 10),
+    batches_sent: batchesSent,
+    batches_failed: batchesFailed,
+    errors,
+  };
+}
+
+export { sendWhatsAppTemplate, getBookingWhatsAppPayload, formatIndianMobileNumber };

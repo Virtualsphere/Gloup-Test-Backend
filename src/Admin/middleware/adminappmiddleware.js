@@ -10,6 +10,7 @@ import { adminDbController } from "../../core/database/Controller/AdminDbControl
 import { userDbController } from "../../core/database/Controller/userDbController.js";
 import { addbanner, addcategory, deletecategory, getallcategory, getallcoupons, getallsubscription, getBookings, getBookingsDetails, getrefundrequests, updateuser, getBookingsDetailsById, downloadBookingPDF, getallpartner } from "../controller/adminappcontroller.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
+import { parseUsersFromExcel } from "../../core/utils/excelParser.js";
 import {
     getLatestFcmToken,
     uniqueTokenOnly,
@@ -18,6 +19,7 @@ import {
     hashNotificationContent,
     sendPushNotification,
 } from "../../core/utils/pushNotificationService.js";
+import { sendMarketingBroadcast } from "../../core/utils/whatsappNotification.js"
 import {
     createPushTraceId,
     findDuplicateTokens,
@@ -632,6 +634,73 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong(
                 error.message || "Failed to send notification"
             );
+        }
+    },
+
+    sendMarketingWhatsapp: async ({ body, files }) => {
+        try {
+            const excelFile = files?.excel?.[0];
+            const imageFile = files?.image?.[0];
+ 
+            if (!excelFile) {
+                throw Error.BadRequest("Excel file (field name 'excel') is required");
+            }
+            if (!body.service_name?.trim()) {
+                throw Error.BadRequest("service_name is required");
+            }
+            if (body.offer_price === undefined || body.offer_price === null || body.offer_price === "") {
+                throw Error.BadRequest("offer_price is required");
+            }
+ 
+            // Image can come as an uploaded file, or as an already-hosted URL
+            let imageUrl = body.image_url || null;
+            if (imageFile) {
+                const uploaded = await uploadToS3(imageFile, "marketing");
+                if (!uploaded || !uploaded.url) {
+                    throw new Error("Image upload failed");
+                }
+                imageUrl = uploaded.url;
+            }
+            if (!imageUrl) {
+                throw Error.BadRequest("Either an 'image' file or an 'image_url' is required");
+            }
+ 
+            const recipients = parseUsersFromExcel(excelFile.buffer);
+ 
+            if (!recipients.length) {
+                throw Error.BadRequest("No valid rows (with a phone number) found in the excel sheet");
+            }
+ 
+            // Optional gender filter — defaults to sending to everyone in the sheet
+            const genderFilter = (body.gender || "all").toString().trim().toLowerCase();
+ 
+            const filteredRecipients =
+                genderFilter === "all"
+                    ? recipients
+                    : recipients.filter((r) => (r.gender || "").toLowerCase() === genderFilter);
+ 
+            if (!filteredRecipients.length) {
+                throw Error.NotFound(
+                    `No recipients in the sheet matched gender filter "${body.gender}"`
+                );
+            }
+ 
+            const result = await sendMarketingBroadcast({
+                recipients: filteredRecipients,
+                serviceName: body.service_name.trim(),
+                offerPrice: body.offer_price,
+                imageUrl,
+            });
+ 
+            return {
+                message: "Marketing broadcast processed",
+                gender_filter: genderFilter,
+                ...result,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("sendMarketingWhatsapp error:", error);
+            throw Error.SomethingWentWrong(error.message || "Failed to send marketing broadcast");
         }
     },
 

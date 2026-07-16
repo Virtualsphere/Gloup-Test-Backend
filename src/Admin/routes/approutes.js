@@ -3,9 +3,10 @@ import require from "requirejs";
 const rateLimit = require("express-rate-limit");
 import { verifyadmin } from "../controller/authcontroller.js";
 import { upload, categoryupload, bannerupload, bannerimage, profileimage, imageSizeMiddleware, categoryimage } from "../../core/utils/imageResizer.js";
-import { addbanner, bookingSSE, addcategory, addcoupons, addnotification, sendTargetedNotification, getnotificationbyid, addpayouts, addsubscription, createPartner, createService, deletebanner, deletecategory, deletePartner, deletereviewrequest, editPartner, editService,getAdvancedSearch, getallcategory, getallcoupons, getallnotification, getallpartner, getallpartnerdetails, getallsubscription, getalluserbooking, getallusers, getbanner,getBookings, getCancelledOrders, getCategoryRevenue, getCustomers, getdashboard,getFilteredStores, getFilterReport, getMonthlyReport, getpayoutlogs, getrefundrequests, getRegisteredStore, getRevenueCategory, getRevenueCategoryGrowth, getreviewrequest,getSalons, getservices, getStoreBySearch, getStoresByStatus, getTopPerformingSalon, updatecoupons, updateMultiplePartner, updateMultipleStore, updatepartner, updaterefundrequests,updatereviewrequest, updateSalon, updatesubscription, updateuser, getverifyPartnerlist,verifypartnerdetails, getBookingsDetails, getBookingsDetailsById, updatebookingstatus, downloadBookingPDF,updaterefundBooking, getservicecategorylist, updateservicecategoryimage, createdefaulttimeslot, blockAndUnblockSlot, getBlockedSlots,getlanguage, getserviceprovidedfor, getallpartnersubscription, getpartnersubscriptionbyid, updatepartnersubscription, deletepartnersubscription, addpartnersubscription, getallpartnersubscriptionfeatures, deleteservice } from "../controller/adminappcontroller.js";
+import { addbanner, sendMarketingWhatsapp, bookingSSE, addcategory, addcoupons, addnotification, sendTargetedNotification, getnotificationbyid, addpayouts, addsubscription, createPartner, createService, deletebanner, deletecategory, deletePartner, deletereviewrequest, editPartner, editService,getAdvancedSearch, getallcategory, getallcoupons, getallnotification, getallpartner, getallpartnerdetails, getallsubscription, getalluserbooking, getallusers, getbanner,getBookings, getCancelledOrders, getCategoryRevenue, getCustomers, getdashboard,getFilteredStores, getFilterReport, getMonthlyReport, getpayoutlogs, getrefundrequests, getRegisteredStore, getRevenueCategory, getRevenueCategoryGrowth, getreviewrequest,getSalons, getservices, getStoreBySearch, getStoresByStatus, getTopPerformingSalon, updatecoupons, updateMultiplePartner, updateMultipleStore, updatepartner, updaterefundrequests,updatereviewrequest, updateSalon, updatesubscription, updateuser, getverifyPartnerlist,verifypartnerdetails, getBookingsDetails, getBookingsDetailsById, updatebookingstatus, downloadBookingPDF,updaterefundBooking, getservicecategorylist, updateservicecategoryimage, createdefaulttimeslot, blockAndUnblockSlot, getBlockedSlots,getlanguage, getserviceprovidedfor, getallpartnersubscription, getpartnersubscriptionbyid, updatepartnersubscription, deletepartnersubscription, addpartnersubscription, getallpartnersubscriptionfeatures, deleteservice } from "../controller/adminappcontroller.js";
 import { getservicecategory } from "../../Partner/controller/partnerappcontroller.js";
 import { S3upload } from "../../core/utils/s3/s3Upload.js";
+import { marketingUpload } from "../../core/utils/marketingUpload.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 
 
@@ -72,6 +73,15 @@ approutes.post('/addnotification', verifyadmin, addnotification);
 approutes.post('/send-targeted-notification', verifyadmin, sendTargetedNotification);
 approutes.post('/getalnotification', verifyadmin, getallnotification);
 approutes.post('/getnotificationbyid', verifyadmin, getnotificationbyid);
+approutes.post(
+    '/sendmarketingwhatsapp',
+    verifyadmin,
+    marketingUpload.fields([
+        { name: 'excel', maxCount: 1 },
+        { name: 'image', maxCount: 1 },
+    ]),
+    sendMarketingWhatsapp
+);
 
 //reviews 
 // approutes.post('/getrefundrequestrequest',verifyadmin,deletereviewrequest);
