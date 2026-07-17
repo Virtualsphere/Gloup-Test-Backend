@@ -10,7 +10,10 @@ import { adminDbController } from "../../core/database/Controller/AdminDbControl
 import { userDbController } from "../../core/database/Controller/userDbController.js";
 import { addbanner, addcategory, deletecategory, getallcategory, getallcoupons, getallsubscription, getBookings, getBookingsDetails, getrefundrequests, updateuser, getBookingsDetailsById, downloadBookingPDF, getallpartner } from "../controller/adminappcontroller.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
-import { parseUsersFromExcel } from "../../core/utils/excelParser.js";
+import {
+    buildUsersExcelBuffer,
+    parseUsersFromExcel,
+} from "../../core/utils/excelParser.js";
 import {
     getLatestFcmToken,
     uniqueTokenOnly,
@@ -634,6 +637,41 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong(
                 error.message || "Failed to send notification"
             );
+        }
+    },
+
+    downloadUsersExcel: async () => {
+        try {
+            const users = await adminDbController.app.getUsersForExcelExport();
+
+            const rows = users
+                .map((user) => {
+                    const phone = String(user.phone ?? "")
+                        .trim()
+                        .replace(/\.0$/, "");
+                    if (!phone) return null;
+
+                    const name =
+                        [user.firstname, user.lastname]
+                            .filter(Boolean)
+                            .join(" ")
+                            .trim() || null;
+
+                    const gender = user.gender?.trim() || null;
+
+                    return { phone, name, gender };
+                })
+                .filter(Boolean);
+
+            if (!rows.length) {
+                throw Error.NotFound("No users with a phone number found");
+            }
+
+            return buildUsersExcelBuffer(rows);
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("downloadUsersExcel error:", error);
+            throw Error.SomethingWentWrong("Failed to export users");
         }
     },
 
