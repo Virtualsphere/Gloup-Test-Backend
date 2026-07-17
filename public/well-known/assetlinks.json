@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.gloup.userapp",
+      "sha256_cert_fingerprints": [
+        "85:D9:D5:19:7A:03:1D:41:6A:37:EB:56:63:0F:68:32:99:BD:C3:11:BE:54:2F:5C:3D:69:BD:E5:F7:94:C5:DC"
+      ]
+    }
+  }
+]

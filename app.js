@@ -21,6 +21,7 @@ import "./src/core/utils/notifier.js";
 import { userRouter } from "./src/User/routes/indexroutes.js"
 import { partnerRouter } from "./src/Partner/routes/indexroutes.js";
 import { adminRouter } from "./src/Admin/routes/indexroutes.js";
+import { smartLinkRouter } from "./src/core/routes/smartLinks.js";
 import uploadRoute from "./src/core/utils/s3/upload.route.js";
 import { setupSwagger } from "./src/core/swagger/setupSwagger.js";
 
@@ -70,6 +71,11 @@ app.options('*', cors());
 
 app.set("view engine", "ejs");
 app.set("views", "./src/core/views/ui/");
+
+// Smart links: Android App Links + iOS Universal Links verification files and the
+// /download fallback page. Mounted before auth/static/404 so app platforms can
+// fetch /.well-known/* unauthenticated and with the correct Content-Type.
+app.use(smartLinkRouter);
 app.use(express.static("pages"));
 
 
