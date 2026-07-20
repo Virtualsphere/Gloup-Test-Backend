@@ -2304,6 +2304,60 @@ partnerappmiddleware.addstore = {
     }
   },
 
+  // middleware
+  createRecurringSubscription: async ({ body, user }) => {
+    const { plan_id, include_joining_fee } = body;
+    const salon_id = user.id;
+
+    const plan = await partnerDbController.app.getActivePlan(plan_id);
+    if (!plan) throw Error.BadRequest("Invalid or inactive plan");
+    if (!plan.razorpay_plan_id) throw Error.BadRequest("Plan not synced to Razorpay");
+
+    const store = await partnerDbController.app.getstorebyid(salon_id);
+    const customerId = await partnerDbController.app.getOrCreateRazorpayCustomer(store);
+
+    const subscriptionPayload = {
+      plan_id: plan.razorpay_plan_id,
+      customer_id: customerId,
+      customer_notify: 1,
+      total_count: 120, // Razorpay requires a cap; 120 monthly cycles ≈ 10 years, partner can cancel anytime
+      quantity: 1,
+    };
+
+    // Joining fee as a one-time addon on the first invoice
+    if (include_joining_fee) {
+      const joiningPlan = await razorpay.plans.fetch("plan_TEAEbCHmGLU5tz");
+      subscriptionPayload.addons = [
+        {
+          item: {
+            name: "Joining Fee",
+            amount: joiningPlan.item.amount,
+            currency: "INR",
+          },
+        },
+      ];
+    }
+
+    const rzpSubscription = await razorpay.subscriptions.create(subscriptionPayload);
+
+    const record = await partnerDbController.app.createSubscriptionRecord({
+      salon_id,
+      plan_id: plan.plan_id,
+      razorpay_subscription_id: rzpSubscription.id,
+      razorpay_customer_id: customerId,
+      rzp_status: rzpSubscription.status, // "created"
+      total_count: rzpSubscription.total_count,
+      payment_status: "pending",
+      is_active: false,
+    });
+
+    return {
+      subscription_id: rzpSubscription.id, // pass this to Razorpay Checkout on the frontend
+      razorpay_key: process.env.RZ_PAY_ID,
+      db_record_id: record.subscription_id,
+    };
+  },
+
   // POST /partner/app/v2/subscription/verifypayment
   verifySubscriptionPayment: async ({ body, user }) => {
     try {
@@ -2363,6 +2417,26 @@ partnerappmiddleware.addstore = {
       console.error("❌ [verifyPayment] Error:", error.message || error);
       throw error;
     }
+  },
+  verifyRecurringSubscription: async ({ body, user }) => {
+    const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature } = body;
+
+    const expected = crypto
+      .createHmac("sha256", process.env.RZ_PAY_KEY)
+      .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
+      .digest("hex");
+
+    if (expected !== razorpay_signature) {
+      throw Error.BadRequest("Invalid subscription signature");
+    }
+
+    const sub = await razorpay.subscriptions.fetch(razorpay_subscription_id);
+    await partnerDbController.app.verifyRecurringSubscriptionRecord(
+      razorpay_subscription_id, user.id, sub
+    );
+    await partnerDbController.app.updatestore(user.id);
+
+    return { success: true };
   },
   listServiceCategoryV2: async (req) => {
     try {

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import Razorpay from "razorpay";
 import { userDbController } from "../../core/database/Controller/userDbController.js";
+import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
 import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 import dotenv from "dotenv";
@@ -63,6 +64,25 @@ export const razorpayWebhook = async (req, res) => {
 
             case "payment.failed":
                 await handlePaymentFailed(payload);
+                break;
+
+            case "subscription.authenticated":
+                await handleSubscriptionAuthenticated(payload);
+                break;
+            case "subscription.activated":
+                await handleSubscriptionActivated(payload);
+                break;
+            case "subscription.charged":       // fires on EVERY successful renewal charge
+                await handleSubscriptionCharged(payload);
+                break;
+            case "subscription.halted":        // Razorpay gave up retrying a failed charge
+                await handleSubscriptionHalted(payload);
+                break;
+            case "subscription.cancelled":
+                await handleSubscriptionCancelled(payload);
+                break;
+            case "subscription.completed":     // total_count cycles exhausted
+                await handleSubscriptionCompleted(payload);
                 break;
 
             default:
@@ -207,4 +227,75 @@ async function handlePaymentFailed(payload) {
     } catch (error) {
         console.error("[Webhook] Error handling payment.failed:", error);
     }
+}
+
+async function handleSubscriptionCharged(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  const paymentEntity = payload.payload?.payment?.entity;
+  if (!subEntity) return;
+
+  const sub = await partnerDbController.app.getSubscriptionByRzpId(subEntity.id);
+  if (!sub) {
+    console.warn(`[Webhook] No local subscription for ${subEntity.id}`);
+    return;
+  }
+
+  // Idempotency guard: skip if we've already recorded this paid_count
+  if (sub.paid_count >= subEntity.paid_count) {
+    console.log(`[Webhook] Cycle ${subEntity.paid_count} already processed`);
+    return;
+  }
+
+  await partnerDbController.app.recordSubscriptionCharge({
+    subscription_id: sub.subscription_id,
+    salon_id: sub.salon_id,
+    rzp_status: subEntity.status,
+    current_start: new Date(subEntity.current_start * 1000),
+    current_end: new Date(subEntity.current_end * 1000),
+    charge_at: subEntity.charge_at ? new Date(subEntity.charge_at * 1000) : null,
+    paid_count: subEntity.paid_count,
+    payment_id: paymentEntity?.id,
+    amount: paymentEntity ? paymentEntity.amount / 100 : sub.amount_paid,
+  });
+
+  console.log(`[Webhook] Subscription ${subEntity.id} renewed — cycle ${subEntity.paid_count}`);
+}
+
+async function handleSubscriptionHalted(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "halted");
+  // consider also flipping Store.is_premium = false here, or grace-period logic
+}
+
+async function handleSubscriptionCancelled(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "cancelled");
+}
+
+async function handleSubscriptionAuthenticated(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  if (!subEntity) return;
+  await partnerDbController.app.markSubscriptionInactive
+    ? null // no-op guard
+    : null;
+  // Just sync status — mandate isn't active yet, don't flip is_active
+  await partnerDbController.Models.PartnerSubscriptions.update(
+    { rzp_status: subEntity.status },
+    { where: { razorpay_subscription_id: subEntity.id } }
+  );
+}
+
+async function handleSubscriptionActivated(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  if (!subEntity) return;
+  await partnerDbController.Models.PartnerSubscriptions.update(
+    { rzp_status: subEntity.status },
+    { where: { razorpay_subscription_id: subEntity.id } }
+  );
+}
+
+async function handleSubscriptionCompleted(payload) {
+  const subEntity = payload.payload?.subscription?.entity;
+  if (!subEntity) return;
+  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "completed");
 }
