@@ -48,3 +48,27 @@ export function parseUsersFromExcel(buffer) {
 
   return recipients;
 }
+
+/**
+ * Builds an Excel buffer for marketing/user exports.
+ * Columns: Number | User Name | Gender (matches parseUsersFromExcel input format).
+ *
+ * @param {{ phone: string, name?: string|null, gender?: string|null }[]} rows
+ * @returns {Buffer}
+ */
+export function buildUsersExcelBuffer(rows) {
+  const sheetRows = [
+    ["Number", "User Name", "Gender"],
+    ...rows.map((row) => [
+      row.phone,
+      row.name ?? "",
+      row.gender ?? "",
+    ]),
+  ];
+
+  const worksheet = XLSX.utils.aoa_to_sheet(sheetRows);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Users");
+
+  return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" });
+}

@@ -397,6 +397,18 @@ appointments.init({
     type: DataTypes.BIGINT,
     allowNull: true
   },
+  customer_name: {
+    type: DataTypes.STRING(100),
+    allowNull: true
+  },
+  customer_phone: {
+    type: DataTypes.STRING(15),
+    allowNull: true
+  },
+  customer_email: {
+    type: DataTypes.STRING(255),
+    allowNull: true
+  },
 }, {
   sequelize: connection,
   modelName: 'Appointments',

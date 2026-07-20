@@ -15,3 +15,4 @@ VPS_DEPLOYMENT_GUIDE.md
 sql_backup/gloupProdDB_backup.sql
 config/firebase.json
 config/gcs-credentials.json
+.pnpm-store/

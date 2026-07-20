@@ -40,8 +40,8 @@ export const dbSync = async () => {
   //sync all Db Models
   await Promise.all(Object.values(models));
 
-  //Create Db Models
-
+  // Create missing tables from models only.
+  // Do NOT use alter:true in production — use versioned files under migrations/ instead.
   await connection.sync({ force: false });
 
 

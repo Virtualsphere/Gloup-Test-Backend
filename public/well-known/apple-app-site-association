@@ -1,0 +1,11 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "HP59PZAVRP.com.gloup.userapp",
+        "paths": ["/download*"]
+      }
+    ]
+  }
+}

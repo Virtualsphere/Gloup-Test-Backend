@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import { Configurations, dbConnection, dbSync } from './database/initialize.js';
+import { runPendingMigrations } from './database/migrator.js';
 import { Logger } from './lib/logger.js';
 
 
@@ -9,8 +10,15 @@ export const setup = async (gloablConfig) => {
     // Check App Connection
     //////console.log();
     await processBlock(dbConnection, chalk.green('Database Authenticated  ✔️ '), chalk.red('Database Connection Failed ✖️'));
+
+    // Versioned schema migrations (Umzug) — alters/indexes that sync() cannot do safely
+    await processBlock(
+        runPendingMigrations,
+        chalk.green('Database Migrations Applied  ✔️ '),
+        chalk.red('Database Migrations Failed ✖️')
+    );
     
-    //Sync Db Models
+    // Sync creates missing tables only (force:false). Column/ENUM changes belong in migrations/.
     await processBlock(dbSync, chalk.green('Database Tables Synced  ✔️ '), chalk.red('Database Sync Failed ✖️'));
     
     // Set App Configurations Globals

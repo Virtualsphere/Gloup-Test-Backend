@@ -29,6 +29,48 @@ const razorpay = new Razorpay({
     key_secret: process.env.RZ_PAY_KEY
 });
 
+const CUSTOMER_NAME_MAX_LENGTH = 100;
+const PHONE_REGEX = /^[6-9]\d{9}$/; // Indian mobile numbers
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
+const badRequest = (message) => {
+    const error = Error.BadRequest(message);
+    error.status = 400;
+    return error;
+};
+
+/**
+ * Validates and normalizes the customer contact block sent with an order.
+ * Falls back to the authenticated user's profile so that older app builds
+ * (which do not send these fields) keep working.
+ */
+function validateCustomerContact({ customer_name, customer_phone, customer_email }, user) {
+    const name = (customer_name ?? `${user.firstname || ''} ${user.lastname || ''}`).toString().trim();
+    const phone = (customer_phone ?? user.phone ?? '').toString().trim();
+    const email = (customer_email ?? user.email ?? '').toString().trim().toLowerCase();
+
+    if (!name) {
+        throw badRequest("Customer name is required");
+    }
+    if (name.length > CUSTOMER_NAME_MAX_LENGTH) {
+        throw badRequest(`Customer name must be at most ${CUSTOMER_NAME_MAX_LENGTH} characters`);
+    }
+    if (!phone) {
+        throw badRequest("Customer phone number is required");
+    }
+    if (!PHONE_REGEX.test(phone)) {
+        throw badRequest("Customer phone number must be a valid 10-digit Indian mobile number");
+    }
+    if (!email) {
+        throw badRequest("Customer email is required");
+    }
+    if (!EMAIL_REGEX.test(email)) {
+        throw badRequest("Customer email is not a valid email address");
+    }
+
+    return { name, phone, email };
+}
+
 // Helper functions for map clustering
 function performClustering(markers, zoom, bounds) {
     const GRID_SIZE = getGridSize(zoom);
@@ -1113,8 +1155,15 @@ userappmiddleware.user = {
                 booking_for, guest_id, guest_name, guest_phone, guest_gender,
                 professional_id, amount, is_wallet, is_discounted, discount_id,
                 coupon_code, wallet_amount_used, gst, platform_fee, store_id,
-                discounted_amount
+                discounted_amount, customer_name, customer_phone, customer_email
             } = body;
+
+            // 0. Customer contact details (required from app v2.6.5+;
+            //    fall back to the authenticated user's profile for older clients)
+            const contact = validateCustomerContact(
+                { customer_name, customer_phone, customer_email },
+                user
+            );
 
             // 1. Validation & Pre-calculations
             const serviceIds = (services || []).map(s => s.service_id);
@@ -1217,6 +1266,9 @@ userappmiddleware.user = {
                 status: "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
+                customer_name: contact.name,
+                customer_phone: contact.phone,
+                customer_email: contact.email,
                 created_at: new Date(),
                 updated_at: new Date()
             };

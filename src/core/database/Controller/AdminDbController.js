@@ -221,6 +221,20 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch users");
     }
   },
+  getUsersForExcelExport: async () => {
+    try {
+      return await adminDbController.Models.User.findAll({
+        attributes: ["firstname", "lastname", "phone", "gender"],
+        where: {
+          phone: { [Op.ne]: null },
+        },
+        order: [["id", "DESC"]],
+        raw: true,
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch users for export");
+    }
+  },
   getstorebyid: async (id) => {
     try {
       return await adminDbController.Models.Store.findOne({

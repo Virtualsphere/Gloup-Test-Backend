@@ -1296,6 +1296,29 @@ export const downloadBookingPDF = async (req, res) => {
   }
 };
 
+export const downloadUsersExcel = async (req, res) => {
+  try {
+    const excelBuffer = await Adminappmiddleware.app.downloadUsersExcel();
+    const dateStamp = new Date().toISOString().slice(0, 10);
+
+    res.status(200);
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename=gloup_users_${dateStamp}.xlsx`
+    );
+    res.setHeader("Content-Length", excelBuffer.length);
+    res.end(excelBuffer);
+  } catch (error) {
+    ApplicationResponse.error(error, null, (response) => {
+      res.status(response.status).json(response);
+    });
+  }
+};
+
 
 export const createdefaulttimeslot = async(req, res) => {
     Adminappmiddleware.app.createDefaultTimeSlot(req)

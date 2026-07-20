@@ -15,7 +15,10 @@
         "deploy": "pm2 start app.js --name 'GloUp (3010)'",
         "lint": "eslint . --max-warnings=0",
         "lint:fix": "eslint . --fix",
-        "openapi:export": "node scripts/export-openapi.mjs"
+        "openapi:export": "node scripts/export-openapi.mjs",
+        "migrate": "node scripts/migrate.mjs up",
+        "migrate:status": "node scripts/migrate.mjs status",
+        "migrate:down": "node scripts/migrate.mjs down"
     },
     "packageManager": "pnpm@9.15.0",
     "dependencies": {
@@ -73,6 +76,7 @@
         "sequelize": "^6.32.1",
         "sharp": "^0.33.5",
         "shelljs": "^0.8.4",
+        "umzug": "^3.8.3",
         "winston": "^3.3.3",
         "xlsx": "^0.18.5",
         "yarn": "^1.22.17",
