@@ -2533,11 +2533,11 @@ getallcombos: async (body) => {
       throw Error.SomethingWentWrong("Failed to fetch refund request by ID");
     }
   },
-updateRefundBookingStatus: async ({body}) => {
+updateRefundBookingStatus: async ({ body, user }) => {
   try {
     const booking =
       await adminDbController.Models.appointments.findOne({
-        where: { id: body.bookingId },
+        where: { id: body.id },
       });
 
     if (!booking) {
@@ -2569,7 +2569,7 @@ updateRefundBookingStatus: async ({body}) => {
         refunded_at: new Date(),
         refunded_by: user?.id || null,
       },
-      { where: { id: body.bookingId } }
+      { where: { id: body.id } }
     );
 
     return "Refund processed successfully";

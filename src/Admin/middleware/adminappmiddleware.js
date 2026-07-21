@@ -1750,7 +1750,7 @@ await Promise.all(
     },
     updaterefundBookingStatus: async ({ body, user }) => {
         try {
-            const updateStatus = await adminDbController.app.updateRefundBookingStatus(body);
+            const updateStatus = await adminDbController.app.updateRefundBookingStatus({ body, user });
             if (updateStatus) {
                 return "Booking refund status updated successfully";
             } else {

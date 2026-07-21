@@ -862,7 +862,7 @@ export const updatebookingstatus = async(req, res) => {
 }
 
 export const updaterefundBooking = async(req, res) => {
-    Adminappmiddleware.app.updaterefundBooking(req)
+    Adminappmiddleware.app.updaterefundBookingStatus(req)
         .then((data) => {
             const response = ApplicationResult.forCreated();
             var statuscode = 0;
