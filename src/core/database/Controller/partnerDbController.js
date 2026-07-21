@@ -2835,6 +2835,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         p.is_unlimited,
         p.sort_order,
         p.description,
+        p.razorpay_plan_id,
         COALESCE(JSON_ARRAYAGG(f.feature_name), JSON_ARRAY()) AS features
       FROM PartnerSubscriptionPlans p
       LEFT JOIN PartnerSubscriptionPlanfeatureMapping pf 
@@ -2852,6 +2853,53 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         throw Error.InternalError(error.message || "cannot get plans");
       }
     },
+
+    /** Joining Fee is a one-time charge, not a monthly autopay plan. */
+    isJoiningFeePlan: (plan) => {
+      const name = String(plan?.plan_name || "").toLowerCase();
+      return name.includes("joining");
+    },
+
+    getJoiningFeePlan: async () => {
+      const plans = await PartnerSubscriptionPlans.findAll({
+        where: { is_active: 1 },
+      });
+      return (
+        plans.find((p) => partnerDbController.app.isJoiningFeePlan(p)) || null
+      );
+    },
+
+    /** True if salon already paid the joining-fee plan (or no joining plan exists). */
+    hasPaidJoiningFee: async (salon_id) => {
+      const joining = await partnerDbController.app.getJoiningFeePlan();
+      if (!joining) return true;
+
+      const paidJoining = await PartnerSubscriptions.findOne({
+        where: {
+          salon_id,
+          plan_id: joining.plan_id,
+          payment_status: "paid",
+        },
+      });
+      if (paidJoining) return true;
+
+      // Already on an active autopay plan → joining was collected (or waived)
+      const activeRecurring = await PartnerSubscriptions.findOne({
+        where: {
+          salon_id,
+          payment_status: "paid",
+          is_active: true,
+        },
+      });
+      return !!(
+        activeRecurring && activeRecurring.razorpay_subscription_id
+      );
+    },
+
+    salonNeedsJoiningFee: async (salon_id) => {
+      return !(await partnerDbController.app.hasPaidJoiningFee(salon_id));
+    },
+
     createSubscription: async (data) => {
       try {
         return await PartnerSubscriptions.create(data);

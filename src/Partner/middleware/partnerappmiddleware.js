@@ -1841,27 +1841,37 @@ partnerappmiddleware.addstore = {
       }
 
       const plans = await partnerDbController.app.getAllPlans();
+      const needsJoiningFee =
+        await partnerDbController.app.salonNeedsJoiningFee(user.id);
 
-      return plans.map((plan) => ({
-        plan_id: plan.plan_id,
-        plan_name: plan.plan_name,
-        plan_description: plan.description,
-        original_price: parseFloat(plan.original_price),
-        discount_price: parseFloat(plan.discount_price),
-        price_tag: plan.price_tag,
-        duration_months: plan.duration_months,
-        booking_limit: plan.booking_limit,
-        is_unlimited: Boolean(plan.is_unlimited),
-        sort_order: plan.sort_order,
-        features:
-          typeof plan.features === "string"
-            ? JSON.parse(plan.features)
-            : Array.isArray(plan.features)
-              ? plan.features
-              : [],
-      }));
+      return plans.map((plan) => {
+        const isJoiningFee = partnerDbController.app.isJoiningFeePlan(plan);
+        return {
+          plan_id: plan.plan_id,
+          plan_name: plan.plan_name,
+          plan_description: plan.description,
+          original_price: parseFloat(plan.original_price),
+          discount_price: parseFloat(plan.discount_price),
+          price_tag: plan.price_tag,
+          duration_months: plan.duration_months,
+          booking_limit: plan.booking_limit,
+          is_unlimited: Boolean(plan.is_unlimited),
+          sort_order: plan.sort_order,
+          is_joining_fee: isJoiningFee,
+          // Joining fee = one-time; Growth/Premium = Razorpay Subscriptions autopay
+          supports_autopay: !isJoiningFee,
+          // App/backend should add joining fee on first Growth/Premium autopay
+          include_joining_fee_default: needsJoiningFee && !isJoiningFee,
+          features:
+            typeof plan.features === "string"
+              ? JSON.parse(plan.features)
+              : Array.isArray(plan.features)
+                ? plan.features
+                : [],
+        };
+      });
     } catch (error) {
-      console.error("Middleware Error in createSalonDetails:", error);
+      console.error("Middleware Error in getPlans:", error);
       throw error;
     }
   },
@@ -2346,6 +2356,14 @@ partnerappmiddleware.addstore = {
         throw Error.BadRequest("Plan not synced to Razorpay");
       }
 
+      // Joining Fee must not be sold as a recurring/autopay subscription.
+      // It is a one-time charge (order flow) or a first-invoice addon on Growth/Premium.
+      if (partnerDbController.app.isJoiningFeePlan(syncedPlan)) {
+        throw Error.BadRequest(
+          "Joining fee is a one-time payment. Use one-time checkout for Joining Fee, or subscribe to Growth/Premium (joining fee is added on the first invoice automatically)."
+        );
+      }
+
       const activeSub =
         await partnerDbController.app.getPartnerSubscription(salon_id);
       if (
@@ -2382,34 +2400,60 @@ partnerappmiddleware.addstore = {
         quantity: 1,
       };
 
-      // Joining fee as a one-time addon on the first invoice (env-configured; never hardcode)
-      if (include_joining_fee) {
-        const joiningPlanId = process.env.JOINING_FEE_RAZORPAY_PLAN_ID;
-        if (!joiningPlanId) {
-          console.warn(
-            "[createRecurring] JOINING_FEE_RAZORPAY_PLAN_ID not set; skipping joining fee"
+      // Joining fee = one-time addon on first invoice (from DB plan; env optional override)
+      const explicitSkip =
+        include_joining_fee === false || include_joining_fee === "false";
+      const explicitInclude =
+        include_joining_fee === true || include_joining_fee === "true";
+      const needsJoining = explicitSkip
+        ? false
+        : explicitInclude
+          ? true
+          : await partnerDbController.app.salonNeedsJoiningFee(salon_id);
+
+      let joiningFeeAmount = 0;
+      if (needsJoining) {
+        const joiningPlan = await partnerDbController.app.getJoiningFeePlan();
+        const envPlanId = process.env.JOINING_FEE_RAZORPAY_PLAN_ID;
+
+        if (joiningPlan) {
+          joiningFeeAmount = parseFloat(
+            joiningPlan.discount_price ?? joiningPlan.price ?? 0
           );
-        } else {
+        }
+
+        // Prefer DB amount; optionally refine from env Razorpay plan item
+        if (envPlanId) {
           try {
-            const joiningPlan = await razorpay.plans.fetch(joiningPlanId);
-            subscriptionPayload.addons = [
-              {
-                item: {
-                  name: "Joining Fee",
-                  amount: joiningPlan.item.amount,
-                  currency: "INR",
-                },
-              },
-            ];
+            const rzpJoining = await razorpay.plans.fetch(envPlanId);
+            if (rzpJoining?.item?.amount) {
+              joiningFeeAmount = rzpJoining.item.amount / 100;
+            }
           } catch (joiningError) {
-            console.error(
-              "[createRecurring] joining fee plan fetch failed:",
+            console.warn(
+              "[createRecurring] JOINING_FEE_RAZORPAY_PLAN_ID fetch failed, using DB amount:",
               joiningError?.message || joiningError
             );
-            throw Error.SomethingWentWrong(
-              "Joining fee is temporarily unavailable. Retry without joining fee or contact support."
-            );
           }
+        }
+
+        if (Number.isFinite(joiningFeeAmount) && joiningFeeAmount > 0) {
+          subscriptionPayload.addons = [
+            {
+              item: {
+                name: joiningPlan?.plan_name || "Joining Fee",
+                amount: Math.round(joiningFeeAmount * 100),
+                currency: "INR",
+              },
+            },
+          ];
+          console.log(
+            `[createRecurring] Joining fee addon ₹${joiningFeeAmount} on first invoice`
+          );
+        } else {
+          console.warn(
+            "[createRecurring] Joining fee needed but amount is 0 / plan missing — skipping addon"
+          );
         }
       }
 
@@ -2428,6 +2472,9 @@ partnerappmiddleware.addstore = {
         );
       }
 
+      const baseAmount = parseFloat(
+        syncedPlan.discount_price ?? syncedPlan.price ?? 0
+      );
       const record = await partnerDbController.app.createSubscriptionRecord({
         salon_id,
         plan_id: syncedPlan.plan_id,
@@ -2437,13 +2484,18 @@ partnerappmiddleware.addstore = {
         total_count: rzpSubscription.total_count,
         payment_status: "pending",
         is_active: false,
-        amount_paid: syncedPlan.discount_price ?? syncedPlan.price ?? 0,
+        amount_paid: baseAmount + (needsJoining ? joiningFeeAmount : 0),
       });
 
       return {
         subscription_id: rzpSubscription.id, // pass this to Razorpay Checkout on the frontend
         razorpay_key: process.env.RZ_PAY_ID,
         db_record_id: record.subscription_id,
+        joining_fee_included: !!(
+          needsJoining &&
+          joiningFeeAmount > 0
+        ),
+        joining_fee_amount: needsJoining ? joiningFeeAmount : 0,
       };
     } catch (error) {
       if (error?.status) throw error;
