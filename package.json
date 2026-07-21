@@ -18,7 +18,8 @@
         "openapi:export": "node scripts/export-openapi.mjs",
         "migrate": "node scripts/migrate.mjs up",
         "migrate:status": "node scripts/migrate.mjs status",
-        "migrate:down": "node scripts/migrate.mjs down"
+        "migrate:down": "node scripts/migrate.mjs down",
+        "sync:razorpay-plans": "node scripts/sync-razorpay-plans.mjs"
     },
     "packageManager": "pnpm@9.15.0",
     "dependencies": {

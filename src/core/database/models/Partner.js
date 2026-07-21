@@ -1084,6 +1084,10 @@ PartnerSubscriptionPlans.init({
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  description: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
   razorpay_plan_id: {
     type: DataTypes.STRING,
     allowNull: true,

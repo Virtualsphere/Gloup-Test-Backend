@@ -27,8 +27,10 @@ export const razorpayWebhook = async (req, res) => {
         const webhookSecret = process.env.RZ_WEBHOOK_SECRET;
 
         if (!webhookSecret) {
-            console.error("[Webhook] RZ_WEBHOOK_SECRET is not configured");
-            // Still return 200 to Razorpay so it doesn't keep retrying
+            console.error(
+                "[Webhook] CRITICAL: RZ_WEBHOOK_SECRET is not configured — subscription renewals will NOT be processed"
+            );
+            // Still return 200 to Razorpay so it doesn't keep retrying forever on misconfig
             return res.status(200).json({ status: "ok" });
         }
 
@@ -230,72 +232,97 @@ async function handlePaymentFailed(payload) {
 }
 
 async function handleSubscriptionCharged(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  const paymentEntity = payload.payload?.payment?.entity;
-  if (!subEntity) return;
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    const paymentEntity = payload.payload?.payment?.entity;
+    if (!subEntity) return;
 
-  const sub = await partnerDbController.app.getSubscriptionByRzpId(subEntity.id);
-  if (!sub) {
-    console.warn(`[Webhook] No local subscription for ${subEntity.id}`);
-    return;
+    const sub = await partnerDbController.app.getSubscriptionByRzpId(subEntity.id);
+    if (!sub) {
+      console.warn(`[Webhook] No local subscription for ${subEntity.id}`);
+      return;
+    }
+
+    // Idempotency guard: skip if we've already recorded this paid_count
+    if (sub.paid_count >= subEntity.paid_count) {
+      console.log(`[Webhook] Cycle ${subEntity.paid_count} already processed`);
+      return;
+    }
+
+    await partnerDbController.app.recordSubscriptionCharge({
+      subscription_id: sub.subscription_id,
+      salon_id: sub.salon_id,
+      rzp_status: subEntity.status,
+      current_start: new Date(subEntity.current_start * 1000),
+      current_end: new Date(subEntity.current_end * 1000),
+      charge_at: subEntity.charge_at ? new Date(subEntity.charge_at * 1000) : null,
+      paid_count: subEntity.paid_count,
+      payment_id: paymentEntity?.id,
+      amount: paymentEntity ? paymentEntity.amount / 100 : sub.amount_paid,
+    });
+
+    console.log(`[Webhook] Subscription ${subEntity.id} renewed — cycle ${subEntity.paid_count}`);
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.charged:", error);
   }
-
-  // Idempotency guard: skip if we've already recorded this paid_count
-  if (sub.paid_count >= subEntity.paid_count) {
-    console.log(`[Webhook] Cycle ${subEntity.paid_count} already processed`);
-    return;
-  }
-
-  await partnerDbController.app.recordSubscriptionCharge({
-    subscription_id: sub.subscription_id,
-    salon_id: sub.salon_id,
-    rzp_status: subEntity.status,
-    current_start: new Date(subEntity.current_start * 1000),
-    current_end: new Date(subEntity.current_end * 1000),
-    charge_at: subEntity.charge_at ? new Date(subEntity.charge_at * 1000) : null,
-    paid_count: subEntity.paid_count,
-    payment_id: paymentEntity?.id,
-    amount: paymentEntity ? paymentEntity.amount / 100 : sub.amount_paid,
-  });
-
-  console.log(`[Webhook] Subscription ${subEntity.id} renewed — cycle ${subEntity.paid_count}`);
 }
 
 async function handleSubscriptionHalted(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "halted");
-  // consider also flipping Store.is_premium = false here, or grace-period logic
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (!subEntity?.id) return;
+    await partnerDbController.app.markSubscriptionInactive(subEntity.id, "halted");
+    console.log(`[Webhook] Subscription ${subEntity.id} halted — premium cleared`);
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.halted:", error);
+  }
 }
 
 async function handleSubscriptionCancelled(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "cancelled");
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (!subEntity?.id) return;
+    await partnerDbController.app.markSubscriptionInactive(subEntity.id, "cancelled");
+    console.log(`[Webhook] Subscription ${subEntity.id} cancelled — premium cleared`);
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.cancelled:", error);
+  }
 }
 
 async function handleSubscriptionAuthenticated(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  if (!subEntity) return;
-  await partnerDbController.app.markSubscriptionInactive
-    ? null // no-op guard
-    : null;
-  // Just sync status — mandate isn't active yet, don't flip is_active
-  await partnerDbController.Models.PartnerSubscriptions.update(
-    { rzp_status: subEntity.status },
-    { where: { razorpay_subscription_id: subEntity.id } }
-  );
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (!subEntity?.id) return;
+    // Mandate authenticated but not necessarily charged yet — sync status only
+    await partnerDbController.Models.PartnerSubscriptions.update(
+      { rzp_status: subEntity.status },
+      { where: { razorpay_subscription_id: subEntity.id } }
+    );
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.authenticated:", error);
+  }
 }
 
 async function handleSubscriptionActivated(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  if (!subEntity) return;
-  await partnerDbController.Models.PartnerSubscriptions.update(
-    { rzp_status: subEntity.status },
-    { where: { razorpay_subscription_id: subEntity.id } }
-  );
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (!subEntity?.id) return;
+    await partnerDbController.Models.PartnerSubscriptions.update(
+      { rzp_status: subEntity.status },
+      { where: { razorpay_subscription_id: subEntity.id } }
+    );
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.activated:", error);
+  }
 }
 
 async function handleSubscriptionCompleted(payload) {
-  const subEntity = payload.payload?.subscription?.entity;
-  if (!subEntity) return;
-  await partnerDbController.app.markSubscriptionInactive(subEntity.id, "completed");
+  try {
+    const subEntity = payload.payload?.subscription?.entity;
+    if (!subEntity?.id) return;
+    await partnerDbController.app.markSubscriptionInactive(subEntity.id, "completed");
+    console.log(`[Webhook] Subscription ${subEntity.id} completed — premium cleared`);
+  } catch (error) {
+    console.error("[Webhook] Error handling subscription.completed:", error);
+  }
 }

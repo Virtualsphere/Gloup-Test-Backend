@@ -3,6 +3,17 @@
  * Safe to re-run on DBs where changes were applied manually earlier.
  */
 
+export async function tableExists(queryInterface, tableName) {
+  const [rows] = await queryInterface.sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.TABLES
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?`,
+    { replacements: [tableName] }
+  );
+  return Number(rows?.[0]?.cnt || 0) > 0;
+}
+
 export async function columnExists(queryInterface, tableName, columnName) {
   const [rows] = await queryInterface.sequelize.query(
     `SELECT COUNT(*) AS cnt
@@ -13,6 +24,39 @@ export async function columnExists(queryInterface, tableName, columnName) {
     { replacements: [tableName, columnName] }
   );
   return Number(rows?.[0]?.cnt || 0) > 0;
+}
+
+export async function indexExists(queryInterface, tableName, indexName) {
+  const [rows] = await queryInterface.sequelize.query(
+    `SELECT COUNT(*) AS cnt
+     FROM information_schema.STATISTICS
+     WHERE TABLE_SCHEMA = DATABASE()
+       AND TABLE_NAME = ?
+       AND INDEX_NAME = ?`,
+    { replacements: [tableName, indexName] }
+  );
+  return Number(rows?.[0]?.cnt || 0) > 0;
+}
+
+export async function addIndexIfMissing(
+  queryInterface,
+  tableName,
+  indexName,
+  columnsSql
+) {
+  if (!(await tableExists(queryInterface, tableName))) {
+    console.log(`[migrate] skip index: table ${tableName} does not exist`);
+    return false;
+  }
+  if (await indexExists(queryInterface, tableName, indexName)) {
+    console.log(`[migrate] skip index: ${tableName}.${indexName} already exists`);
+    return false;
+  }
+  await queryInterface.sequelize.query(
+    `CREATE INDEX \`${indexName}\` ON \`${tableName}\` (${columnsSql})`
+  );
+  console.log(`[migrate] indexed: ${tableName}.${indexName}`);
+  return true;
 }
 
 export async function getColumnType(queryInterface, tableName, columnName) {

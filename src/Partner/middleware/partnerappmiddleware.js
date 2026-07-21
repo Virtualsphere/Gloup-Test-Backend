@@ -18,6 +18,9 @@ import { userDbController } from "../../core/database/Controller/userDbControlle
 import { helperfunction } from "../../core/utils/helperfunctions.js";
 import { Op, Sequelize } from "sequelize";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
+import {
+  ensurePlanSyncedToRazorpay,
+} from "../../core/utils/syncRazorpayPlans.js";
 
 
 // import { error } from "ajv/dist/vocabularies/applicator/dependencies.js";
@@ -2306,56 +2309,152 @@ partnerappmiddleware.addstore = {
 
   // middleware
   createRecurringSubscription: async ({ body, user }) => {
-    const { plan_id, include_joining_fee } = body;
-    const salon_id = user.id;
+    try {
+      const { plan_id, include_joining_fee } = body;
+      const salon_id = user.id;
 
-    const plan = await partnerDbController.app.getActivePlan(plan_id);
-    if (!plan) throw Error.BadRequest("Invalid or inactive plan");
-    if (!plan.razorpay_plan_id) throw Error.BadRequest("Plan not synced to Razorpay");
+      if (!plan_id) throw Error.BadRequest("plan_id is required");
+      if (!process.env.RZ_PAY_ID || !process.env.RZ_PAY_KEY) {
+        throw Error.SomethingWentWrong(
+          "Payment provider is not configured. Please try again later."
+        );
+      }
 
-    const store = await partnerDbController.app.getstorebyid(salon_id);
-    const customerId = await partnerDbController.app.getOrCreateRazorpayCustomer(store);
+      let plan = await partnerDbController.app.getActivePlan(plan_id);
+      if (!plan) throw Error.BadRequest("Invalid or inactive plan");
 
-    const subscriptionPayload = {
-      plan_id: plan.razorpay_plan_id,
-      customer_id: customerId,
-      customer_notify: 1,
-      total_count: 120, // Razorpay requires a cap; 120 monthly cycles ≈ 10 years, partner can cancel anytime
-      quantity: 1,
-    };
+      const plainPlan = plan.toJSON ? plan.toJSON() : plan;
 
-    // Joining fee as a one-time addon on the first invoice
-    if (include_joining_fee) {
-      const joiningPlan = await razorpay.plans.fetch("plan_TEAEbCHmGLU5tz");
-      subscriptionPayload.addons = [
-        {
-          item: {
-            name: "Joining Fee",
-            amount: joiningPlan.item.amount,
-            currency: "INR",
-          },
-        },
-      ];
+      // Auto-heal: sync plan to Razorpay if admin create missed it
+      try {
+        if (!plainPlan.razorpay_plan_id) {
+          await ensurePlanSyncedToRazorpay(plainPlan);
+          plan = await partnerDbController.app.getActivePlan(plan_id);
+        }
+      } catch (syncError) {
+        console.error(
+          "[createRecurring] plan sync failed:",
+          syncError?.message || syncError
+        );
+        throw Error.SomethingWentWrong(
+          "Unable to prepare subscription plan for payments. Please try again later."
+        );
+      }
+
+      const syncedPlan = plan.toJSON ? plan.toJSON() : plan;
+      if (!syncedPlan.razorpay_plan_id) {
+        throw Error.BadRequest("Plan not synced to Razorpay");
+      }
+
+      const activeSub =
+        await partnerDbController.app.getPartnerSubscription(salon_id);
+      if (
+        activeSub &&
+        activeSub.is_active &&
+        activeSub.payment_status === "paid" &&
+        activeSub.razorpay_subscription_id
+      ) {
+        throw Error.BadRequest("Already subscribed to an active auto-pay plan");
+      }
+
+      const store = await partnerDbController.app.getstorebyid(salon_id);
+      if (!store) throw Error.BadRequest("Store not found");
+
+      let customerId;
+      try {
+        customerId =
+          await partnerDbController.app.getOrCreateRazorpayCustomer(store);
+      } catch (customerError) {
+        console.error(
+          "[createRecurring] Razorpay customer error:",
+          customerError?.message || customerError
+        );
+        throw Error.SomethingWentWrong(
+          "Unable to create payment customer. Please try again later."
+        );
+      }
+
+      const subscriptionPayload = {
+        plan_id: syncedPlan.razorpay_plan_id,
+        customer_id: customerId,
+        customer_notify: 1,
+        total_count: 120, // Razorpay requires a cap; ~10 years monthly; partner can cancel anytime
+        quantity: 1,
+      };
+
+      // Joining fee as a one-time addon on the first invoice (env-configured; never hardcode)
+      if (include_joining_fee) {
+        const joiningPlanId = process.env.JOINING_FEE_RAZORPAY_PLAN_ID;
+        if (!joiningPlanId) {
+          console.warn(
+            "[createRecurring] JOINING_FEE_RAZORPAY_PLAN_ID not set; skipping joining fee"
+          );
+        } else {
+          try {
+            const joiningPlan = await razorpay.plans.fetch(joiningPlanId);
+            subscriptionPayload.addons = [
+              {
+                item: {
+                  name: "Joining Fee",
+                  amount: joiningPlan.item.amount,
+                  currency: "INR",
+                },
+              },
+            ];
+          } catch (joiningError) {
+            console.error(
+              "[createRecurring] joining fee plan fetch failed:",
+              joiningError?.message || joiningError
+            );
+            throw Error.SomethingWentWrong(
+              "Joining fee is temporarily unavailable. Retry without joining fee or contact support."
+            );
+          }
+        }
+      }
+
+      let rzpSubscription;
+      try {
+        rzpSubscription =
+          await razorpay.subscriptions.create(subscriptionPayload);
+      } catch (rzpError) {
+        console.error(
+          "[createRecurring] Razorpay subscriptions.create failed:",
+          rzpError?.error || rzpError?.message || rzpError
+        );
+        throw Error.SomethingWentWrong(
+          rzpError?.error?.description ||
+            "Failed to create auto-pay subscription. Please try again."
+        );
+      }
+
+      const record = await partnerDbController.app.createSubscriptionRecord({
+        salon_id,
+        plan_id: syncedPlan.plan_id,
+        razorpay_subscription_id: rzpSubscription.id,
+        razorpay_customer_id: customerId,
+        rzp_status: rzpSubscription.status, // "created"
+        total_count: rzpSubscription.total_count,
+        payment_status: "pending",
+        is_active: false,
+        amount_paid: syncedPlan.discount_price ?? syncedPlan.price ?? 0,
+      });
+
+      return {
+        subscription_id: rzpSubscription.id, // pass this to Razorpay Checkout on the frontend
+        razorpay_key: process.env.RZ_PAY_ID,
+        db_record_id: record.subscription_id,
+      };
+    } catch (error) {
+      if (error?.status) throw error;
+      console.error(
+        "[createRecurring] unexpected error:",
+        error?.message || error
+      );
+      throw Error.SomethingWentWrong(
+        error?.message || "Failed to create recurring subscription"
+      );
     }
-
-    const rzpSubscription = await razorpay.subscriptions.create(subscriptionPayload);
-
-    const record = await partnerDbController.app.createSubscriptionRecord({
-      salon_id,
-      plan_id: plan.plan_id,
-      razorpay_subscription_id: rzpSubscription.id,
-      razorpay_customer_id: customerId,
-      rzp_status: rzpSubscription.status, // "created"
-      total_count: rzpSubscription.total_count,
-      payment_status: "pending",
-      is_active: false,
-    });
-
-    return {
-      subscription_id: rzpSubscription.id, // pass this to Razorpay Checkout on the frontend
-      razorpay_key: process.env.RZ_PAY_ID,
-      db_record_id: record.subscription_id,
-    };
   },
 
   // POST /partner/app/v2/subscription/verifypayment
@@ -2383,11 +2482,29 @@ partnerappmiddleware.addstore = {
       if (!subscription) throw Error.BadRequest("Subscription not found");
 
       if (subscription.payment_status === "paid") {
-        return { success: true, message: "Already verified" };
+        return { success: true, message: "Already verified", is_premium: true };
       }
 
       if (subscription.razorpay_order_id !== razorpay_order_id) {
         throw Error.BadRequest("Order ID mismatch");
+      }
+
+      // Verify Razorpay signature when payment fields are present (production clients send them)
+      if (razorpay_payment_id && razorpay_signature) {
+        if (!process.env.RZ_PAY_KEY) {
+          throw Error.SomethingWentWrong("Payment verification is not configured");
+        }
+        const expected = crypto
+          .createHmac("sha256", process.env.RZ_PAY_KEY)
+          .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+          .digest("hex");
+        if (expected !== razorpay_signature) {
+          throw Error.BadRequest("Invalid payment signature");
+        }
+      } else {
+        throw Error.BadRequest(
+          "razorpay_payment_id and razorpay_signature are required"
+        );
       }
 
       // ✅ Activate subscription + insert payment record
@@ -2419,24 +2536,84 @@ partnerappmiddleware.addstore = {
     }
   },
   verifyRecurringSubscription: async ({ body, user }) => {
-    const { razorpay_payment_id, razorpay_subscription_id, razorpay_signature } = body;
+    try {
+      const {
+        razorpay_payment_id,
+        razorpay_subscription_id,
+        razorpay_signature,
+      } = body;
 
-    const expected = crypto
-      .createHmac("sha256", process.env.RZ_PAY_KEY)
-      .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
-      .digest("hex");
+      if (
+        !razorpay_payment_id ||
+        !razorpay_subscription_id ||
+        !razorpay_signature
+      ) {
+        throw Error.BadRequest(
+          "razorpay_payment_id, razorpay_subscription_id and razorpay_signature are required"
+        );
+      }
 
-    if (expected !== razorpay_signature) {
-      throw Error.BadRequest("Invalid subscription signature");
+      if (!process.env.RZ_PAY_KEY) {
+        throw Error.SomethingWentWrong("Payment verification is not configured");
+      }
+
+      const expected = crypto
+        .createHmac("sha256", process.env.RZ_PAY_KEY)
+        .update(`${razorpay_payment_id}|${razorpay_subscription_id}`)
+        .digest("hex");
+
+      if (expected !== razorpay_signature) {
+        throw Error.BadRequest("Invalid subscription signature");
+      }
+
+      const local = await partnerDbController.app.getSubscriptionByRzpId(
+        razorpay_subscription_id
+      );
+      if (!local || Number(local.salon_id) !== Number(user.id)) {
+        throw Error.BadRequest("Subscription not found");
+      }
+
+      // Idempotent: already activated (e.g. webhook raced ahead)
+      if (local.payment_status === "paid" && local.is_active) {
+        await partnerDbController.app.updatestore(user.id);
+        return {
+          success: true,
+          already_verified: true,
+          is_premium: true,
+        };
+      }
+
+      let sub;
+      try {
+        sub = await razorpay.subscriptions.fetch(razorpay_subscription_id);
+      } catch (fetchError) {
+        console.error(
+          "[verifyRecurring] fetch failed:",
+          fetchError?.message || fetchError
+        );
+        throw Error.SomethingWentWrong(
+          "Unable to confirm subscription with payment provider"
+        );
+      }
+
+      await partnerDbController.app.verifyRecurringSubscriptionRecord(
+        razorpay_subscription_id,
+        user.id,
+        sub
+      );
+      await partnerDbController.app.updatestore(user.id);
+
+      return { success: true, is_premium: true };
+    } catch (error) {
+      if (error?.status) throw error;
+      console.error(
+        "[verifyRecurring] unexpected error:",
+        error?.message || error
+      );
+      throw Error.SomethingWentWrong(
+        error?.message || "Failed to verify recurring subscription"
+      );
     }
-
-    const sub = await razorpay.subscriptions.fetch(razorpay_subscription_id);
-    await partnerDbController.app.verifyRecurringSubscriptionRecord(
-      razorpay_subscription_id, user.id, sub
-    );
-    await partnerDbController.app.updatestore(user.id);
-
-    return { success: true };
   },
   listServiceCategoryV2: async (req) => {
     try {

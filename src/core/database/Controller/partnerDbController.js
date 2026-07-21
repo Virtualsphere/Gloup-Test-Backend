@@ -2927,6 +2927,12 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           payment_date: new Date(),
         }, { transaction: t });
 
+        // Keep premium in sync on every successful renewal
+        await Store.update(
+          { is_premium: true },
+          { where: { id: data.salon_id }, transaction: t }
+        );
+
         await t.commit();
       } catch (e) {
         await t.rollback();
@@ -2935,9 +2941,45 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
     },
 
     markSubscriptionInactive: async (razorpay_subscription_id, status) => {
-      return await PartnerSubscriptions.update(
-        { is_active: false, rzp_status: status, payment_status: status === "cancelled" ? "refunded" : "failed" },
-        { where: { razorpay_subscription_id } }
+      if (!razorpay_subscription_id) return null;
+
+      const sub = await PartnerSubscriptions.findOne({
+        where: { razorpay_subscription_id },
+      });
+      if (!sub) {
+        console.warn(
+          `[markSubscriptionInactive] no local sub for ${razorpay_subscription_id}`
+        );
+        return null;
+      }
+
+      // Keep payment_status as paid for cancel/complete (money was taken);
+      // only mark failed when Razorpay halted after charge failures.
+      const patch = {
+        is_active: false,
+        rzp_status: status,
+      };
+      if (status === "halted") {
+        patch.payment_status = "failed";
+      }
+
+      await PartnerSubscriptions.update(patch, {
+        where: { razorpay_subscription_id },
+      });
+
+      // Revoke premium so cancelled/halted partners do not keep benefits
+      await Store.update(
+        { is_premium: false },
+        { where: { id: sub.salon_id } }
+      );
+
+      return sub;
+    },
+
+    clearStorePremium: async (salon_id) => {
+      return await Store.update(
+        { is_premium: false },
+        { where: { id: salon_id } }
       );
     },
 
