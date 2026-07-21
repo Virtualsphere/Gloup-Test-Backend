@@ -2440,6 +2440,7 @@ partnerappmiddleware.addstore = {
       return {
         subscription_id: rzpSubscription.id, // pass this to Razorpay Checkout on the frontend
         razorpay_key: process.env.RZ_PAY_ID,
+        razorpay_customer_id: customerId,
         db_record_id: record.subscription_id,
       };
     } catch (error) {
