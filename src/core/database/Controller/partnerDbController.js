@@ -2909,7 +2909,26 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
       }
     },
     createSubscriptionRecord: async (data) => {
-      return await PartnerSubscriptions.create(data);
+      const startDate = data.start_date ? new Date(data.start_date) : new Date();
+      const endDate = data.end_date ? new Date(data.end_date) : new Date(startDate);
+      if (!data.end_date) {
+        let months = Number(data.duration_months) || 1;
+        if (!data.duration_months && data.plan_id) {
+          const plan = await PartnerSubscriptionPlans.findOne({
+            where: { plan_id: data.plan_id },
+            attributes: ["duration_months"],
+          });
+          months = Number(plan?.duration_months) || 1;
+        }
+        endDate.setMonth(endDate.getMonth() + months);
+      }
+
+      const { duration_months: _durationMonths, ...rest } = data;
+      return await PartnerSubscriptions.create({
+        ...rest,
+        start_date: startDate,
+        end_date: endDate,
+      });
     },
     getPartnerSubscription: async (salon_id) => {
       try {
