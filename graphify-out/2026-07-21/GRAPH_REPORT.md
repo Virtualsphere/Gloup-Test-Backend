@@ -1,13 +1,18 @@
-# Graph Report - .  (2026-07-21)
+# Graph Report - Gloup-Test-Backend  (2026-07-21)
 
 ## Corpus Check
-- 7 files · ~241,737 words
+- 122 files · ~243,560 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 964 nodes · 2053 edges · 86 communities (31 shown, 55 thin omitted)
-- Extraction: 91% EXTRACTED · 9% INFERRED · 0% AMBIGUOUS · INFERRED: 187 edges (avg confidence: 0.79)
+- 974 nodes · 2304 edges · 88 communities (34 shown, 54 thin omitted)
+- Extraction: 88% EXTRACTED · 12% INFERRED · 0% AMBIGUOUS · INFERRED: 271 edges (avg confidence: 0.79)
 - Token cost: 0 input · 0 output
+
+## Graph Freshness
+- Built from commit: `a1871802`
+- Run `git rev-parse HEAD` and compare to check if the graph is stale.
+- Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - Admin App Controller
@@ -93,68 +98,78 @@
 - Dependency: requirejs
 - Dependency: sharp
 - Dependency: winston
+- Dependency: zeptomail
+- Prod DB Restore Script
 
 ## God Nodes (most connected - your core abstractions)
-1. `formatSalonResponse()` - 15 edges
-2. `sendPushNotification()` - 15 edges
-3. `scripts` - 14 edges
-4. `ApplicationResult` - 13 edges
-5. `uploadToGCS()` - 13 edges
-6. `connection` - 11 edges
-7. `ApplicationResponse` - 11 edges
-8. `buildOpenApiSpec()` - 11 edges
-9. `PayloadCompiler` - 10 edges
-10. `GCSUpload` - 10 edges
+1. `scripts` - 15 edges
+2. `connection` - 15 edges
+3. `formatSalonResponse()` - 15 edges
+4. `uploadToGCS()` - 15 edges
+5. `sendPushNotification()` - 15 edges
+6. `ApplicationResult` - 14 edges
+7. `ApplicationResponse` - 12 edges
+8. `GCSUpload` - 12 edges
+9. `razorpayWebhook()` - 11 edges
+10. `partnerDbController` - 11 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `GloUp Dev Stack` --conceptually_related_to--> `Booking and Payment Flow`  [AMBIGUOUS]
   README.md → docs/booking-payment-flow.md
-- `main()` --calls--> `extractFcmTokens()`  [EXTRACTED]
-  scripts/reset-fcm-tokens-for-test.mjs → src/core/utils/fcmTokenService.js
 - `Appointment Confirmation Email Template` --conceptually_related_to--> `Booking and Payment Flow`  [INFERRED]
   src/core/utils/mailTemplate/delivered.html → docs/booking-payment-flow.md
 - `Legacy SQL Migration Notes` --references--> `appointments Table`  [INFERRED]
   sql_backup/migrations/README.md → docs/booking-payment-flow.md
 - `GuestDetails Table (SQL)` --shares_data_with--> `appointments Table`  [INFERRED]
   sql.txt → docs/booking-payment-flow.md
+- `up()` --calls--> `addColumnIfMissing()`  [EXTRACTED]
+  migrations/20260718120000-add-customer-contact-to-appointments.js → src/core/database/migrationHelpers.js
 
 ## Import Cycles
+- 3-file cycle: `src/Partner/controller/partnerappcontroller.js -> src/Partner/middleware/partnerappmiddleware.js -> src/core/database/Controller/partnerDbController.js -> src/Partner/controller/partnerappcontroller.js`
 - 3-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/database/Controller/AdminDbController.js -> src/Admin/controller/adminappcontroller.js`
+- 3-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
 - 3-file cycle: `src/User/controller/userappcontroller.js -> src/User/middleware/appmiddleware.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userappcontroller.js`
 - 3-file cycle: `src/User/controller/userauthcontroller.js -> src/User/middleware/authmiddleware.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userauthcontroller.js`
-- 3-file cycle: `src/Partner/controller/partnerappcontroller.js -> src/Partner/middleware/partnerappmiddleware.js -> src/core/database/Controller/partnerDbController.js -> src/Partner/controller/partnerappcontroller.js`
+- 4-file cycle: `src/Partner/controller/partnerappcontroller.js -> src/Partner/middleware/partnerappmiddleware.js -> src/core/utils/syncRazorpayPlans.js -> src/core/database/Controller/partnerDbController.js -> src/Partner/controller/partnerappcontroller.js`
 - 4-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/AdminDbController.js -> src/Admin/controller/adminappcontroller.js`
-- 4-file cycle: `src/User/controller/userappcontroller.js -> src/User/middleware/appmiddleware.js -> src/core/utils/bookingNotifications.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userappcontroller.js`
+- 4-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
 - 4-file cycle: `src/User/controller/userauthcontroller.js -> src/User/middleware/authmiddleware.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userauthcontroller.js`
+- 4-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/database/Controller/AdminDbController.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
+- 4-file cycle: `src/User/controller/userappcontroller.js -> src/User/middleware/appmiddleware.js -> src/core/utils/bookingNotifications.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userappcontroller.js`
+- 5-file cycle: `src/Partner/controller/partnerappcontroller.js -> src/Partner/middleware/partnerappmiddleware.js -> src/core/utils/helperfunctions.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/partnerDbController.js -> src/Partner/controller/partnerappcontroller.js`
 - 5-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/utils/pushNotificationService.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/AdminDbController.js -> src/Admin/controller/adminappcontroller.js`
+- 5-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/AdminDbController.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
+- 5-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/utils/pushNotificationService.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
 - 5-file cycle: `src/User/controller/userappcontroller.js -> src/User/middleware/appmiddleware.js -> src/core/utils/bookingNotifications.js -> src/core/utils/fcmTokenService.js -> src/core/database/Controller/userDbController.js -> src/User/controller/userappcontroller.js`
+- 5-file cycle: `src/Admin/controller/adminappcontroller.js -> src/Admin/middleware/adminappmiddleware.js -> src/core/database/Controller/AdminDbController.js -> src/core/utils/syncRazorpayPlans.js -> src/core/database/Controller/partnerDbController.js -> src/Admin/controller/adminappcontroller.js`
 
 ## Hyperedges (group relationships)
 - **Observability / Monitoring Stack** — docker_compose_app_service, docker_compose_prometheus_service, docker_compose_grafana_service, grafana_provisioning_datasources_datasource_prometheus_datasource, prometheus_prometheus_gloup_node_api_scrape_job [EXTRACTED 1.00]
 - **Booking and Payment Lifecycle** — docs_booking_payment_flow_v2_create_order_flow, docs_booking_payment_flow_payment_success_flow, docs_booking_payment_flow_razorpay_webhook, docs_booking_payment_flow_appointments_table, docs_booking_payment_flow_appointment_items_table, docs_booking_payment_flow_slot_availability, docs_booking_payment_flow_refund_flow [EXTRACTED 1.00]
 - **Deployment Pipeline (CI to VM)** — _github_workflows_deploy_deploy_backend_workflow, docker_compose_app_service, docker_compose_db_service, migrations_readme_umzug_migrations [EXTRACTED 1.00]
 
-## Communities (86 total, 55 thin omitted)
+## Communities (88 total, 54 thin omitted)
 
 ### Community 0 - "Admin App Controller"
-Cohesion: 0.06
-Nodes (109): addbanner(), addcategory(), addcoupons(), addnotification(), addpartnersubscription(), addpayouts(), addsubscription(), blockAndUnblockSlot() (+101 more)
+Cohesion: 0.07
+Nodes (78): addbanner(), addcategory(), addcoupons(), addnotification(), addpartnersubscription(), addpayouts(), addsubscription(), blockAndUnblockSlot() (+70 more)
 
 ### Community 1 - "Admin Search & Partner Ops"
-Cohesion: 0.05
-Nodes (77): xlsx, Adminappmiddleware, razorpay, adminDbController, partnerDbController, { Op, Sequelize }, SLOT_OCCUPANCY_SQL_ALIASED, userDbController (+69 more)
+Cohesion: 0.07
+Nodes (53): main(), TEST_EMAIL, redisClient, addPartnerBookingLogIfNew(), addUserBookingLogIfNew(), sendBookingConfirmedNotifications(), mapHttpErrorToFcmCode(), sendEachForMulticastViaHttpV1() (+45 more)
 
 ### Community 2 - "User App Controller"
-Cohesion: 0.05
-Nodes (69): addbankdetails(), addbankdetailsv2(), AddNewAminities(), addownerprofile(), addplans(), addprofessional(), addServiceV2(), addslots() (+61 more)
+Cohesion: 0.07
+Nodes (82): addaminities(), addbankdetails(), addbankdetailsv2(), addcombinations(), AddNewAminities(), addownerprofile(), addplans(), addprofessional() (+74 more)
 
 ### Community 3 - "Response Formatting Service"
 Cohesion: 0.06
 Nodes (64): addfavourites(), addGuestDetails(), addreview(), addtocart(), addwallet(), cancelPendingOrderV2(), create_order_wallet(), createInternalOrder() (+56 more)
 
 ### Community 4 - "Deployment & API Test Docs"
-Cohesion: 0.06
-Nodes (40): defaultdata, development, production, s3, ALLOWED_STATUS_TRANSITIONS, createDefaultTimeSlots(), formatTime(), { Op, Sequelize, fn, col } (+32 more)
+Cohesion: 0.12
+Nodes (22): chatResizer(), baseUrl, bucket, NETWORK_ERROR_CODES, saveToGCS(), shouldUseFetchFallback(), storage, storageOptions (+14 more)
 
 ### Community 5 - "Package Metadata & ESLint"
 Cohesion: 0.06
@@ -162,15 +177,15 @@ Nodes (47): Deploy Backend GitHub Actions Workflow, Admin Partner Approval Flow,
 
 ### Community 6 - "GCS Upload Utilities"
 Cohesion: 0.04
-Nodes (44): eslint, @eslint/js, globals, author, bugs, url, description, devDependencies (+36 more)
+Nodes (45): eslint, @eslint/js, globals, author, bugs, url, description, devDependencies (+37 more)
 
 ### Community 7 - "OpenAPI Swagger Export"
 Cohesion: 0.10
-Nodes (36): calculateTimeAgo(), checkIfOpen(), formatAmenities(), formatAmenitiesV2(), formatCouponResponse(), formatDuration(), formatGenderIcons(), formatLanguages() (+28 more)
+Nodes (37): calculateTimeAgo(), checkIfOpen(), formatAmenities(), formatAmenitiesV2(), formatCouponResponse(), formatDuration(), formatGenderIcons(), formatLanguages() (+29 more)
 
 ### Community 8 - "Application Response Core"
-Cohesion: 0.07
-Nodes (16): changePassword(), login(), logout(), verifyadmin(), adminauthmiddleware, approutes, adminauthroutes, apiLimiter (+8 more)
+Cohesion: 0.06
+Nodes (26): changePassword(), login(), logout(), verifyadmin(), adminauthmiddleware, apiLimiter, msg, rateLimit (+18 more)
 
 ### Community 9 - "Payload Compiler & Helpers"
 Cohesion: 0.11
@@ -185,52 +200,52 @@ Cohesion: 0.11
 Nodes (17): AccountLogs, appointment_items, appointments, DiscountsUsed, Favourites, GuestDetails, NotificationLogs, OtpLogs (+9 more)
 
 ### Community 12 - "Database Init & Migrations"
-Cohesion: 0.12
-Nodes (14): { Op, Sequelize }, razorpay, razorpay, addaminities(), addcombinations(), deleteserivice(), getaminitiesV2(), getbankdetails() (+6 more)
+Cohesion: 0.20
+Nodes (14): adminDbController, ALLOWED_STATUS_TRANSITIONS, createDefaultTimeSlots(), formatTime(), { Op, Sequelize, fn, col }, { Op, Sequelize }, razorpay, deleteFromGCS() (+6 more)
 
 ### Community 13 - "App Entrypoint & Logging"
 Cohesion: 0.14
 Nodes (12): ajv, require, buildAppointmentDateTime(), formatSlotTime(), schemaFormats, toIstDatePart(), birthDate, customTime (+4 more)
 
 ### Community 14 - "User Data Models"
-Cohesion: 0.22
-Nodes (14): mapHttpErrorToFcmCode(), sendEachForMulticastViaHttpV1(), base64url(), createSignedJwt(), getFcmAccessTokenViaFetch(), getFirebaseProjectId(), require, serviceAccount (+6 more)
+Cohesion: 0.16
+Nodes (18): userDbController, helperfunction, authentications, messagingFunction, __dirname, mailTemplatefolder, NodeMailerfunction, transporter (+10 more)
 
 ### Community 15 - "AJV Schema Validation"
-Cohesion: 0.14
-Nodes (10): app, __dirname, metricsMiddleware, Logger, router, smartLinkRouter, wellKnownDir, partnerRouter (+2 more)
+Cohesion: 0.08
+Nodes (29): app, __dirname, metricsMiddleware, [command = "up", arg], main(), approutes, adminauthroutes, adminRouter (+21 more)
 
 ### Community 16 - "Application Error Handling"
-Cohesion: 0.20
-Nodes (14): handlePaymentCaptured(), handlePaymentFailed(), handleSubscriptionActivated(), handleSubscriptionAuthenticated(), handleSubscriptionCancelled(), handleSubscriptionCharged(), handleSubscriptionCompleted(), handleSubscriptionHalted() (+6 more)
+Cohesion: 0.14
+Nodes (24): formatIndianMobileNumber(), formatPaymentStatus(), getBookingWhatsAppPayload(), NOTE: value must be the raw text to display — MSG91 does NOT want, sendBookingConfirmedWhatsApp(), sendMarketingBroadcast(), sendPartnerBookingWhatsApp(), sendUserBookingWhatsApp() (+16 more)
 
 ### Community 17 - "FCM HTTP v1 & OAuth"
 Cohesion: 0.13
 Nodes (15): ajv-formats, cors, jwk-to-pem, logger, nodemon, dependencies, ajv-formats, cors (+7 more)
 
 ### Community 18 - "WhatsApp Notifications"
-Cohesion: 0.26
-Nodes (11): [command = "up", arg], main(), main(), TEST_EMAIL, connection, createMigrator(), __dirname, migrationsGlob (+3 more)
+Cohesion: 0.23
+Nodes (13): appleLoginPartner(), deleteaccount(), emaillogin(), getdeviceId(), googleloginpartner(), logout(), otp_login(), otp_verify() (+5 more)
 
 ### Community 19 - "Package Dependencies"
-Cohesion: 0.13
-Nodes (14): admin, Adminnotificationlogs, adminSession, Banner, category, Coupons, ErrorLogs, FailedNotificationTokens (+6 more)
+Cohesion: 0.11
+Nodes (16): connection, { Op, Sequelize }, SLOT_OCCUPANCY_SQL_ALIASED, Adminnotificationlogs, adminSession, Banner, category, Coupons (+8 more)
 
 ### Community 20 - "Admin Data Models"
-Cohesion: 0.35
-Nodes (8): down(), up(), down(), up(), addColumnIfMissing(), columnExists(), dropColumnIfExists(), getColumnType()
+Cohesion: 0.26
+Nodes (13): down(), up(), down(), up(), down(), up(), addColumnIfMissing(), addIndexIfMissing() (+5 more)
 
 ### Community 21 - "Booking Notifications"
 Cohesion: 0.22
 Nodes (10): appleAuthentication, appleAuthentication1, config, config1, exchangeAuthCodeForToken(), exchangePartnerCodeForToken(), getApplePartnerPublicKeys(), getApplePublicKeys() (+2 more)
 
 ### Community 22 - "Admin Authentication"
-Cohesion: 0.40
-Nodes (10): formatIndianMobileNumber(), formatPaymentStatus(), getBookingWhatsAppPayload(), NOTE: value must be the raw text to display — MSG91 does NOT want, sendBookingConfirmedWhatsApp(), sendMarketingBroadcast(), sendPartnerBookingWhatsApp(), sendUserBookingWhatsApp() (+2 more)
+Cohesion: 0.30
+Nodes (10): AlreadyExists(), AuthenticationFailed(), BadRequest(), CustomError(), FileLimit(), InternalError(), NotFound(), NotSaved() (+2 more)
 
 ### Community 23 - "User DB Controller & Redis"
-Cohesion: 0.38
-Nodes (7): Configurations(), dbConnection(), dbSync(), modelAssociations(), spinner, processBlock(), setup()
+Cohesion: 0.31
+Nodes (7): xlsx, Adminappmiddleware, razorpay, admin, buildUsersExcelBuffer(), parseUsersFromExcel(), xlsx
 
 ### Community 24 - "App Config & Admin DB"
 Cohesion: 0.62
@@ -244,9 +259,21 @@ Nodes (4): client, cloneImages(), downloadFile(), exportDir
 Cohesion: 0.60
 Nodes (4): EXCEL_MIME_TYPES, fileFilter(), IMAGE_MIME_TYPES, marketingUpload
 
+### Community 28 - "Excel Parsing"
+Cohesion: 0.25
+Nodes (6): defaultdata, development, production, s3, inAppService, service
+
 ### Community 29 - "S3 Image Clone Script"
-Cohesion: 0.50
-Nodes (3): crypto, partnerappmiddleware, razorpay
+Cohesion: 0.21
+Nodes (6): SchemaError, PayloadCompiler, uploadToS3, crypto, partnerappmiddleware, razorpay
+
+### Community 86 - "Dependency: zeptomail"
+Cohesion: 0.48
+Nodes (5): main(), partnerDbController, ensurePlanSyncedToRazorpay(), razorpay, syncPlanToRazorpay()
+
+### Community 87 - "Prod DB Restore Script"
+Cohesion: 0.40
+Nodes (5): bookingSSE(), addClient(), broadcastNewBooking(), clients, removeClient()
 
 ## Ambiguous Edges - Review These
 - `GloUp Dev Stack` → `Booking and Payment Flow`  [AMBIGUOUS]
@@ -255,22 +282,22 @@ Nodes (3): crypto, partnerappmiddleware, razorpay
 ## Knowledge Gaps
 - **240 isolated node(s):** `__dirname`, `app`, `metricsMiddleware`, `development`, `production` (+235 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **55 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **54 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **What is the exact relationship between `GloUp Dev Stack` and `Booking and Payment Flow`?**
   _Edge tagged AMBIGUOUS (relation: conceptually_related_to) - confidence is low._
-- **Why does `dependencies` connect `FCM HTTP v1 & OAuth` to `Admin Search & Partner Ops`, `GCS Upload Utilities`, `FCM Token Reset Script`, `Smart Links Routes`, `Marketing Upload`, `Admin Auth & DB Error Log`, `Application Result Type`, `Cron Job Scheduling`, `Dependency: ajv`, `Dependency: ajv-formats`, `Dependency: apple-app-store-server-library`, `Dependency: apple-auth`, `Dependency: apple-signin-auth`, `Dependency: aws-sdk-client-s3`, `Dependency: axios`, `Dependency: bcrypt`, `Dependency: chalk`, `Dependency: compression`, `Dependency: crypto-js`, `Dependency: dotenv`, `Dependency: download`, `Dependency: ejs`, `Dependency: err-code`, `Dependency: express`, `Dependency: express-prom-bundle`, `Dependency: express-rate-limit`, `Dependency: firebase-admin`, `Dependency: fs`, `Dependency: geo-tz`, `Dependency: google-auth-library`, `Dependency: google-cloud-storage`, `Dependency: helmet`, `Dependency: https`, `Dependency: iap-verifier`, `Dependency: jsonwebtoken`, `Dependency: lodash`, `Dependency: moment`, `Dependency: multer`, `Dependency: multer-s3`, `Dependency: mysql`, `Dependency: mysql2`, `Dependency: node-apple-receipt-verify`, `Dependency: node-cache`, `Dependency: node-cron`, `Dependency: nodemailer`, `Dependency: ora`, `Dependency: path`, `Dependency: pm2`, `Dependency: prom-client`, `Dependency: puppeteer`, `Dependency: razorpay`, `Dependency: redis`, `Dependency: requirejs`?**
-  _High betweenness centrality (0.279) - this node is a cross-community bridge._
-- **Why does `xlsx` connect `Admin Search & Partner Ops` to `FCM HTTP v1 & OAuth`?**
-  _High betweenness centrality (0.256) - this node is a cross-community bridge._
+- **Why does `dependencies` connect `FCM HTTP v1 & OAuth` to `GCS Upload Utilities`, `User DB Controller & Redis`, `FCM Token Reset Script`, `Smart Links Routes`, `Marketing Upload`, `Admin Auth & DB Error Log`, `Application Result Type`, `Cron Job Scheduling`, `Dependency: ajv`, `Dependency: ajv-formats`, `Dependency: apple-app-store-server-library`, `Dependency: apple-auth`, `Dependency: apple-signin-auth`, `Dependency: aws-sdk-client-s3`, `Dependency: axios`, `Dependency: bcrypt`, `Dependency: chalk`, `Dependency: compression`, `Dependency: crypto-js`, `Dependency: dotenv`, `Dependency: download`, `Dependency: ejs`, `Dependency: err-code`, `Dependency: express`, `Dependency: express-prom-bundle`, `Dependency: express-rate-limit`, `Dependency: firebase-admin`, `Dependency: fs`, `Dependency: geo-tz`, `Dependency: google-auth-library`, `Dependency: google-cloud-storage`, `Dependency: helmet`, `Dependency: https`, `Dependency: iap-verifier`, `Dependency: jsonwebtoken`, `Dependency: lodash`, `Dependency: moment`, `Dependency: multer`, `Dependency: multer-s3`, `Dependency: mysql`, `Dependency: mysql2`, `Dependency: node-apple-receipt-verify`, `Dependency: node-cache`, `Dependency: node-cron`, `Dependency: nodemailer`, `Dependency: ora`, `Dependency: path`, `Dependency: pm2`, `Dependency: prom-client`, `Dependency: puppeteer`, `Dependency: razorpay`, `Dependency: redis`, `Dependency: requirejs`?**
+  _High betweenness centrality (0.276) - this node is a cross-community bridge._
+- **Why does `xlsx` connect `User DB Controller & Redis` to `FCM HTTP v1 & OAuth`?**
+  _High betweenness centrality (0.253) - this node is a cross-community bridge._
 - **What connects `__dirname`, `app`, `metricsMiddleware` to the rest of the system?**
   _240 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `Admin App Controller` be split into smaller, more focused modules?**
-  _Cohesion score 0.05780095610604085 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.0712962962962963 - nodes in this community are weakly interconnected._
 - **Should `Admin Search & Partner Ops` be split into smaller, more focused modules?**
-  _Cohesion score 0.05207920792079208 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06971153846153846 - nodes in this community are weakly interconnected._
 - **Should `User App Controller` be split into smaller, more focused modules?**
-  _Cohesion score 0.0532724505327245 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06666666666666667 - nodes in this community are weakly interconnected._

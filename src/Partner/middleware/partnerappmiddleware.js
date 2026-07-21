@@ -20,6 +20,8 @@ import { Op, Sequelize } from "sequelize";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
 import {
   ensurePlanSyncedToRazorpay,
+  resolveRazorpayPlanId,
+  linkRazorpayPlanIdToDb,
 } from "../../core/utils/syncRazorpayPlans.js";
 
 
@@ -1856,9 +1858,8 @@ partnerappmiddleware.addstore = {
           is_unlimited: Boolean(plan.is_unlimited),
           sort_order: plan.sort_order,
           is_joining_fee: isJoiningFee,
-          // Autopay only for Joining Fee (Razorpay Subscription).
-          // Growth/Premium keep the original one-time order checkout.
-          supports_autopay: isJoiningFee,
+          // All plans (Joining Fee, Growth, Premium) use Razorpay Subscriptions autopay.
+          supports_autopay: true,
           include_joining_fee_default: false,
           features:
             typeof plan.features === "string"
@@ -2338,19 +2339,13 @@ partnerappmiddleware.addstore = {
 
       const plainPlan = plan.toJSON ? plan.toJSON() : plan;
 
-      // Autopay is only for Joining Fee. Growth/Premium use one-time createorder.
-      if (!partnerDbController.app.isJoiningFeePlan(plainPlan)) {
-        throw Error.BadRequest(
-          "Auto-pay is only available for Joining Fee. Use one-time checkout for Growth/Premium."
-        );
-      }
-
-      // Prefer the Razorpay plan you created for Joining Fee (₹99), e.g. plan_TGCAT0HSBnFkMH
-      const envJoiningPlanId = process.env.JOINING_FEE_RAZORPAY_PLAN_ID;
-
+      // Prefer dashboard plan ids from env (Joining/Growth/Premium), else sync/create.
+      let razorpayPlanId = resolveRazorpayPlanId(plainPlan);
       try {
-        if (!plainPlan.razorpay_plan_id && !envJoiningPlanId) {
-          await ensurePlanSyncedToRazorpay(plainPlan);
+        if (razorpayPlanId) {
+          await linkRazorpayPlanIdToDb(plainPlan, razorpayPlanId);
+        } else {
+          razorpayPlanId = await ensurePlanSyncedToRazorpay(plainPlan);
           plan = await partnerDbController.app.getActivePlan(plan_id);
         }
       } catch (syncError) {
@@ -2364,10 +2359,13 @@ partnerappmiddleware.addstore = {
       }
 
       const syncedPlan = plan.toJSON ? plan.toJSON() : plan;
-      const razorpayPlanId = envJoiningPlanId || syncedPlan.razorpay_plan_id;
+      razorpayPlanId =
+        razorpayPlanId ||
+        resolveRazorpayPlanId(syncedPlan) ||
+        syncedPlan.razorpay_plan_id;
       if (!razorpayPlanId) {
         throw Error.BadRequest(
-          "Joining Fee plan not synced to Razorpay. Set JOINING_FEE_RAZORPAY_PLAN_ID or sync plans."
+          "Plan not synced to Razorpay. Set GROWTH/PREMIUM/JOINING_FEE_RAZORPAY_PLAN_ID or run plan sync."
         );
       }
 

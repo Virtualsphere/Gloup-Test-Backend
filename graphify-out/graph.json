@@ -598,8 +598,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "package_dependencies_ajv",
-      "community": 30,
-      "community_name": "FCM Token Reset Script",
+      "community": 17,
+      "community_name": "FCM HTTP v1 & OAuth",
       "norm_label": "ajv"
     },
     {
@@ -609,8 +609,8 @@
       "source_location": "L29",
       "_origin": "ast",
       "id": "ajv",
-      "community": 30,
-      "community_name": "FCM Token Reset Script",
+      "community": 17,
+      "community_name": "FCM HTTP v1 & OAuth",
       "norm_label": "ajv"
     },
     {
@@ -620,8 +620,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "package_dependencies_ajv_formats",
-      "community": 17,
-      "community_name": "FCM HTTP v1 & OAuth",
+      "community": 22,
+      "community_name": "Admin Authentication",
       "norm_label": "ajv-formats"
     },
     {
@@ -631,8 +631,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "ajv_formats",
-      "community": 17,
-      "community_name": "FCM HTTP v1 & OAuth",
+      "community": 22,
+      "community_name": "Admin Authentication",
       "norm_label": "ajv-formats"
     },
     {
@@ -2347,8 +2347,8 @@
       "source_location": "L87",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_getallpartnerdetails",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "getallpartnerdetails()"
     },
     {
@@ -2512,8 +2512,8 @@
       "source_location": "L377",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_getsalons",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "getsalons()"
     },
     {
@@ -2688,8 +2688,8 @@
       "source_location": "L686",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_getnotificationbyid",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "getnotificationbyid()"
     },
     {
@@ -2842,8 +2842,8 @@
       "source_location": "L962",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_getallsubscription",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "getallsubscription()"
     },
     {
@@ -2864,8 +2864,8 @@
       "source_location": "L1021",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_createservice",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "createservice()"
     },
     {
@@ -3073,8 +3073,8 @@
       "source_location": "L1400",
       "_origin": "ast",
       "id": "src_admin_controller_adminappcontroller_getserviceprovidedfor",
-      "community": 0,
-      "community_name": "Admin App Controller",
+      "community": 2,
+      "community_name": "User App Controller",
       "norm_label": "getserviceprovidedfor()"
     },
     {
@@ -3249,8 +3249,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_admin_middleware_authmiddleware",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "authmiddleware.js"
     },
     {
@@ -3293,8 +3293,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_admin_routes_approutes_approutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "approutes"
     },
     {
@@ -3348,8 +3348,8 @@
       "source_location": "L20",
       "_origin": "ast",
       "id": "src_admin_routes_authroutes_adminauthroutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "adminauthroutes"
     },
     {
@@ -3359,8 +3359,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_admin_routes_indexroutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "indexroutes.js"
     },
     {
@@ -3370,8 +3370,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_admin_routes_indexroutes_adminrouter",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "adminrouter"
     },
     {
@@ -3766,8 +3766,8 @@
       "source_location": "L704",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_addprofessional",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "addprofessional()"
     },
     {
@@ -3865,8 +3865,8 @@
       "source_location": "L904",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_getotalsales",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "getotalsales()"
     },
     {
@@ -3876,8 +3876,8 @@
       "source_location": "L924",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_addplans",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "addplans()"
     },
     {
@@ -3887,8 +3887,8 @@
       "source_location": "L944",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_plansuccess",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "plansuccess()"
     },
     {
@@ -3942,8 +3942,8 @@
       "source_location": "L1044",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_getslots",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "getslots()"
     },
     {
@@ -3953,8 +3953,8 @@
       "source_location": "L1064",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_getbbslots",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "getbbslots()"
     },
     {
@@ -4250,8 +4250,8 @@
       "source_location": "L1696",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_getownerprofilev2",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "getownerprofilev2()"
     },
     {
@@ -4261,8 +4261,8 @@
       "source_location": "L1716",
       "_origin": "ast",
       "id": "src_partner_controller_partnerappcontroller_getaminitiesv2",
-      "community": 2,
-      "community_name": "User App Controller",
+      "community": 0,
+      "community_name": "Admin App Controller",
       "norm_label": "getaminitiesv2()"
     },
     {
@@ -4404,41 +4404,41 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_partner_middleware_partnerappmiddleware",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "partnerappmiddleware.js"
     },
     {
       "label": "razorpay",
       "file_type": "code",
       "source_file": "src/Partner/middleware/partnerappmiddleware.js",
-      "source_location": "L31",
+      "source_location": "L33",
       "_origin": "ast",
       "id": "src_partner_middleware_partnerappmiddleware_razorpay",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "razorpay"
     },
     {
       "label": "crypto",
       "file_type": "code",
       "source_file": "src/Partner/middleware/partnerappmiddleware.js",
-      "source_location": "L35",
+      "source_location": "L37",
       "_origin": "ast",
       "id": "src_partner_middleware_partnerappmiddleware_crypto",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "crypto"
     },
     {
       "label": "partnerappmiddleware",
       "file_type": "code",
       "source_file": "src/Partner/middleware/partnerappmiddleware.js",
-      "source_location": "L37",
+      "source_location": "L39",
       "_origin": "ast",
       "id": "src_partner_middleware_partnerappmiddleware_partnerappmiddleware",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "partnerappmiddleware"
     },
     {
@@ -4470,8 +4470,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_partner_middleware_partnerauthmiddleware_partnerauthmiddleware",
-      "community": 14,
-      "community_name": "User Data Models",
+      "community": 18,
+      "community_name": "WhatsApp Notifications",
       "norm_label": "partnerauthmiddleware"
     },
     {
@@ -4481,8 +4481,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_partner_routes_indexroutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 18,
+      "community_name": "WhatsApp Notifications",
       "norm_label": "indexroutes.js"
     },
     {
@@ -4492,8 +4492,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_partner_routes_indexroutes_partnerrouter",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 18,
+      "community_name": "WhatsApp Notifications",
       "norm_label": "partnerrouter"
     },
     {
@@ -4525,8 +4525,8 @@
       "source_location": "L99",
       "_origin": "ast",
       "id": "src_partner_routes_partnerapproutes_approutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 18,
+      "community_name": "WhatsApp Notifications",
       "norm_label": "approutes"
     },
     {
@@ -4580,8 +4580,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_partner_routes_partnerauthroutes_authroutes",
-      "community": 15,
-      "community_name": "AJV Schema Validation",
+      "community": 18,
+      "community_name": "WhatsApp Notifications",
       "norm_label": "authroutes"
     },
     {
@@ -5394,8 +5394,8 @@
       "source_location": "L193",
       "_origin": "ast",
       "id": "src_user_controller_userauthcontroller_getdeviceid",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "getdeviceid()"
     },
     {
@@ -5614,8 +5614,8 @@
       "source_location": "L149",
       "_origin": "ast",
       "id": "src_user_middleware_appmiddleware_userappmiddleware",
-      "community": 3,
-      "community_name": "Response Formatting Service",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "userappmiddleware"
     },
     {
@@ -5669,8 +5669,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_user_routes_indexroutes",
-      "community": 16,
-      "community_name": "Application Error Handling",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "indexroutes.js"
     },
     {
@@ -5680,8 +5680,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_user_routes_indexroutes_userrouter",
-      "community": 16,
-      "community_name": "Application Error Handling",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "userrouter"
     },
     {
@@ -5713,8 +5713,8 @@
       "source_location": "L31",
       "_origin": "ast",
       "id": "src_user_routes_userapproutes_approutes",
-      "community": 16,
-      "community_name": "Application Error Handling",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "approutes"
     },
     {
@@ -5768,8 +5768,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_user_routes_userauthroutes_authroutes",
-      "community": 16,
-      "community_name": "Application Error Handling",
+      "community": 8,
+      "community_name": "Application Response Core",
       "norm_label": "authroutes"
     },
     {
@@ -5845,8 +5845,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_database_controller_partnerdbcontroller",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "partnerdbcontroller.js"
     },
     {
@@ -5856,8 +5856,8 @@
       "source_location": "L31",
       "_origin": "ast",
       "id": "src_core_database_controller_partnerdbcontroller_op_sequelize",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "{ op, sequelize }"
     },
     {
@@ -5867,8 +5867,8 @@
       "source_location": "L34",
       "_origin": "ast",
       "id": "src_core_database_controller_partnerdbcontroller_razorpay",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "razorpay"
     },
     {
@@ -5889,8 +5889,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_database_controller_userdbcontroller",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "userdbcontroller.js"
     },
     {
@@ -5900,8 +5900,8 @@
       "source_location": "L14",
       "_origin": "ast",
       "id": "src_core_database_controller_userdbcontroller_op_sequelize",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "{ op, sequelize }"
     },
     {
@@ -5911,8 +5911,8 @@
       "source_location": "L26",
       "_origin": "ast",
       "id": "src_core_database_controller_userdbcontroller_slot_occupancy_sql_aliased",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "slot_occupancy_sql_aliased"
     },
     {
@@ -5922,8 +5922,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_core_database_controller_userdbcontroller_formatduration",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "formatduration()"
     },
     {
@@ -5944,8 +5944,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_database_connection",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 86,
+      "community_name": "Dependency: zeptomail",
       "norm_label": "connection.js"
     },
     {
@@ -5955,8 +5955,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_core_database_connection_connection",
-      "community": 19,
-      "community_name": "Package Dependencies",
+      "community": 86,
+      "community_name": "Dependency: zeptomail",
       "norm_label": "connection"
     },
     {
@@ -6901,8 +6901,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_errors_applicationerror",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "applicationerror.js"
     },
     {
@@ -6912,8 +6912,8 @@
       "source_location": "L5",
       "_origin": "ast",
       "id": "src_core_errors_applicationerror_applicationerror",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "applicationerror"
     },
     {
@@ -6923,8 +6923,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_core_errors_applicationerror_applicationerror_constructor",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".constructor()"
     },
     {
@@ -6934,8 +6934,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_core_errors_applicationerror_applicationerror_prepare",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".prepare()"
     },
     {
@@ -6945,8 +6945,8 @@
       "source_location": "L31",
       "_origin": "ast",
       "id": "src_core_errors_applicationerror_applicationerror_create",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".create()"
     },
     {
@@ -6956,8 +6956,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "errorconstant.js"
     },
     {
@@ -6967,8 +6967,8 @@
       "source_location": "L7",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_notfound",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "notfound()"
     },
     {
@@ -6978,8 +6978,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_notsaved",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "notsaved()"
     },
     {
@@ -6989,8 +6989,8 @@
       "source_location": "L22",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_notvalid",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "notvalid()"
     },
     {
@@ -7000,8 +7000,8 @@
       "source_location": "L28",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_authenticationfailed",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "authenticationfailed()"
     },
     {
@@ -7011,8 +7011,8 @@
       "source_location": "L35",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_alreadyexists",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "alreadyexists()"
     },
     {
@@ -7022,8 +7022,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_filelimit",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "filelimit()"
     },
     {
@@ -7033,8 +7033,8 @@
       "source_location": "L51",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_somethingwentwrong",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "somethingwentwrong()"
     },
     {
@@ -7044,8 +7044,8 @@
       "source_location": "L58",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_internalerror",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "internalerror()"
     },
     {
@@ -7055,8 +7055,8 @@
       "source_location": "L66",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_customerror",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "customerror()"
     },
     {
@@ -7066,8 +7066,8 @@
       "source_location": "L73",
       "_origin": "ast",
       "id": "src_core_errors_errorconstant_badrequest",
-      "community": 22,
-      "community_name": "Admin Authentication",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "badrequest()"
     },
     {
@@ -7077,8 +7077,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_errors_schemaerror",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "schemaerror.js"
     },
     {
@@ -7088,8 +7088,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_errors_schemaerror_schemaerror",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "schemaerror"
     },
     {
@@ -7099,8 +7099,8 @@
       "source_location": "L2",
       "_origin": "ast",
       "id": "src_core_errors_schemaerror_schemaerror_constructor",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".constructor()"
     },
     {
@@ -7110,8 +7110,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_core_errors_schemaerror_schemaerror_init",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".__init()"
     },
     {
@@ -7165,8 +7165,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_inc_access_payloadcompiler",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "payloadcompiler.js"
     },
     {
@@ -7176,8 +7176,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_core_inc_access_payloadcompiler_payloadcompiler",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "payloadcompiler"
     },
     {
@@ -7187,8 +7187,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_core_inc_access_payloadcompiler_payloadcompiler_constructor",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".constructor()"
     },
     {
@@ -7198,8 +7198,8 @@
       "source_location": "L12",
       "_origin": "ast",
       "id": "src_core_inc_access_payloadcompiler_payloadcompiler_compile",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".compile()"
     },
     {
@@ -7209,8 +7209,8 @@
       "source_location": "L16",
       "_origin": "ast",
       "id": "src_core_inc_access_payloadcompiler_payloadcompiler_init",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": ".__init()"
     },
     {
@@ -7220,8 +7220,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_inc_response_applicationresponse",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "applicationresponse.js"
     },
     {
@@ -7297,8 +7297,8 @@
       "source_location": "L37",
       "_origin": "ast",
       "id": "src_core_inc_response_applicationresponse_defaultresponsecodes",
-      "community": 8,
-      "community_name": "Application Response Core",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "defaultresponsecodes"
     },
     {
@@ -7517,8 +7517,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_schema_formats",
-      "community": 13,
-      "community_name": "App Entrypoint & Logging",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "formats.js"
     },
     {
@@ -7539,8 +7539,8 @@
       "source_location": "L11",
       "_origin": "ast",
       "id": "src_core_schema_formats_formatdate",
-      "community": 13,
-      "community_name": "App Entrypoint & Logging",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "formatdate()"
     },
     {
@@ -7550,8 +7550,8 @@
       "source_location": "L27",
       "_origin": "ast",
       "id": "src_core_schema_formats_toistdatepart",
-      "community": 13,
-      "community_name": "App Entrypoint & Logging",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "toistdatepart()"
     },
     {
@@ -7561,8 +7561,8 @@
       "source_location": "L38",
       "_origin": "ast",
       "id": "src_core_schema_formats_formatslottime",
-      "community": 13,
-      "community_name": "App Entrypoint & Logging",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "formatslottime()"
     },
     {
@@ -7572,8 +7572,8 @@
       "source_location": "L58",
       "_origin": "ast",
       "id": "src_core_schema_formats_buildappointmentdatetime",
-      "community": 13,
-      "community_name": "App Entrypoint & Logging",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "buildappointmentdatetime()"
     },
     {
@@ -8430,8 +8430,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_utils_appleuser",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "appleuser.js"
     },
     {
@@ -8441,8 +8441,8 @@
       "source_location": "L8",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_config",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "config"
     },
     {
@@ -8452,8 +8452,8 @@
       "source_location": "L15",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_exchangeauthcodefortoken",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "exchangeauthcodefortoken()"
     },
     {
@@ -8463,8 +8463,8 @@
       "source_location": "L50",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_getapplepublickeys",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "getapplepublickeys()"
     },
     {
@@ -8474,8 +8474,8 @@
       "source_location": "L55",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_verifyidtoken",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "verifyidtoken()"
     },
     {
@@ -8485,8 +8485,8 @@
       "source_location": "L82",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_appleauthentication",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "appleauthentication"
     },
     {
@@ -8496,8 +8496,8 @@
       "source_location": "L95",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_config1",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "config1"
     },
     {
@@ -8507,8 +8507,8 @@
       "source_location": "L102",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_exchangepartnercodefortoken",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "exchangepartnercodefortoken()"
     },
     {
@@ -8518,8 +8518,8 @@
       "source_location": "L137",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_getapplepartnerpublickeys",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "getapplepartnerpublickeys()"
     },
     {
@@ -8529,8 +8529,8 @@
       "source_location": "L142",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_verifypartneridtoken",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "verifypartneridtoken()"
     },
     {
@@ -8540,8 +8540,8 @@
       "source_location": "L169",
       "_origin": "ast",
       "id": "src_core_utils_appleuser_appleauthentication1",
-      "community": 21,
-      "community_name": "Booking Notifications",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "appleauthentication1"
     },
     {
@@ -9035,8 +9035,8 @@
       "source_location": "L184",
       "_origin": "ast",
       "id": "src_core_utils_gcs_gcsupload_deletefromgcs",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 23,
+      "community_name": "User DB Controller & Redis",
       "norm_label": "deletefromgcs()"
     },
     {
@@ -9057,8 +9057,8 @@
       "source_location": "L224",
       "_origin": "ast",
       "id": "src_core_utils_gcs_gcsupload_gcsupload",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 23,
+      "community_name": "User DB Controller & Redis",
       "norm_label": "gcsupload"
     },
     {
@@ -9332,8 +9332,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_utils_logger",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "logger.js"
     },
     {
@@ -9343,8 +9343,8 @@
       "source_location": "L6",
       "_origin": "ast",
       "id": "src_core_utils_logger_logger",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 21,
+      "community_name": "Booking Notifications",
       "norm_label": "logger"
     },
     {
@@ -9849,8 +9849,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_utils_s3_s3upload",
-      "community": 12,
-      "community_name": "Database Init & Migrations",
+      "community": 23,
+      "community_name": "User DB Controller & Redis",
       "norm_label": "s3upload.js"
     },
     {
@@ -9937,8 +9937,8 @@
       "source_location": "L1",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "storegenderfilter.js"
     },
     {
@@ -9948,8 +9948,8 @@
       "source_location": "L9",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_storetypecolumn",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "storetypecolumn()"
     },
     {
@@ -9959,8 +9959,8 @@
       "source_location": "L13",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_strictunisexmatch",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "strictunisexmatch()"
     },
     {
@@ -9970,8 +9970,8 @@
       "source_location": "L18",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_maletypematch",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "maletypematch()"
     },
     {
@@ -9981,8 +9981,8 @@
       "source_location": "L30",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_femaletypematch",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "femaletypematch()"
     },
     {
@@ -9992,8 +9992,8 @@
       "source_location": "L43",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_storegenderwheresql",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "storegenderwheresql()"
     },
     {
@@ -10003,8 +10003,8 @@
       "source_location": "L69",
       "_origin": "ast",
       "id": "src_core_utils_storegenderfilter_storegendercondition",
-      "community": 24,
-      "community_name": "App Config & Admin DB",
+      "community": 14,
+      "community_name": "User Data Models",
       "norm_label": "storegendercondition()"
     },
     {
@@ -10030,10 +10030,32 @@
       "norm_label": "razorpay"
     },
     {
+      "label": "resolveRazorpayPlanId()",
+      "file_type": "code",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L13",
+      "_origin": "ast",
+      "id": "src_core_utils_syncrazorpayplans_resolverazorpayplanid",
+      "community": 86,
+      "community_name": "Dependency: zeptomail",
+      "norm_label": "resolverazorpayplanid()"
+    },
+    {
+      "label": "linkRazorpayPlanIdToDb()",
+      "file_type": "code",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L30",
+      "_origin": "ast",
+      "id": "src_core_utils_syncrazorpayplans_linkrazorpayplanidtodb",
+      "community": 86,
+      "community_name": "Dependency: zeptomail",
+      "norm_label": "linkrazorpayplanidtodb()"
+    },
+    {
       "label": "syncPlanToRazorpay()",
       "file_type": "code",
       "source_file": "src/core/utils/syncRazorpayPlans.js",
-      "source_location": "L16",
+      "source_location": "L46",
       "_origin": "ast",
       "id": "src_core_utils_syncrazorpayplans_syncplantorazorpay",
       "community": 86,
@@ -10044,7 +10066,7 @@
       "label": "ensurePlanSyncedToRazorpay()",
       "file_type": "code",
       "source_file": "src/core/utils/syncRazorpayPlans.js",
-      "source_location": "L62",
+      "source_location": "L98",
       "_origin": "ast",
       "id": "src_core_utils_syncrazorpayplans_ensureplansyncedtorazorpay",
       "community": 86,
@@ -10201,8 +10223,8 @@
       "source_location": "L4",
       "_origin": "ast",
       "id": "src_core_utils_s3_s3upload_uploadtos3",
-      "community": 29,
-      "community_name": "S3 Image Clone Script",
+      "community": 23,
+      "community_name": "User DB Controller & Redis",
       "norm_label": "uploadtos3"
     },
     {
@@ -10228,8 +10250,8 @@
       "rationale": "SSH deploy to a GCP VM on push to main: git pull, docker compose up --build, poll /status for health, then confirm migration status via scripts/migrate.mjs (migrations apply on app startup, deploy only verifies none pending).",
       "community": 5,
       "norm_label": "deploy backend github actions workflow",
-      "id": "_github_workflows_deploy_deploy_backend_workflow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "_github_workflows_deploy_deploy_backend_workflow"
     },
     {
       "label": "GloUp Backend",
@@ -10242,8 +10264,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "gloup backend",
-      "id": "readme_gloup_backend",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "readme_gloup_backend"
     },
     {
       "label": "GloUp Dev Stack",
@@ -10257,8 +10279,8 @@
       "rationale": "Declared stack: JWT security, Bcrypt/Crypto encryption, Sequelize ORM, MySQL, AJV validation, Multer uploads, SendMail, Express view engine, err-code, Stripe payment gateway. Note: README claims Stripe but all payment docs describe Razorpay \u2014 likely stale.",
       "community": 5,
       "norm_label": "gloup dev stack",
-      "id": "readme_dev_stack",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "readme_dev_stack"
     },
     {
       "label": "Gloup Partner API Testing Scenarios",
@@ -10271,8 +10293,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "gloup partner api testing scenarios",
-      "id": "api_test_partner_api_testing_scenarios",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "api_test_partner_api_testing_scenarios"
     },
     {
       "label": "Partner OTP Authentication Flow",
@@ -10286,8 +10308,8 @@
       "rationale": "POST /partner/v2/sendotp then /partner/v2/verifyotp. Mock numbers 9876543210/9876543211 accept static OTP 123456 for testing without SMS delivery.",
       "community": 5,
       "norm_label": "partner otp authentication flow",
-      "id": "api_test_otp_authentication_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "api_test_otp_authentication_flow"
     },
     {
       "label": "Admin Partner Approval Flow",
@@ -10301,8 +10323,8 @@
       "rationale": "New stores start with completion_status 'pending'; admin approves via POST /admin/app/getpartnerverification/:id setting completion_status 'completed'.",
       "community": 5,
       "norm_label": "admin partner approval flow",
-      "id": "api_test_admin_approval_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "api_test_admin_approval_flow"
     },
     {
       "label": "Store Visibility Gate",
@@ -10316,8 +10338,8 @@
       "rationale": "New stores must NOT appear in user-app search or nearby results until admin approval \u2014 gating prevents unvetted salons from being bookable.",
       "community": 5,
       "norm_label": "store visibility gate",
-      "id": "api_test_visibility_gate",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "api_test_visibility_gate"
     },
     {
       "label": "Partner Token (AES-encrypted JWT)",
@@ -10331,8 +10353,8 @@
       "rationale": "Session token returned by /partner/v2/verifyotp, sent as 'partnertoken' header; invalidated by /partner/auth/logout.",
       "community": 5,
       "norm_label": "partner token (aes-encrypted jwt)",
-      "id": "api_test_partnertoken",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "api_test_partnertoken"
     },
     {
       "label": "MySQL db Service (docker-compose)",
@@ -10346,8 +10368,8 @@
       "rationale": "mysql:8.0 with healthcheck; app waits for service_healthy. Root password committed in the compose file \u2014 flagged as a secrets-management risk by the scale readiness review.",
       "community": 5,
       "norm_label": "mysql db service (docker-compose)",
-      "id": "docker_compose_db_service",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docker_compose_db_service"
     },
     {
       "label": "Gloup API app Service (docker-compose)",
@@ -10361,8 +10383,8 @@
       "rationale": "Node API on port 5678, healthchecked via GET /status, wired to MySQL, Redis (REDIS_URL redis://gloup-redis:6379), Firebase credentials, Apple auth key, and GCS bucket for images.",
       "community": 5,
       "norm_label": "gloup api app service (docker-compose)",
-      "id": "docker_compose_app_service",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docker_compose_app_service"
     },
     {
       "label": "Prometheus Service (docker-compose)",
@@ -10375,8 +10397,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "prometheus service (docker-compose)",
-      "id": "docker_compose_prometheus_service",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docker_compose_prometheus_service"
     },
     {
       "label": "Grafana Service (docker-compose)",
@@ -10389,8 +10411,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "grafana service (docker-compose)",
-      "id": "docker_compose_grafana_service",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docker_compose_grafana_service"
     },
     {
       "label": "Redis Service (docker-compose)",
@@ -10403,8 +10425,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "redis service (docker-compose)",
-      "id": "docker_compose_redis_service",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docker_compose_redis_service"
     },
     {
       "label": "Admin Send Targeted Notification API",
@@ -10418,8 +10440,8 @@
       "rationale": "POST /admin/app/send-targeted-notification sends FCM push to ONE user or partner. In-app notification log is always written; push is best-effort \u2014 missing FCM token returns HTTP 201, not 400, so the recipient still sees the message in-app.",
       "community": 5,
       "norm_label": "admin send targeted notification api",
-      "id": "docs_admin_targeted_notification_api_send_targeted_notification",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_admin_targeted_notification_api_send_targeted_notification"
     },
     {
       "label": "Admin Broadcast Notification API",
@@ -10433,8 +10455,8 @@
       "rationale": "POST /admin/app/addnotification targets many users/partners (sent_to: all/user/store), in contrast to the single-recipient targeted API.",
       "community": 5,
       "norm_label": "admin broadcast notification api",
-      "id": "docs_admin_targeted_notification_api_broadcast_notification",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_admin_targeted_notification_api_broadcast_notification"
     },
     {
       "label": "FCM Token Pruning",
@@ -10448,8 +10470,8 @@
       "rationale": "Invalid/stale FCM tokens are removed from the database after failed sends (e.g. messaging/registration-token-not-registered). Only the latest stored token per recipient is used to avoid duplicate notifications on the same phone.",
       "community": 5,
       "norm_label": "fcm token pruning",
-      "id": "docs_admin_targeted_notification_api_fcm_token_pruning",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_admin_targeted_notification_api_fcm_token_pruning"
     },
     {
       "label": "Device ID (FCM Token) Registration",
@@ -10463,8 +10485,8 @@
       "rationale": "POST /user/auth/deviceId and /partner/auth/deviceId register FCM tokens; each call replaces the previous token so one active token is kept per user/store.",
       "community": 5,
       "norm_label": "device id (fcm token) registration",
-      "id": "docs_admin_targeted_notification_api_device_id_registration",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_admin_targeted_notification_api_device_id_registration"
     },
     {
       "label": "API Scale Readiness Review (100k Users)",
@@ -10478,8 +10500,8 @@
       "rationale": "Verdict: 100k registered users is plausible after index/query cleanup; 100k concurrent users is not, given a single Node process, 20-connection DB pool, and SQL-heavy live endpoints. All fixes deliberately preserve the frontend API contract.",
       "community": 5,
       "norm_label": "api scale readiness review (100k users)",
-      "id": "docs_api_scale_readiness_100k_users_scale_readiness_review",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_scale_readiness_review"
     },
     {
       "label": "Unbounded Admin Queries",
@@ -10493,8 +10515,8 @@
       "rationale": "Admin endpoints (getallusers, getpayoutlogs, getallpartner, etc. in AdminDbController.js) return full tables with no pagination, causing memory blowup and table scans at scale. Fix: default server-side pagination with capped limits while keeping response shape.",
       "community": 5,
       "norm_label": "unbounded admin queries",
-      "id": "docs_api_scale_readiness_100k_users_unbounded_admin_queries",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_unbounded_admin_queries"
     },
     {
       "label": "Runtime DB Sync In Production",
@@ -10508,8 +10530,8 @@
       "rationale": "Production boot runs connection.sync({force:false}) in src/core/database/initialize.js \u2014 schema changes at runtime, startup races between instances, unversioned schema. Recommended fix: versioned migrations run as a deploy step.",
       "community": 5,
       "norm_label": "runtime db sync in production",
-      "id": "docs_api_scale_readiness_100k_users_runtime_db_sync",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_runtime_db_sync"
     },
     {
       "label": "Database Index Strategy",
@@ -10523,8 +10545,8 @@
       "rationale": "Recommends composite indexes on User, UserSession, Store, StoreSession, appointments, appointment_items, Reviews, Favourites, PartnerAddress, StoreServices, WalletLogs, NotificationLogs \u2014 the highest-leverage scale fix requiring no API change.",
       "community": 5,
       "norm_label": "database index strategy",
-      "id": "docs_api_scale_readiness_100k_users_index_strategy",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_index_strategy"
     },
     {
       "label": "Notification Queueing (Background Workers)",
@@ -10538,8 +10560,8 @@
       "rationale": "FirebaseService.notifyOrderStatus sends FCM multicast directly in request paths and admin flows load all device tokens into memory. Fix: queue jobs (BullMQ+Redis or similar) so the API returns fast and workers batch sends.",
       "community": 5,
       "norm_label": "notification queueing (background workers)",
-      "id": "docs_api_scale_readiness_100k_users_notification_queueing",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_notification_queueing"
     },
     {
       "label": "Idempotent Payment Finalization",
@@ -10553,8 +10575,8 @@
       "rationale": "Duplicate paymentsucssess calls can double-apply wallet/notification side effects; payment update must check existing status/payment id and run in a transaction. Critical-priority fix.",
       "community": 5,
       "norm_label": "idempotent payment finalization",
-      "id": "docs_api_scale_readiness_100k_users_idempotent_payment_finalization",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_idempotent_payment_finalization"
     },
     {
       "label": "Redis-Backed Rate Limiting",
@@ -10568,8 +10590,8 @@
       "rationale": "Current rate limits on OTP routes are in-memory, so they break across multiple app instances. Redis-backed limits needed on OTP, login, payment, search, report, and upload endpoints before horizontal scaling.",
       "community": 5,
       "norm_label": "redis-backed rate limiting",
-      "id": "docs_api_scale_readiness_100k_users_redis_rate_limiting",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_redis_rate_limiting"
     },
     {
       "label": "Observability (Metrics, Logs, APM)",
@@ -10583,8 +10605,8 @@
       "rationale": "Recommends request ids, structured JSON logs, latency/error/pool metrics, and APM; notes the /status endpoint only returns a static response and pool stats are noisily console-logged every 5 seconds.",
       "community": 5,
       "norm_label": "observability (metrics, logs, apm)",
-      "id": "docs_api_scale_readiness_100k_users_observability",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_api_scale_readiness_100k_users_observability"
     },
     {
       "label": "Booking and Payment Flow",
@@ -10598,8 +10620,8 @@
       "rationale": "End-to-end explanation of customer booking: amount calculated server-side from DB prices, Razorpay order created, appointment + items rows written in a transaction, app-driven payment success plus Razorpay webhook as server-to-server backup.",
       "community": 5,
       "norm_label": "booking and payment flow",
-      "id": "docs_booking_payment_flow_booking_payment_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_booking_payment_flow"
     },
     {
       "label": "V2 Create Order Flow (createOrderV2)",
@@ -10613,8 +10635,8 @@
       "rationale": "POST /user/app/v2/createorder: prices fetched from StoreServices/Combo by ID so the client cannot spoof amounts; gst is added as a flat amount (not a percentage); appointment saved with payment_status 'pending' but status 'booked' before payment \u2014 a critical flaw since unpaid orders occupy slots.",
       "community": 5,
       "norm_label": "v2 create order flow (createorderv2)",
-      "id": "docs_booking_payment_flow_v2_create_order_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_v2_create_order_flow"
     },
     {
       "label": "V2 Payment Success Flow (paymentsuccessV2)",
@@ -10628,8 +10650,8 @@
       "rationale": "POST /user/app/v2/paymentsuccess finds appointment by razorpay_id + user_id, sets payment_status 'success' / status 'booked', stores razorpay_signature WITHOUT verifying it, does not recheck paid amount, and does not credit store wallet (unlike webhook and legacy v1 \u2014 inconsistent settlement).",
       "community": 5,
       "norm_label": "v2 payment success flow (paymentsuccessv2)",
-      "id": "docs_booking_payment_flow_payment_success_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_payment_success_flow"
     },
     {
       "label": "Razorpay Webhook Handler",
@@ -10643,8 +10665,8 @@
       "rationale": "POST /user/webhook/razorpay exists as server-to-server backup when the app never calls payment success. Verifies HMAC signature against RZ_WEBHOOK_SECRET using raw body (mounted before express.json). payment.captured credits store wallet; payment.failed writes status 'failed' which is not in the model enum and can fail; missing secret still returns 200 so Razorpay stops retrying.",
       "community": 5,
       "norm_label": "razorpay webhook handler",
-      "id": "docs_booking_payment_flow_razorpay_webhook",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_razorpay_webhook"
     },
     {
       "label": "appointments Table",
@@ -10658,8 +10680,8 @@
       "rationale": "Central booking table: user_id, store_id, booking_date, slot_id, amount, razorpay_id, payment_status, payment_id, razorpay_signature, status (booked/cancelled/completed/confirmed/refunded/pending), wallet/discount fields, booking_for, guest_id. Status spellings are inconsistent (success vs legacy 'sucssess').",
       "community": 5,
       "norm_label": "appointments table",
-      "id": "docs_booking_payment_flow_appointments_table",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_appointments_table"
     },
     {
       "label": "appointment_items Table",
@@ -10673,8 +10695,8 @@
       "rationale": "Line items per booking: appointment_id plus service_id or combo_id with service_amount.",
       "community": 5,
       "norm_label": "appointment_items table",
-      "id": "docs_booking_payment_flow_appointment_items_table",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_appointment_items_table"
     },
     {
       "label": "Slot Availability Logic",
@@ -10688,8 +10710,8 @@
       "rationale": "GET /user/app/v2/getslotstatus counts booked/confirmed/completed and recent (<5 min) pending appointments plus SlotBlockedDates. Because v2 creates unpaid orders as 'booked', abandoned checkouts block slots indefinitely; no row locking or unique constraint prevents two users booking the same slot concurrently.",
       "community": 5,
       "norm_label": "slot availability logic",
-      "id": "docs_booking_payment_flow_slot_availability",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_slot_availability"
     },
     {
       "label": "Refund Flow",
@@ -10703,8 +10725,8 @@
       "rationale": "User initiaterefund cancels and conditionally creates refund_requests (time condition looks inverted vs normal policy). Admin updaterefundrequest triggers real Razorpay refund; admin refundbookings route is broken by a middleware function-name mismatch and a Razorpay-refund TODO. Partner cancellation never triggers refund logic.",
       "community": 5,
       "norm_label": "refund flow",
-      "id": "docs_booking_payment_flow_refund_flow",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_refund_flow"
     },
     {
       "label": "Missing Razorpay Signature Verification",
@@ -10718,8 +10740,8 @@
       "rationale": "Critical loophole: v2 payment success stores but never verifies razorpay_signature (HMAC_SHA256 of order_id|payment_id with key secret), and never rechecks amount/currency with Razorpay \u2014 anyone can mark their own pending appointment paid. Legacy verification code exists but is commented out.",
       "community": 5,
       "norm_label": "missing razorpay signature verification",
-      "id": "docs_booking_payment_flow_signature_verification_gap",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_booking_payment_flow_signature_verification_gap"
     },
     {
       "label": "Partner V2 Services API",
@@ -10733,8 +10755,8 @@
       "rationale": "POST /v2/addservices, PATCH /v2/updateservices, GET /v2/services under /partner/app. Ownership enforced via store_id from the partnertoken session; duration strings like '1h'/'30m' normalized to HH:MM:SS.",
       "community": 5,
       "norm_label": "partner v2 services api",
-      "id": "docs_partner_v2_services_api_v2_services_api",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_partner_v2_services_api_v2_services_api"
     },
     {
       "label": "Swagger / OpenAPI Documentation",
@@ -10748,8 +10770,8 @@
       "rationale": "OpenAPI spec is generated in-process at startup by src/core/swagger/parseRoutes.js reading the six Express route files; auth requirements inferred from middleware names; no extra npm packages \u2014 Swagger UI loaded from CDN. Named request schemas live in schemas.js/resolveRequestBody.js.",
       "community": 5,
       "norm_label": "swagger / openapi documentation",
-      "id": "docs_swagger_swagger_openapi_docs",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "docs_swagger_swagger_openapi_docs"
     },
     {
       "label": "Store Creation Endpoint Analysis Report",
@@ -10762,8 +10784,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "store creation endpoint analysis report",
-      "id": "endpoints_report_store_creation_analysis",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "endpoints_report_store_creation_analysis"
     },
     {
       "label": "Legacy /createstore (v1)",
@@ -10777,8 +10799,8 @@
       "rationale": "Critically broken: partnerDbController.app.addpartner uses an undefined variable 'data' in its where clause and ignores the passed store id, so the update targets wrong rows or crashes. Report recommends deprecating v1 entirely.",
       "community": 5,
       "norm_label": "legacy /createstore (v1)",
-      "id": "endpoints_report_createstore_v1",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "endpoints_report_createstore_v1"
     },
     {
       "label": "Modernized /v2/createstore",
@@ -10792,8 +10814,8 @@
       "rationale": "Recommended path: strict field validation, atomic Sequelize transaction (upsertStoreProfile) covering address sync, category refresh via bulkCreate, and profile update \u2014 rollback prevents orphaned data. Correctly uses store ID for updates.",
       "community": 5,
       "norm_label": "modernized /v2/createstore",
-      "id": "endpoints_report_createstore_v2",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "endpoints_report_createstore_v2"
     },
     {
       "label": "completion_status Transition Discrepancy",
@@ -10807,8 +10829,8 @@
       "rationale": "v2 sets completion_status 'completed' immediately on creation (partnerDbController.js:2941), but the business requirement is 'pending' until administrative approval; v1 relies on the model default 'pending'. This conflicts with the admin approval / visibility-gate workflow.",
       "community": 5,
       "norm_label": "completion_status transition discrepancy",
-      "id": "endpoints_report_completion_status_discrepancy",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "endpoints_report_completion_status_discrepancy"
     },
     {
       "label": "Grafana Prometheus Datasource",
@@ -10821,8 +10843,8 @@
       "contributor": null,
       "community": 5,
       "norm_label": "grafana prometheus datasource",
-      "id": "grafana_provisioning_datasources_datasource_prometheus_datasource",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "grafana_provisioning_datasources_datasource_prometheus_datasource"
     },
     {
       "label": "Umzug Database Migrations",
@@ -10836,8 +10858,8 @@
       "rationale": "Versioned, idempotent migrations (Umzug + SequelizeMeta, same approach as Sequelize CLI) applied automatically on app startup and via scripts/migrate.mjs. connection.sync only creates brand-new tables; ANY change to an existing table must be a migration. Helpers in migrationHelpers.js (e.g. addColumnIfMissing) keep re-runs safe when SQL was already applied manually.",
       "community": 5,
       "norm_label": "umzug database migrations",
-      "id": "migrations_readme_umzug_migrations",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "migrations_readme_umzug_migrations"
     },
     {
       "label": "Prometheus gloup-node-api Scrape Job",
@@ -10851,8 +10873,8 @@
       "rationale": "Scrapes app:5678 every 5 seconds for API metrics.",
       "community": 5,
       "norm_label": "prometheus gloup-node-api scrape job",
-      "id": "prometheus_prometheus_gloup_node_api_scrape_job",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "prometheus_prometheus_gloup_node_api_scrape_job"
     },
     {
       "label": "StoreLanguages Table (SQL)",
@@ -10866,8 +10888,8 @@
       "rationale": "Join table mapping stores to languages with FK cascade to Store and Languages plus a unique (store_id, language_id) constraint.",
       "community": 82,
       "norm_label": "storelanguages table (sql)",
-      "id": "sql_storelanguages_table",
-      "community_name": "Dependency: sharp"
+      "community_name": "Dependency: sharp",
+      "id": "sql_storelanguages_table"
     },
     {
       "label": "Languages Table (SQL)",
@@ -10880,8 +10902,8 @@
       "contributor": null,
       "community": 82,
       "norm_label": "languages table (sql)",
-      "id": "sql_languages_table",
-      "community_name": "Dependency: sharp"
+      "community_name": "Dependency: sharp",
+      "id": "sql_languages_table"
     },
     {
       "label": "GuestDetails Table (SQL)",
@@ -10895,8 +10917,8 @@
       "rationale": "Stores guest person details (name, gender, age, phone) for bookings made on someone else's behalf; the same file ALTERs appointments to add booking_for and guest_id columns linking to it.",
       "community": 5,
       "norm_label": "guestdetails table (sql)",
-      "id": "sql_guestdetails_table",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "sql_guestdetails_table"
     },
     {
       "label": "Subscription Module Tables (SQL)",
@@ -10910,8 +10932,8 @@
       "rationale": "SubscriptionPlans (Starter/Growth/Premium at 299/499/699 for 30 days) and StoreSubscription with FK fk_store_subscription_plan; includes a paymet_status\u2192payment_status typo fix.",
       "community": 84,
       "norm_label": "subscription module tables (sql)",
-      "id": "sql_subscription_module",
-      "community_name": "Dependency: winston"
+      "community_name": "Dependency: winston",
+      "id": "sql_subscription_module"
     },
     {
       "label": "Legacy SQL Migration Notes",
@@ -10925,8 +10947,8 @@
       "rationale": "Warns not to run legacy SQL by hand: the customer-contact and pending-status appointment schema changes were converted to idempotent Umzug JS migrations that detect manual application and only record themselves in SequelizeMeta.",
       "community": 5,
       "norm_label": "legacy sql migration notes",
-      "id": "sql_backup_migrations_readme_legacy_sql_notes",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "sql_backup_migrations_readme_legacy_sql_notes"
     },
     {
       "label": "Appointment Confirmation Email Template",
@@ -10940,8 +10962,8 @@
       "rationale": "EJS/HTML email rendering booking confirmation: orders.order_id, orders.Finalcart service rows (service_name, amount, discounted_amount, final_price), subtotal/discount/total, and customer name. Filename 'delivered' suggests it was repurposed from an e-commerce shipping template (shipping-truck illustration remains).",
       "community": 5,
       "norm_label": "appointment confirmation email template",
-      "id": "src_core_utils_mailtemplate_delivered_appointment_confirmation_email",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "src_core_utils_mailtemplate_delivered_appointment_confirmation_email"
     },
     {
       "label": "Team Task Assignments",
@@ -10955,8 +10977,8 @@
       "rationale": "Informal task list: saloon web login/timeslot fix (Nanda), saloon onboarding in admin panel (DV), user app bug fixes (Alex/Hamja), hiring module (Nikhil & Jega), partner saloon services API fixes (Surya, Kuralarasan, Kavya).",
       "community": 5,
       "norm_label": "team task assignments",
-      "id": "tasks_team_task_assignments",
-      "community_name": "Package Metadata & ESLint"
+      "community_name": "Package Metadata & ESLint",
+      "id": "tasks_team_task_assignments"
     }
   ],
   "links": [
@@ -23939,14 +23961,27 @@
       "confidence_score": 1.0
     },
     {
-      "relation": "contains",
+      "relation": "imports",
+      "context": "import",
       "confidence": "EXTRACTED",
       "source_file": "src/Partner/middleware/partnerappmiddleware.js",
-      "source_location": "L35",
+      "source_location": "L21",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_partner_middleware_partnerappmiddleware",
-      "target": "src_partner_middleware_partnerappmiddleware_crypto",
+      "target": "src_core_utils_syncrazorpayplans_linkrazorpayplanidtodb",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "imports",
+      "context": "import",
+      "confidence": "EXTRACTED",
+      "source_file": "src/Partner/middleware/partnerappmiddleware.js",
+      "source_location": "L21",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_partner_middleware_partnerappmiddleware",
+      "target": "src_core_utils_syncrazorpayplans_resolverazorpayplanid",
       "confidence_score": 1.0
     },
     {
@@ -23957,6 +23992,17 @@
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_partner_middleware_partnerappmiddleware",
+      "target": "src_partner_middleware_partnerappmiddleware_crypto",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/Partner/middleware/partnerappmiddleware.js",
+      "source_location": "L39",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_partner_middleware_partnerappmiddleware",
       "target": "src_partner_middleware_partnerappmiddleware_partnerappmiddleware",
       "confidence_score": 1.0
     },
@@ -23964,7 +24010,7 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/Partner/middleware/partnerappmiddleware.js",
-      "source_location": "L31",
+      "source_location": "L33",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_partner_middleware_partnerappmiddleware",
@@ -36796,11 +36842,22 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/core/utils/syncRazorpayPlans.js",
-      "source_location": "L62",
+      "source_location": "L98",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_core_utils_syncrazorpayplans",
       "target": "src_core_utils_syncrazorpayplans_ensureplansyncedtorazorpay",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L30",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans",
+      "target": "src_core_utils_syncrazorpayplans_linkrazorpayplanidtodb",
       "confidence_score": 1.0
     },
     {
@@ -36818,7 +36875,18 @@
       "relation": "contains",
       "confidence": "EXTRACTED",
       "source_file": "src/core/utils/syncRazorpayPlans.js",
-      "source_location": "L16",
+      "source_location": "L13",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans",
+      "target": "src_core_utils_syncrazorpayplans_resolverazorpayplanid",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "contains",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L46",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_core_utils_syncrazorpayplans",
@@ -36830,7 +36898,55 @@
       "context": "call",
       "confidence": "EXTRACTED",
       "source_file": "src/core/utils/syncRazorpayPlans.js",
-      "source_location": "L82",
+      "source_location": "L114",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans_ensureplansyncedtorazorpay",
+      "target": "src_core_utils_syncrazorpayplans_resolverazorpayplanid",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L51",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans_syncplantorazorpay",
+      "target": "src_core_utils_syncrazorpayplans_resolverazorpayplanid",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L116",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans_ensureplansyncedtorazorpay",
+      "target": "src_core_utils_syncrazorpayplans_linkrazorpayplanidtodb",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L53",
+      "weight": 1.0,
+      "_origin": "ast",
+      "source": "src_core_utils_syncrazorpayplans_syncplantorazorpay",
+      "target": "src_core_utils_syncrazorpayplans_linkrazorpayplanidtodb",
+      "confidence_score": 1.0
+    },
+    {
+      "relation": "calls",
+      "context": "call",
+      "confidence": "EXTRACTED",
+      "source_file": "src/core/utils/syncRazorpayPlans.js",
+      "source_location": "L124",
       "weight": 1.0,
       "_origin": "ast",
       "source": "src_core_utils_syncrazorpayplans_ensureplansyncedtorazorpay",
@@ -37780,5 +37896,5 @@
       "source_file": ".github/workflows/deploy.yml"
     }
   ],
-  "built_at_commit": "a18718022c4e6f675edba1760d4de7e621ed000d"
+  "built_at_commit": "2e93eafe897ee421b887ad1dd27641bb92afc048"
 }
