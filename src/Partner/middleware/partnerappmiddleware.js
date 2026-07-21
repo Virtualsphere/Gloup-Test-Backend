@@ -2399,6 +2399,36 @@ partnerappmiddleware.addstore = {
         );
       }
 
+      // Reuse a pending Created subscription instead of spamming new ones
+      const existingPending =
+        await partnerDbController.app.getPendingSubscription(
+          salon_id,
+          syncedPlan.plan_id
+        );
+      if (existingPending?.razorpay_subscription_id) {
+        try {
+          const existingRzp = await razorpay.subscriptions.fetch(
+            existingPending.razorpay_subscription_id
+          );
+          if (existingRzp?.status === "created") {
+            console.log(
+              `[createRecurring] Reusing pending sub ${existingRzp.id}`
+            );
+            return {
+              subscription_id: existingRzp.id,
+              razorpay_key: process.env.RZ_PAY_ID,
+              razorpay_customer_id: customerId,
+              db_record_id: existingPending.subscription_id,
+            };
+          }
+        } catch (fetchError) {
+          console.warn(
+            "[createRecurring] pending sub fetch failed, creating new:",
+            fetchError?.message || fetchError
+          );
+        }
+      }
+
       const subscriptionPayload = {
         plan_id: razorpayPlanId,
         customer_id: customerId,
