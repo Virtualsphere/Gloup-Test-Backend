@@ -33,8 +33,11 @@ jobs:
               sleep 3
             done
 
-            echo "Migration status (applied on app startup; confirm no pending):"
-            docker compose exec -T app node scripts/migrate.mjs status || true
+            echo "Applying any pending DB migrations (also run on app startup)..."
+            docker compose exec -T app node scripts/migrate.mjs up
+
+            echo "Migration status:"
+            docker compose exec -T app node scripts/migrate.mjs status
 
             echo "Cleaning up old dangling images..."
             docker image prune -f

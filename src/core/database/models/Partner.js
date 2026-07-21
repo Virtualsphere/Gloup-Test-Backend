@@ -107,6 +107,10 @@ Store.init({
     type: DataTypes.TEXT('long'),
     allowNull: true
   },
+  razorpay_customer_id: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
   otp: {
     type: DataTypes.INTEGER,
     allowNull: true,
@@ -1080,6 +1084,14 @@ PartnerSubscriptionPlans.init({
     type: DataTypes.INTEGER,
     allowNull: false,
   },
+  description: {
+    type: DataTypes.TEXT,
+    allowNull: true,
+  },
+  razorpay_plan_id: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
   is_active: {
     type: DataTypes.BOOLEAN,
     defaultValue: true,
@@ -1202,7 +1214,26 @@ PartnerSubscriptions.init({
     type: DataTypes.STRING,
     allowNull: true
   },
-
+  razorpay_subscription_id: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  razorpay_customer_id: {
+    type: DataTypes.STRING,
+    allowNull: true,
+  },
+  rzp_status: {
+    type: DataTypes.ENUM(
+      "created", "authenticated", "active",
+      "pending", "halted", "cancelled", "completed", "expired"
+    ),
+    allowNull: true,
+  },
+  current_start: { type: DataTypes.DATE, allowNull: true },
+  current_end: { type: DataTypes.DATE, allowNull: true },
+  charge_at: { type: DataTypes.DATE, allowNull: true },
+  paid_count: { type: DataTypes.INTEGER, defaultValue: 0 },
+  total_count: { type: DataTypes.INTEGER, allowNull: true },
   created_at: DataTypes.DATE,
   updated_at: DataTypes.DATE
 

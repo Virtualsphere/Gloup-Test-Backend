@@ -12,6 +12,7 @@ import { partnerDbController } from "./partnerDbController.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
+import { syncPlanToRazorpay } from "../../utils/syncRazorpayPlans.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -3069,12 +3070,17 @@ verifypartnerdetails: async (data) => {
 
       const nextSortOrder = lastPlan ?.sort_order? lastPlan.sort_order + 1 : 1;
 
+      const basePrice = data.discount_price ?? data.price;
       const plan = await adminDbController.Models.PartnerSubscriptionPlans.create({
         plan_name: data.plan_name,
         price: data.price,
+        original_price: data.original_price ?? data.price,
+        discount_price: basePrice,
+        price_tag: data.price_tag ?? "month",
         duration_months: data.duration_months,
         booking_limit: data.booking_limit,
         is_unlimited: data.is_unlimited,
+        description: data.description ?? data.plan_description ?? null,
         sort_order: nextSortOrder,
         is_active: 1
       }, { transaction: t });
@@ -3090,6 +3096,17 @@ verifypartnerdetails: async (data) => {
       }
 
       await t.commit();
+
+      // Sync to Razorpay after commit so a Razorpay outage does not roll back the plan.
+      // create-recurring will also auto-heal if razorpay_plan_id is still null.
+      try {
+        await syncPlanToRazorpay(plan.toJSON ? plan.toJSON() : plan);
+      } catch (syncError) {
+        console.error(
+          "[addpartnersubscription] Razorpay plan sync failed (plan saved locally):",
+          syncError?.message || syncError
+        );
+      }
 
       return plan;
 
@@ -3110,8 +3127,8 @@ verifypartnerdetails: async (data) => {
 
       if (!plan) throw new Error("Plan not found");
 
-      // 2. Update plan
-      await adminDbController.Models.PartnerSubscriptionPlans.update({
+      // 2. Update plan (Razorpay plans are immutable — only sync if never linked)
+      const updatePayload = {
         plan_name: data.plan_name,
         price: data.price,
         duration_months: data.duration_months,
@@ -3119,7 +3136,15 @@ verifypartnerdetails: async (data) => {
         is_unlimited: data.is_unlimited,
         sort_order: plan.sort_order,
         is_active: true
-      }, {
+      };
+      if (data.original_price != null) updatePayload.original_price = data.original_price;
+      if (data.discount_price != null) updatePayload.discount_price = data.discount_price;
+      if (data.price_tag != null) updatePayload.price_tag = data.price_tag;
+      if (data.description != null || data.plan_description != null) {
+        updatePayload.description = data.description ?? data.plan_description;
+      }
+
+      await adminDbController.Models.PartnerSubscriptionPlans.update(updatePayload, {
         where: { plan_id: data.id },
         transaction: t
       });
@@ -3146,13 +3171,27 @@ verifypartnerdetails: async (data) => {
 
       await t.commit();
 
+      if (!plan.razorpay_plan_id) {
+        try {
+          const fresh =
+            await adminDbController.Models.PartnerSubscriptionPlans.findByPk(
+              data.id
+            );
+          await syncPlanToRazorpay(fresh?.toJSON ? fresh.toJSON() : fresh);
+        } catch (syncError) {
+          console.error(
+            "[updatepartnersubscription] Razorpay plan sync failed:",
+            syncError?.message || syncError
+          );
+        }
+      }
+
       return { message: "Plan updated successfully" };
 
     } catch (error) {
       await t.rollback();
       console.log("🚀 updatepartnersubscription error:", error);
-      throw Error.SomethingWentWrong("Failed to update subscription plan");
-    }
+      throw Error.SomethingWentWrong("Failed to update subscription plan");    }
   },
   deletepartnersubscription: async (id) => {
     try {

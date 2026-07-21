@@ -1552,6 +1552,28 @@ export const verifySubscriptionPayment = async (req, res) => {
   }
 };
 
+export const createRecurringSubscription = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.createRecurringSubscription(req);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    ApplicationResponse.error(error, null, (response) => {
+      res.status(response.status || 500).json(response);
+    });
+  }
+};
+
+export const verifyRecurringSubscription = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.verifyRecurringSubscription(req);
+    res.status(200).json({ success: true, data });
+  } catch (error) {
+    ApplicationResponse.error(error, null, (response) => {
+      res.status(response.status || 500).json(response);
+    });
+  }
+};
+
 export const listServiceCategoryV2 = async (req, res) => {
   try {
     const result =

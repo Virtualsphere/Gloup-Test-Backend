@@ -86,6 +86,8 @@ import {
   getaminitiesV2,
   addbankdetailsv2,
   onboardingsalon,
+  createRecurringSubscription,
+  verifyRecurringSubscription
 } from "../controller/partnerappcontroller.js";
 import { approutes } from "../../User/routes/userapproutes.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
@@ -248,6 +250,16 @@ appRoutes.post(
   "/v2/subscription/verifypayment",
   partnerauthenticate,
   verifySubscriptionPayment,
+);
+appRoutes.post(
+  "/v2/subscription/create-recurring",
+  partnerauthenticate,
+  createRecurringSubscription,
+);
+appRoutes.post(
+  "/v2/subscription/verify-recurring",
+  partnerauthenticate,
+  verifyRecurringSubscription,
 );
 appRoutes.get(
   "/v2/service-categories",
