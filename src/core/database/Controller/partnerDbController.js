@@ -2835,6 +2835,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         p.is_unlimited,
         p.sort_order,
         p.description,
+        p.razorpay_plan_id,
         COALESCE(JSON_ARRAYAGG(f.feature_name), JSON_ARRAY()) AS features
       FROM PartnerSubscriptionPlans p
       LEFT JOIN PartnerSubscriptionPlanfeatureMapping pf 
@@ -2852,6 +2853,53 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         throw Error.InternalError(error.message || "cannot get plans");
       }
     },
+
+    /** Joining Fee is a one-time charge, not a monthly autopay plan. */
+    isJoiningFeePlan: (plan) => {
+      const name = String(plan?.plan_name || "").toLowerCase();
+      return name.includes("joining");
+    },
+
+    getJoiningFeePlan: async () => {
+      const plans = await PartnerSubscriptionPlans.findAll({
+        where: { is_active: 1 },
+      });
+      return (
+        plans.find((p) => partnerDbController.app.isJoiningFeePlan(p)) || null
+      );
+    },
+
+    /** True if salon already paid the joining-fee plan (or no joining plan exists). */
+    hasPaidJoiningFee: async (salon_id) => {
+      const joining = await partnerDbController.app.getJoiningFeePlan();
+      if (!joining) return true;
+
+      const paidJoining = await PartnerSubscriptions.findOne({
+        where: {
+          salon_id,
+          plan_id: joining.plan_id,
+          payment_status: "paid",
+        },
+      });
+      if (paidJoining) return true;
+
+      // Already on an active autopay plan → joining was collected (or waived)
+      const activeRecurring = await PartnerSubscriptions.findOne({
+        where: {
+          salon_id,
+          payment_status: "paid",
+          is_active: true,
+        },
+      });
+      return !!(
+        activeRecurring && activeRecurring.razorpay_subscription_id
+      );
+    },
+
+    salonNeedsJoiningFee: async (salon_id) => {
+      return !(await partnerDbController.app.hasPaidJoiningFee(salon_id));
+    },
+
     createSubscription: async (data) => {
       try {
         return await PartnerSubscriptions.create(data);
@@ -2861,7 +2909,26 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
       }
     },
     createSubscriptionRecord: async (data) => {
-      return await PartnerSubscriptions.create(data);
+      const startDate = data.start_date ? new Date(data.start_date) : new Date();
+      const endDate = data.end_date ? new Date(data.end_date) : new Date(startDate);
+      if (!data.end_date) {
+        let months = Number(data.duration_months) || 1;
+        if (!data.duration_months && data.plan_id) {
+          const plan = await PartnerSubscriptionPlans.findOne({
+            where: { plan_id: data.plan_id },
+            attributes: ["duration_months"],
+          });
+          months = Number(plan?.duration_months) || 1;
+        }
+        endDate.setMonth(endDate.getMonth() + months);
+      }
+
+      const { duration_months: _durationMonths, ...rest } = data;
+      return await PartnerSubscriptions.create({
+        ...rest,
+        start_date: startDate,
+        end_date: endDate,
+      });
     },
     getPartnerSubscription: async (salon_id) => {
       try {
@@ -2927,6 +2994,12 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           payment_date: new Date(),
         }, { transaction: t });
 
+        // Keep premium in sync on every successful renewal
+        await Store.update(
+          { is_premium: true },
+          { where: { id: data.salon_id }, transaction: t }
+        );
+
         await t.commit();
       } catch (e) {
         await t.rollback();
@@ -2935,9 +3008,45 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
     },
 
     markSubscriptionInactive: async (razorpay_subscription_id, status) => {
-      return await PartnerSubscriptions.update(
-        { is_active: false, rzp_status: status, payment_status: status === "cancelled" ? "refunded" : "failed" },
-        { where: { razorpay_subscription_id } }
+      if (!razorpay_subscription_id) return null;
+
+      const sub = await PartnerSubscriptions.findOne({
+        where: { razorpay_subscription_id },
+      });
+      if (!sub) {
+        console.warn(
+          `[markSubscriptionInactive] no local sub for ${razorpay_subscription_id}`
+        );
+        return null;
+      }
+
+      // Keep payment_status as paid for cancel/complete (money was taken);
+      // only mark failed when Razorpay halted after charge failures.
+      const patch = {
+        is_active: false,
+        rzp_status: status,
+      };
+      if (status === "halted") {
+        patch.payment_status = "failed";
+      }
+
+      await PartnerSubscriptions.update(patch, {
+        where: { razorpay_subscription_id },
+      });
+
+      // Revoke premium so cancelled/halted partners do not keep benefits
+      await Store.update(
+        { is_premium: false },
+        { where: { id: sub.salon_id } }
+      );
+
+      return sub;
+    },
+
+    clearStorePremium: async (salon_id) => {
+      return await Store.update(
+        { is_premium: false },
+        { where: { id: salon_id } }
       );
     },
 

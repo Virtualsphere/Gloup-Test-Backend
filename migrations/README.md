@@ -58,3 +58,12 @@ export async function down({ context: queryInterface }) {
 ```
 
 Never edit a migration after it has been applied in production — add a new file instead.
+
+## Deploy
+
+Migrations run in two places (both safe / idempotent via `SequelizeMeta`):
+
+1. **App startup** (`src/core/setup.js`) — before the HTTP server listens
+2. **GitHub deploy** (`.github/workflows/deploy.yml`) — `node scripts/migrate.mjs up` after health check
+
+If a migration fails, startup exits non-zero and `/status` never becomes healthy, so deploy will not silently skip schema changes.
