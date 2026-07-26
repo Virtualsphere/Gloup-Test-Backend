@@ -1175,13 +1175,15 @@ userappmiddleware.user = {
 
             // Fetch all details in parallel (Bulk query to prevent N+1)
             const [dbServices, dbCombos] = await Promise.all([
-                serviceIds.length > 0 ? userDbController.app.getStoreServicesByIdsV2(serviceIds) : [],
+                serviceIds.length > 0
+                    ? userDbController.app.getStoreServicesByIdsV2(serviceIds, store_id)
+                    : [],
                 comboIds.length > 0 ? userDbController.app.getCombosByIdsV2(comboIds) : []
             ]);
 
             // Validate that all requested services/combos were found and belong to the store
             if (serviceIds.length > 0 && dbServices.length !== serviceIds.length) {
-                throw Error.SomethingWentWrong("One or more services are invalid or inactive");
+                throw Error.SomethingWentWrong("One or more services are invalid, inactive, or do not belong to this store");
             }
             if (comboIds.length > 0 && dbCombos.length !== comboIds.length) {
                 throw Error.SomethingWentWrong("One or more combos are invalid or inactive");
@@ -1202,6 +1204,7 @@ userappmiddleware.user = {
             }
 
             let finalTotal = calculatedSubTotal;
+            let couponDiscountApplied = 0;
 
             // Handle Discount
             if (is_discounted && discount_id) {
@@ -1212,15 +1215,20 @@ userappmiddleware.user = {
                         throw Error.SomethingWentWrong("Coupon usage limit exceeded");
                     }
                     if (discount.discount_type === "percentage") {
-                        finalTotal -= (calculatedSubTotal * discount.discount_value) / 100;
+                        couponDiscountApplied =
+                            (calculatedSubTotal * discount.discount_value) / 100;
                     } else if (discount.discount_type === "flat") {
-                        finalTotal -= discount.discount_value;
+                        couponDiscountApplied = parseFloat(discount.discount_value) || 0;
                     }
+                    finalTotal = Math.max(0, calculatedSubTotal - couponDiscountApplied);
                 }
             }
 
-            // Add GST and Fees
-            const totalWithTaxes = finalTotal + (parseFloat(gst) || 0) + (parseFloat(platform_fee) || 0);
+            // Server is source of truth for tax/fees — do not trust client gst/platform_fee as rupees.
+            const GST_RATE = 0.05;
+            const gstAmount = Math.round(finalTotal * GST_RATE * 100) / 100;
+            const platformFeeAmount = 0;
+            const totalWithTaxes = Math.round((finalTotal + gstAmount + platformFeeAmount) * 100) / 100;
 
             let razorpayOrderId = null;
             let paymentStatus = "pending";
@@ -1305,7 +1313,16 @@ userappmiddleware.user = {
                 amount: totalWithTaxes,
                 currency: "INR",
                 booking_date: booking_date,
-                status: appointmentData.status
+                status: appointmentData.status,
+                pricing: {
+                    subtotal: calculatedSubTotal,
+                    coupon_discount: couponDiscountApplied,
+                    taxable_amount: finalTotal,
+                    gst_rate: GST_RATE * 100,
+                    gst_amount: gstAmount,
+                    platform_fee: platformFeeAmount,
+                    total: totalWithTaxes
+                }
             };
 
         } catch (error) {

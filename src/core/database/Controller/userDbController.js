@@ -3719,14 +3719,18 @@ END AS distance
     }
   },
 
-  getStoreServicesByIdsV2: async (serviceIds) => {
+  getStoreServicesByIdsV2: async (serviceIds, storeId = null) => {
     try {
+      const where = {
+        id: { [Sequelize.Op.in]: serviceIds },
+        status: "active"
+      };
+      if (storeId != null && storeId !== "") {
+        where.store_id = storeId;
+      }
       return await userDbController.Models.StoreServices.findAll({
-        where: {
-          id: { [Sequelize.Op.in]: serviceIds },
-          status: "active"
-        },
-        attributes: ["id", "service_name", "amount", "discounted_amount", "duration", "service_category"]
+        where,
+        attributes: ["id", "service_name", "amount", "discounted_amount", "duration", "service_category", "store_id"]
       });
     } catch (error) {
       console.error("getStoreServices ERROR:", error);
