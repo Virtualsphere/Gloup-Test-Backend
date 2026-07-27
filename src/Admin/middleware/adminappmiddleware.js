@@ -13,6 +13,7 @@ import { partnerDbController } from "../../core/database/Controller/partnerDbCon
 import {
     buildUsersExcelBuffer,
     parseUsersFromExcel,
+    parseServicesFromExcel
 } from "../../core/utils/excelParser.js";
 import {
     getLatestFcmToken,
@@ -1363,6 +1364,35 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong(
                 error?.message || "Failed to create service"
             );
+        }
+    },
+    bulkCreateServices: async ({ body, files }) => {
+        try {
+            const excelFile = files?.excel?.[0];
+            if (!excelFile) {
+            throw Error.BadRequest("Excel file (field name 'excel') is required");
+            }
+            if (!body.store_id) {
+            throw Error.BadRequest("store_id is required");
+            }
+
+            const rows = parseServicesFromExcel(excelFile.buffer);
+            if (!rows.length) {
+            throw Error.BadRequest("No valid rows found in the excel sheet");
+            }
+
+            const result = await adminDbController.app.bulkCreateServices(rows, body.store_id);
+
+            return {
+            message: `${result.created.length} service(s) created, ${result.skipped.length} skipped`,
+            created_count: result.created.length,
+            skipped_count: result.skipped.length,
+            skipped_details: result.skipped,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("bulkCreateServices error:", error);
+            throw Error.SomethingWentWrong(error.message || "Failed to bulk create services");
         }
     },
     editService: async({body}) => {

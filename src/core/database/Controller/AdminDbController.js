@@ -13,6 +13,10 @@ import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js
 import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
 import { syncPlanToRazorpay } from "../../utils/syncRazorpayPlans.js";
+import {
+    formatDurationFromDecimal,
+    normalizeCategoryKey,
+} from "../../utils/excelParser.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -1924,6 +1928,113 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         error?.message || "Failed to create service"
       );
     }
+  },
+  bulkCreateServices: async (rows, storeId) => {
+    const created = [];
+    const skipped = [];
+
+    const categories = await adminDbController.Models.Servicecategory.findAll({
+      where: { status: "active" },
+      attributes: ["id", "name"],
+      raw: true,
+    });
+    const categoryMap = new Map(categories.map((c) => [normalizeCategoryKey(c.name), c.id]));
+    const genderMap = { male: "male", female: "female", unisex: "unisex" };
+
+    for (const row of rows) {
+      const missing = [];
+
+      if (!row.service_name) missing.push("service name");
+      if (!row.category_raw) missing.push("service category");
+      if (row.duration_raw === null || row.duration_raw === undefined || row.duration_raw === "") missing.push("duration");
+      if (!row.gender_raw) missing.push("gender");
+      if (row.amount === null || row.amount === undefined || row.amount === "") missing.push("original price");
+      if (row.discounted_amount === null || row.discounted_amount === undefined || row.discounted_amount === "") missing.push("offer price");
+      if (row.priority === null || row.priority === undefined || row.priority === "") missing.push("priority");
+      if (!row.status) missing.push("status");
+
+      if (missing.length > 0) {
+        skipped.push({
+          row: row.rowNumber,
+          service_name: row.service_name || "(blank)",
+          reason: `Missing required field(s): ${missing.join(", ")}`,
+        });
+        continue;
+      }
+
+      const categoryId = categoryMap.get(normalizeCategoryKey(row.category_raw));
+      const duration = formatDurationFromDecimal(row.duration_raw);
+      const serviceFor = genderMap[row.gender_raw.toLowerCase()];
+      const priorityValue = Number(row.priority);
+      const statusValue = row.status.toLowerCase();
+
+      if (!categoryId) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: `Unknown category "${row.category_raw}"` });
+        continue;
+      }
+      if (!duration) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: `Invalid duration "${row.duration_raw}"` });
+        continue;
+      }
+      if (!serviceFor) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: `Invalid gender "${row.gender_raw}" — must be Male, Female, or Unisex` });
+        continue;
+      }
+      if (isNaN(Number(row.amount))) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: "Original price must be a number" });
+        continue;
+      }
+      if (isNaN(Number(row.discounted_amount))) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: "Offer price must be a number" });
+        continue;
+      }
+      if (isNaN(priorityValue)) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: "Priority must be a number" });
+        continue;
+      }
+      if (!["active", "inactive"].includes(statusValue)) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: `Invalid status "${row.status}" — must be active or inactive` });
+        continue;
+      }
+
+      if (priorityValue > 0) {
+        const existingPriority = await adminDbController.Models.StoreServices.findOne({
+          where: {
+            store_id: storeId,
+            service_category: categoryId,
+            service_for: serviceFor,
+            priority: priorityValue,
+          },
+        });
+        if (existingPriority) {
+          skipped.push({
+            row: row.rowNumber,
+            service_name: row.service_name,
+            reason: `Priority ${priorityValue} already used for this category/gender`,
+          });
+          continue;
+        }
+      }
+
+      try {
+        const service = await adminDbController.Models.StoreServices.create({
+          service_name: row.service_name,
+          store_id: Number(storeId),
+          amount: Number(row.amount),
+          discounted_amount: Number(row.discounted_amount),
+          duration,
+          status: statusValue,
+          priority: priorityValue,
+          service_category: categoryId,
+          service_for: serviceFor,
+        });
+        created.push(service);
+      } catch (error) {
+        skipped.push({ row: row.rowNumber, service_name: row.service_name, reason: error.message });
+      }
+    }
+
+    return { created, skipped };
   },
   editService: async (data) => {
     console.log('Edit Service AdminDB: ', data);

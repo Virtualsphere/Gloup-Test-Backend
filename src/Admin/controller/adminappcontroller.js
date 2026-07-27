@@ -1038,6 +1038,21 @@ export const createService = async(req, res) => {
     });
 }
 
+export const bulkCreateServices = async (req, res) => {
+    Adminappmiddleware.app.bulkCreateServices(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(response, null, (r) => (statuscode = r.status));
+            res.json({ status: statuscode, data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (r) => {
+                res.status(r.status).json(r);
+            });
+        });
+};
+
 export const editService = async(req, res) => {
     console.log('controller')
     Adminappmiddleware.app.editService(req)
