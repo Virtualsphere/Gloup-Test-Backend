@@ -3,7 +3,91 @@ import require from "requirejs";
 const rateLimit = require("express-rate-limit");
 import { verifyadmin } from "../controller/authcontroller.js";
 import { upload, categoryupload, bannerupload, bannerimage, profileimage, imageSizeMiddleware, categoryimage } from "../../core/utils/imageResizer.js";
-import { addbanner, sendMarketingWhatsapp, bookingSSE, addcategory, addcoupons, addnotification, sendTargetedNotification, getnotificationbyid, addpayouts, addsubscription, createPartner, createService, bulkCreateServices, deletebanner, deletecategory, deletePartner, deletereviewrequest, editPartner, editService,getAdvancedSearch, getallcategory, getallcoupons, getallnotification, getallpartner, getallpartnerdetails, getallsubscription, getalluserbooking, getallusers, getbanner,getBookings, getCancelledOrders, getCategoryRevenue, getCustomers, getdashboard, getLiveStats, getFilteredStores, getFilterReport, getMonthlyReport, getpayoutlogs, getrefundrequests, getRegisteredStore, getRevenueCategory, getRevenueCategoryGrowth, getreviewrequest,getSalons, getservices, getStoreBySearch, getStoresByStatus, getTopPerformingSalon, updatecoupons, updateMultiplePartner, updateMultipleStore, updatepartner, updaterefundrequests,updatereviewrequest, updateSalon, updatesubscription, updateuser, getverifyPartnerlist,verifypartnerdetails, getBookingsDetails, getBookingsDetailsById, updatebookingstatus, downloadBookingPDF, downloadUsersExcel, updaterefundBooking, getservicecategorylist, updateservicecategoryimage, createdefaulttimeslot, blockAndUnblockSlot, getBlockedSlots,getlanguage, getserviceprovidedfor, getallpartnersubscription, getpartnersubscriptionbyid, updatepartnersubscription, deletepartnersubscription, addpartnersubscription, getallpartnersubscriptionfeatures, deleteservice } from "../controller/adminappcontroller.js";
+
+import {
+  addbanner,
+  sendMarketingWhatsapp,
+  getPartnerPaymentStatus,
+  bookingSSE,
+  addcategory,
+  addcoupons,
+  addnotification,
+  sendTargetedNotification,
+  getnotificationbyid,
+  addpayouts,
+  addsubscription,
+  createPartner,
+  createService,
+  bulkCreateServices,
+  deletebanner,
+  deletecategory,
+  deletePartner,
+  deletereviewrequest,
+  editPartner,
+  editService,
+  getAdvancedSearch,
+  getallcategory,
+  getallcoupons,
+  getallnotification,
+  getallpartner,
+  getallpartnerdetails,
+  getallsubscription,
+  getalluserbooking,
+  getallusers,
+  getbanner,
+  getBookings,
+  getCancelledOrders,
+  getCategoryRevenue,
+  getCustomers,
+  getdashboard,
+  getLiveStats,
+  getFilteredStores,
+  getFilterReport,
+  getMonthlyReport,
+  getpayoutlogs,
+  getrefundrequests,
+  getRegisteredStore,
+  getRevenueCategory,
+  getRevenueCategoryGrowth,
+  getreviewrequest,
+  getSalons,
+  getservices,
+  getStoreBySearch,
+  getStoresByStatus,
+  getTopPerformingSalon,
+  updatecoupons,
+  updateMultiplePartner,
+  updateMultipleStore,
+  updatepartner,
+  updaterefundrequests,
+  updatereviewrequest,
+  updateSalon,
+  updatesubscription,
+  updateuser,
+  getverifyPartnerlist,
+  verifypartnerdetails,
+  getBookingsDetails,
+  getBookingsDetailsById,
+  updatebookingstatus,
+  downloadBookingPDF,
+  downloadUsersExcel,
+  updaterefundBooking,
+  getservicecategorylist,
+  updateservicecategoryimage,
+  createdefaulttimeslot,
+  blockAndUnblockSlot,
+  getBlockedSlots,
+  getlanguage,
+  getserviceprovidedfor,
+  getallpartnersubscription,
+  getpartnersubscriptionbyid,
+  updatepartnersubscription,
+  deletepartnersubscription,
+  addpartnersubscription,
+  getallpartnersubscriptionfeatures,
+  deleteservice
+} from "../controller/adminappcontroller.js";
+
 import { getservicecategory } from "../../Partner/controller/partnerappcontroller.js";
 import { S3upload } from "../../core/utils/s3/s3Upload.js";
 import { marketingUpload } from "../../core/utils/marketingUpload.js";
@@ -43,6 +127,7 @@ approutes.post(
     marketingUpload.fields([{ name: 'excel', maxCount: 1 }]),
     bulkCreateServices
 );
+approutes.post("/getPartnerPaymentStatus", verifyadmin, getPartnerPaymentStatus);
 approutes.post('/editservice', verifyadmin, editService);
 approutes.post('/getservicecategorylist', verifyadmin, getservicecategorylist);
 approutes.post('/updateservicecategoryimage', verifyadmin, S3upload.single('image'), updateservicecategoryimage);
