@@ -1404,3 +1404,23 @@ export const cancelPendingOrderV2 = async (req, res) => {
     });
   }
 };
+
+export const userHeartbeat = async (req, res) => {
+  userappmiddleware.user
+    .heartbeat({ user: req.user, body: req.body })
+    .then((data) => {
+      const response = ApplicationResult.forCreated();
+      let statuscode = 0;
+      ApplicationResponse.success(
+        response,
+        null,
+        (response) => (statuscode = response.status)
+      );
+      res.json({ status: statuscode, data });
+    })
+    .catch((error) => {
+      ApplicationResponse.error(error, null, (response) => {
+        res.status(response.status).json(response);
+      });
+    });
+};
