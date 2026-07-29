@@ -587,7 +587,121 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to add wallet");
     }
   },
-  
+  getPartnerPaymentStatus: async (body = {}) => {
+    try {
+      const page = Number(body.page) || 1;
+      const limit = Number(body.limit) || 10;
+      const offset = (page - 1) * limit;
+
+      const statusFilter = ['paid', 'unpaid'].includes(body.status) ? body.status : null;
+      const search = body.search ? `%${body.search}%` : null;
+
+      const baseSql = `
+        FROM Store s
+        LEFT JOIN (
+          SELECT ps1.*
+          FROM PartnerSubscriptions ps1
+          INNER JOIN (
+            SELECT salon_id, MAX(created_at) AS max_created
+            FROM PartnerSubscriptions
+            GROUP BY salon_id
+          ) latest
+            ON ps1.salon_id = latest.salon_id
+            AND ps1.created_at = latest.max_created
+        ) latestSub ON latestSub.salon_id = s.id
+        LEFT JOIN PartnerSubscriptionPlans psp ON latestSub.plan_id = psp.plan_id
+        LEFT JOIN (
+          SELECT p1.*
+          FROM PartnerSubscriptionsPayments p1
+          INNER JOIN (
+            SELECT subscription_id, MAX(payment_date) AS max_date
+            FROM PartnerSubscriptionsPayments
+            GROUP BY subscription_id
+          ) latestPay
+            ON p1.subscription_id = latestPay.subscription_id
+            AND p1.payment_date = latestPay.max_date
+        ) lastPay ON lastPay.subscription_id = latestSub.subscription_id
+        WHERE s.completion_status = 'completed'
+        ${search ? "AND (s.name LIKE :search OR s.email LIKE :search OR s.phone LIKE :search)" : ""}
+      `;
+
+      const selectSql = `
+        SELECT
+          s.id AS store_id,
+          s.name AS salon_name,
+          s.email,
+          s.phone,
+          s.is_premium,
+          latestSub.subscription_id,
+          latestSub.plan_id,
+          psp.plan_name,
+          psp.price_tag,
+          psp.duration_months,
+          latestSub.amount_paid,
+          latestSub.payment_status AS subscription_payment_status,
+          latestSub.is_active AS subscription_is_active,
+          latestSub.start_date,
+          latestSub.end_date,
+          latestSub.current_start,
+          latestSub.current_end,
+          latestSub.charge_at,
+          latestSub.rzp_status,
+          lastPay.payment_status AS last_payment_status,
+          lastPay.amount AS last_payment_amount,
+          lastPay.payment_method AS last_payment_method,
+          lastPay.payment_date AS last_payment_date,
+          lastPay.transaction_id AS last_transaction_id,
+          CASE
+            WHEN latestSub.payment_status = 'paid' AND latestSub.is_active = 1 THEN 'paid'
+            ELSE 'unpaid'
+          END AS paid_status
+        ${baseSql}
+      `;
+
+      const wrappedSql = `
+        SELECT * FROM (${selectSql}) t
+        ${statusFilter ? "WHERE t.paid_status = :statusFilter" : ""}
+        ORDER BY t.salon_name ASC
+        LIMIT :limit OFFSET :offset
+      `;
+
+      const countSql = `
+        SELECT COUNT(*) AS totalCount FROM (${selectSql}) t
+        ${statusFilter ? "WHERE t.paid_status = :statusFilter" : ""}
+      `;
+
+      const summarySql = `
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN t.paid_status = 'paid' THEN 1 ELSE 0 END) AS paid,
+          SUM(CASE WHEN t.paid_status = 'unpaid' THEN 1 ELSE 0 END) AS unpaid
+        FROM (${selectSql}) t
+      `;
+
+      const replacements = { limit, offset };
+      if (search) replacements.search = search;
+      if (statusFilter) replacements.statusFilter = statusFilter;
+
+      const [rows, countResult, summaryResult] = await Promise.all([
+        adminDbController.connection.query(wrappedSql, { replacements, type: Sequelize.QueryTypes.SELECT }),
+        adminDbController.connection.query(countSql, { replacements, type: Sequelize.QueryTypes.SELECT }),
+        adminDbController.connection.query(summarySql, { replacements: search ? { search } : {}, type: Sequelize.QueryTypes.SELECT }),
+      ]);
+
+      return {
+        rows,
+        totalCount: countResult?.[0]?.totalCount || 0,
+        summary: {
+          total: summaryResult?.[0]?.total || 0,
+          paid: summaryResult?.[0]?.paid || 0,
+          unpaid: summaryResult?.[0]?.unpaid || 0,
+        },
+      };
+    } catch (error) {
+      console.log("🚀 ~ getPartnerPaymentStatus DB error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner payment status");
+    }
+  },
   addnotificationlogsadmin: async (data) => {
     try {
       return await adminDbController.Models.Adminnotificationlogs.create({

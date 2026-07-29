@@ -1422,6 +1422,19 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to get service category list");
         }
     },
+    getPartnerPaymentStatus: async ({ body }) => {
+        try {
+            const result = await adminDbController.app.getPartnerPaymentStatus(body);
+            return {
+                data: result.rows || [],
+                total: result.totalCount || 0,
+                summary: result.summary || { total: 0, paid: 0, unpaid: 0 },
+            };
+        } catch (error) {
+            console.log("🚀 ~ getPartnerPaymentStatus:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch partner payment status");
+        }
+    },
   
     deleteservice: async ({ body, user }) => {
         try {
