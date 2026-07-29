@@ -81,6 +81,8 @@ userDbController.auth = {
         token: encryptedToken,
         ipv4: deviceinfo.userAgent,
         status: 'active',
+        created_at: new Date(),
+        updated_at: new Date(),
       })
     } catch (error) {
       console.log("🚀 ~ error:", error)
@@ -202,6 +204,8 @@ userDbController.auth = {
         ipv4: device.ip || device.ipv,
         userAgent: device.userAgent,
         status: 'active',
+        created_at: new Date(),
+        updated_at: new Date(),
       });
     } catch (error) {
       throw Error.InternalError();

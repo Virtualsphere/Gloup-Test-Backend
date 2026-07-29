@@ -3293,4 +3293,19 @@ partnerappmiddleware.addstore = {
       throw Error.SomethingWentWrong(error.description || error.message);
     }
   },
+
+  heartbeat: async ({ user, body }) => {
+    try {
+      if (!user?.id) throw Error.Unauthorized("Partner not authenticated");
+      const isOnline = body?.online !== false;
+      await partnerDbController.Models.StoreSession.update(
+        { updated_at: isOnline ? new Date() : new Date(0) },
+        { where: { storeId: user.id, status: "active" } }
+      );
+      return { ok: true, online: isOnline };
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong("Heartbeat failed");
+    }
+  },
 };

@@ -575,6 +575,66 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch monthly sales");
     }
   },
+
+  getActiveUsersNow: async (minutesThreshold = 2) => {
+    try {
+      const cutoff = new Date(Date.now() - minutesThreshold * 60 * 1000);
+      return await adminDbController.Models.UserSession.count({
+        where: {
+          status: "active",
+          updated_at: { [Op.gte]: cutoff },
+        },
+        col: "user_id",
+        distinct: true,
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch active users");
+    }
+  },
+
+  getActivePartnersNow: async (minutesThreshold = 2) => {
+    try {
+      const cutoff = new Date(Date.now() - minutesThreshold * 60 * 1000);
+      return await adminDbController.Models.StoreSession.count({
+        where: {
+          status: "active",
+          updated_at: { [Op.gte]: cutoff },
+        },
+        col: "store_id",
+        distinct: true,
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch active partners");
+    }
+  },
+
+  getNewSignupsToday: async () => {
+    try {
+      const todayStart = new Date();
+      todayStart.setHours(0, 0, 0, 0);
+
+      const sql = `SELECT
+        (SELECT COUNT(*) FROM (
+          SELECT user_id
+          FROM UserSession
+          WHERE user_id IS NOT NULL
+          GROUP BY user_id
+          HAVING MIN(created_at) >= :todayStart
+        ) AS new_user_sessions) AS new_users,
+        (SELECT COUNT(*) FROM Store WHERE createdAt >= :todayStart AND status = 'active') AS new_partners`;
+      const [result] = await adminDbController.connection.query(sql, {
+        replacements: { todayStart },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+      return {
+        new_users: parseInt(result.new_users) || 0,
+        new_partners: parseInt(result.new_partners) || 0,
+      };
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch new signups");
+    }
+  },
+
   addwallet: async (id, amount) => {
     try {
       return await adminDbController.Models.User.increment({

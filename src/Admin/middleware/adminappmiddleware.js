@@ -159,6 +159,25 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch dashboard data");
         }
     },
+
+    getLiveStats: async () => {
+        try {
+            const [activeUsers, activePartners, newSignups] = await Promise.all([
+                adminDbController.app.getActiveUsersNow(2),
+                adminDbController.app.getActivePartnersNow(2),
+                adminDbController.app.getNewSignupsToday(),
+            ]);
+            return {
+                active_users_now: activeUsers,
+                active_partners_now: activePartners,
+                new_users_today: newSignups.new_users,
+                new_partners_today: newSignups.new_partners,
+            };
+        } catch (error) {
+            throw Error.SomethingWentWrong("Failed to fetch live stats");
+        }
+    },
+
     addcoupons: async ({ body, user }) => {
         try {
             if (body.id === undefined || body.id === null || body.id === "") {

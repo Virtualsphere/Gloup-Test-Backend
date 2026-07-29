@@ -2889,4 +2889,19 @@ userappmiddleware.user = {
         }
     },
 
+    heartbeat: async ({ user, body }) => {
+        try {
+            if (!user?.id) throw Error.Unauthorized("User not authenticated");
+            const isOnline = body?.online !== false;
+            await userDbController.Models.UserSession.update(
+                { updated_at: isOnline ? new Date() : new Date(0) },
+                { where: { user_id: user.id, status: "active" } }
+            );
+            return { ok: true, online: isOnline };
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Heartbeat failed");
+        }
+    },
+
 }

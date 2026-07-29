@@ -802,6 +802,25 @@ export const getdashboard = async(req, res) => {
         });
 }    
 
+export const getLiveStats = async (req, res) => {
+    Adminappmiddleware.app.getLiveStats(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            let statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
 export const bookingSSE = (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");

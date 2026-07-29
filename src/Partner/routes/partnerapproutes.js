@@ -87,7 +87,8 @@ import {
   addbankdetailsv2,
   onboardingsalon,
   createRecurringSubscription,
-  verifyRecurringSubscription
+  verifyRecurringSubscription,
+  partnerHeartbeat
 } from "../controller/partnerappcontroller.js";
 import { approutes } from "../../User/routes/userapproutes.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
@@ -323,3 +324,6 @@ appRoutes.get("/v2/getownerprofile", partnerauthenticate, getownerprofileV2);
 
 appRoutes.get("/v2/getaminities", partnerauthenticate, getaminitiesV2);
 appRoutes.patch("/v2/addbankdetails", partnerauthenticate, addbankdetailsv2);
+
+// Heartbeat — app lifecycle tracking for active-partner counts
+appRoutes.post("/v2/heartbeat", partnerauthenticate, partnerHeartbeat);
