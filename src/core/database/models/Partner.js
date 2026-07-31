@@ -547,6 +547,75 @@ SlotBlockedDates.init({
   timestamps: false,
 });
 
+class StoreHolidays extends Model { }
+
+StoreHolidays.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  store_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false
+  },
+  holiday_date: {
+    type: DataTypes.DATEONLY,
+    allowNull: false
+  },
+  reason: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  updated_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  }
+}, {
+  sequelize: connection,
+  freezeTableName: true,
+  timestamps: false,
+});
+
+class StoreWeeklyHolidays extends Model { }
+
+StoreWeeklyHolidays.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true
+  },
+  store_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false
+  },
+  weekday: {
+    type: DataTypes.TINYINT,
+    allowNull: false,
+    comment: "0=Sunday … 6=Saturday",
+  },
+  reason: {
+    type: DataTypes.TEXT,
+    allowNull: true
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  updated_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  }
+}, {
+  sequelize: connection,
+  freezeTableName: true,
+  timestamps: false,
+});
+
 class Aminities extends Model { }
 
 Aminities.init({
@@ -1378,4 +1447,4 @@ PartnerSubscriptionsPayments.belongsTo(PartnerSubscriptions, {
 
 
 
-export { Store, StoreSession, PartnerAddress, StoreServices, WorkingHours, Slots, SlotBlockedDates, Aminities, StoreAminities, Combo, Combinations, Stylist, Servicecategory, review_delete_requests, OwnerProfile, PartnerNotificationLogs, CategoryTable, HireStudent, Languages, StoreLanguages, ServicesProvidedFor, PartnerSubscriptionPlans, PartnerSubscriptionPlanfeatures, PartnerSubscriptionPlanfeatureMapping, PartnerSubscriptions, PartnerSubscriptionsPayments, Enquiry };
+export { Store, StoreSession, PartnerAddress, StoreServices, WorkingHours, Slots, SlotBlockedDates, StoreHolidays, StoreWeeklyHolidays, Aminities, StoreAminities, Combo, Combinations, Stylist, Servicecategory, review_delete_requests, OwnerProfile, PartnerNotificationLogs, CategoryTable, HireStudent, Languages, StoreLanguages, ServicesProvidedFor, PartnerSubscriptionPlans, PartnerSubscriptionPlanfeatures, PartnerSubscriptionPlanfeatureMapping, PartnerSubscriptions, PartnerSubscriptionsPayments, Enquiry };

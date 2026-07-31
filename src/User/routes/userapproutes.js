@@ -3,7 +3,7 @@ import require from "requirejs";
 const rateLimit = require("express-rate-limit");
 import { UserAuthenticate, WebAuthenticate, OptionalUserAuthenticate } from "../controller/userauthcontroller.js";
 import { upload, profileimage } from "../../core/utils/imageResizer.js";
-import { addfavourites, addreview, addtocart, getAllSalons, toggleFavourite, getFavourites, getTopSalons, getMapMarkersClustered, addwallet, create_order_wallet, createorder, deletefavourites, deletereview, deleteuser, getactiveactivecoupons, getallappoinments, getallcategory, getallreview, getallstores, getbanner, getfavourites, getinvitecode, getnearbystores, getnotification, getprofile, getslotsbydate, getstorebycategory, getstorebyid, getstorebysearch, getstorebyservices, gettransactions, getwalletamount, initiaterefund, paymentsucssess, topsaloons, updatebooking, updaterating, validatecoupon, verifyinvitecode, createInternalOrder, createRazorpayOrder, getnearbystoresv2, getBannerV2, fetchAllCategoryV2, getstoredetailsv2, getactivecouponv2, addGuestDetails, getGuestDetails, getSlotStatusV2, getReviewsV2, updateReviewV2, deleteReviewV2, getProfileV2, updateProfileV2, deleteUserV2, updateGuestDetails, createOrderV2, createRazorpayOrderV2, paymentsuccessV2, cancelPendingOrderV2, getTopCategoryServicesBySex, getStoresByServiceCategory, userHeartbeat } from "../controller/userappcontroller.js";
+import { addfavourites, addreview, addtocart, getAllSalons, toggleFavourite, getFavourites, getTopSalons, getMapMarkersClustered, addwallet, create_order_wallet, createorder, deletefavourites, deletereview, deleteuser, getactiveactivecoupons, getallappoinments, getallcategory, getallreview, getallstores, getbanner, getfavourites, getinvitecode, getnearbystores, getnotification, getprofile, getslotsbydate, getstorebycategory, getstorebyid, getstorebysearch, getstorebyservices, gettransactions, getwalletamount, initiaterefund, paymentsucssess, topsaloons, updatebooking, updaterating, validatecoupon, verifyinvitecode, createInternalOrder, createRazorpayOrder, getnearbystoresv2, getBannerV2, fetchAllCategoryV2, getstoredetailsv2, getactivecouponv2, addGuestDetails, getGuestDetails, getSlotStatusV2, getStoreHolidaysV2, getReviewsV2, updateReviewV2, deleteReviewV2, getProfileV2, updateProfileV2, deleteUserV2, updateGuestDetails, createOrderV2, createRazorpayOrderV2, paymentsuccessV2, cancelPendingOrderV2, getTopCategoryServicesBySex, getStoresByServiceCategory, userHeartbeat } from "../controller/userappcontroller.js";
 import { appRoutes } from "../../Partner/routes/partnerapproutes.js";
 import { User } from "../../core/database/models/User.js";
 import { addaminities } from "../../Partner/controller/partnerappcontroller.js";
@@ -108,6 +108,7 @@ approutes.get("/v2/getallcategory", fetchAllCategoryV2);
 approutes.get("/v2/get/activecoupons", UserAuthenticate, getactivecouponv2);
 // get slot satus
 approutes.get("/v2/getslotstatus", getSlotStatusV2);
+approutes.get("/v2/store/holidays", getStoreHolidaysV2);
 // Reviews 
 approutes.get("/v2/reviews", UserAuthenticate, getReviewsV2);
 approutes.patch("/v2/reviews", UserAuthenticate, updateReviewV2);

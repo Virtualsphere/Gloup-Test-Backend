@@ -27,6 +27,15 @@ import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import Razorpay from "razorpay";
+import {
+  assertDateOnly,
+  assertWeekday,
+  weekdayName,
+  toDateOnly,
+  normalizeReason,
+  findClosureReason,
+  WEEKDAY_NAMES,
+} from "../../utils/storeHolidays.js";
 
 const { Op, Sequelize } = require("sequelize");
 var randomize = require("randomatic");
@@ -4360,5 +4369,309 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
           error.message || "Failed to update bank details",
         );
       }
+    },
+
+    /**
+     * Mark a full day as holiday for the store.
+     * Auto-cancels non-terminal appointments on that date.
+     */
+    addStoreHoliday: async (storeId, date, reason = null) => {
+      const transaction = await partnerDbController.connection.transaction();
+      try {
+        const holidayDate = assertDateOnly(date, "date");
+        const today = toDateOnly(new Date());
+        if (holidayDate < today) {
+          throw Error.BadRequest("Cannot mark a past date as holiday");
+        }
+        const cleanReason = normalizeReason(reason);
+
+        let holiday = await partnerDbController.Models.StoreHolidays.findOne({
+          where: { store_id: storeId, holiday_date: holidayDate },
+          transaction,
+        });
+
+        if (holiday) {
+          if (reason !== undefined && reason !== null) {
+            holiday.reason = cleanReason;
+            holiday.updated_at = new Date();
+            await holiday.save({ transaction });
+          }
+        } else {
+          holiday = await partnerDbController.Models.StoreHolidays.create(
+            {
+              store_id: storeId,
+              holiday_date: holidayDate,
+              reason: cleanReason,
+              created_at: new Date(),
+              updated_at: new Date(),
+            },
+            { transaction },
+          );
+        }
+
+        const toCancel = await appointments.findAll({
+          where: {
+            store_id: storeId,
+            status: { [Op.notIn]: ["cancelled", "completed", "refunded"] },
+            [Op.and]: [
+              Sequelize.where(
+                Sequelize.fn("DATE", Sequelize.col("booking_date")),
+                holidayDate,
+              ),
+            ],
+          },
+          attributes: [
+            "id",
+            "user_id",
+            "store_id",
+            "booking_date",
+            "slot_id",
+            "status",
+          ],
+          transaction,
+        });
+
+        if (toCancel.length > 0) {
+          const ids = toCancel.map((b) => b.id);
+          await appointments.update(
+            { status: "cancelled", updated_at: new Date() },
+            { where: { id: { [Op.in]: ids } }, transaction },
+          );
+        }
+
+        await transaction.commit();
+
+        return {
+          holiday: holiday.toJSON ? holiday.toJSON() : holiday,
+          cancelled_bookings: toCancel.map((b) => ({
+            id: b.id,
+            user_id: b.user_id,
+            store_id: b.store_id,
+            booking_date: b.booking_date,
+            slot_id: b.slot_id,
+            status: "cancelled",
+          })),
+          cancelled_count: toCancel.length,
+        };
+      } catch (error) {
+        await transaction.rollback();
+        if (error.status) throw error;
+        console.error("addStoreHoliday error:", error);
+        throw Error.SomethingWentWrong(
+          error.message || "Failed to add store holiday",
+        );
+      }
+    },
+
+    removeStoreHoliday: async (storeId, date) => {
+      try {
+        const holidayDate = assertDateOnly(date, "date");
+        const deleted = await partnerDbController.Models.StoreHolidays.destroy({
+          where: { store_id: storeId, holiday_date: holidayDate },
+        });
+        if (!deleted) {
+          throw Error.NotFound("Holiday not found for this date");
+        }
+        return { ok: true, date: holidayDate };
+      } catch (error) {
+        if (error.status) throw error;
+        throw Error.SomethingWentWrong(
+          error.message || "Failed to remove store holiday",
+        );
+      }
+    },
+
+    listStoreHolidays: async (storeId, from = null, to = null) => {
+      try {
+        const where = { store_id: storeId };
+        if (from || to) {
+          where.holiday_date = {};
+          if (from) where.holiday_date[Op.gte] = assertDateOnly(from, "from");
+          if (to) where.holiday_date[Op.lte] = assertDateOnly(to, "to");
+        }
+        return await partnerDbController.Models.StoreHolidays.findAll({
+          where,
+          order: [["holiday_date", "ASC"]],
+          raw: true,
+        });
+      } catch (error) {
+        if (error.status) throw error;
+        throw Error.SomethingWentWrong("Failed to list store holidays");
+      }
+    },
+
+    getStoreHolidayForDate: async (storeId, date) => {
+      try {
+        const holidayDate = assertDateOnly(date, "date");
+        return await partnerDbController.Models.StoreHolidays.findOne({
+          where: { store_id: storeId, holiday_date: holidayDate },
+          raw: true,
+        });
+      } catch (error) {
+        if (error.status) throw error;
+        throw Error.SomethingWentWrong("Failed to fetch store holiday");
+      }
+    },
+
+    listWeeklyHolidays: async (storeId) => {
+      try {
+        const rows = await partnerDbController.Models.StoreWeeklyHolidays.findAll({
+          where: { store_id: storeId },
+          order: [["weekday", "ASC"]],
+          raw: true,
+        });
+        return rows.map((r) => ({
+          ...r,
+          weekday_name: weekdayName(r.weekday),
+        }));
+      } catch (error) {
+        throw Error.SomethingWentWrong("Failed to list weekly holidays");
+      }
+    },
+
+    /**
+     * Recurring weekly closed day (e.g. every Sunday).
+     * Cancels future non-terminal bookings that fall on that weekday.
+     */
+    addWeeklyHoliday: async (storeId, weekdayInput, reason = null) => {
+      const transaction = await partnerDbController.connection.transaction();
+      try {
+        const weekday = assertWeekday(weekdayInput);
+        const cleanReason = normalizeReason(reason);
+
+        let rule = await partnerDbController.Models.StoreWeeklyHolidays.findOne({
+          where: { store_id: storeId, weekday },
+          transaction,
+        });
+
+        if (rule) {
+          if (reason !== undefined && reason !== null) {
+            rule.reason = cleanReason;
+            rule.updated_at = new Date();
+            await rule.save({ transaction });
+          }
+        } else {
+          rule = await partnerDbController.Models.StoreWeeklyHolidays.create(
+            {
+              store_id: storeId,
+              weekday,
+              reason: cleanReason,
+              created_at: new Date(),
+              updated_at: new Date(),
+            },
+            { transaction },
+          );
+        }
+
+        // MySQL DAYOFWEEK: 1=Sunday … 7=Saturday → JS weekday = DAYOFWEEK - 1
+        const toCancel = await partnerDbController.connection.query(
+          `SELECT id, user_id, store_id, booking_date, slot_id, status
+           FROM appointments
+           WHERE store_id = :storeId
+             AND status NOT IN ('cancelled', 'completed', 'refunded')
+             AND DATE(booking_date) >= CURDATE()
+             AND (DAYOFWEEK(booking_date) - 1) = :weekday`,
+          {
+            replacements: { storeId, weekday },
+            type: partnerDbController.connection.QueryTypes.SELECT,
+            transaction,
+          },
+        );
+
+        if (toCancel.length > 0) {
+          const ids = toCancel.map((b) => b.id);
+          await appointments.update(
+            { status: "cancelled", updated_at: new Date() },
+            { where: { id: { [Op.in]: ids } }, transaction },
+          );
+        }
+
+        await transaction.commit();
+
+        const weekly = {
+          ...(rule.toJSON ? rule.toJSON() : rule),
+          weekday_name: weekdayName(weekday),
+        };
+
+        return {
+          weekly,
+          cancelled_bookings: toCancel.map((b) => ({
+            id: b.id,
+            user_id: b.user_id,
+            store_id: b.store_id,
+            booking_date: b.booking_date,
+            slot_id: b.slot_id,
+            status: "cancelled",
+          })),
+          cancelled_count: toCancel.length,
+        };
+      } catch (error) {
+        await transaction.rollback();
+        if (error.status) throw error;
+        console.error("addWeeklyHoliday error:", error);
+        throw Error.SomethingWentWrong(
+          error.message || "Failed to add weekly holiday",
+        );
+      }
+    },
+
+    removeWeeklyHoliday: async (storeId, weekdayInput) => {
+      try {
+        const weekday = assertWeekday(weekdayInput);
+        const deleted =
+          await partnerDbController.Models.StoreWeeklyHolidays.destroy({
+            where: { store_id: storeId, weekday },
+          });
+        if (!deleted) {
+          throw Error.NotFound("Weekly holiday not found for this weekday");
+        }
+        return {
+          ok: true,
+          weekday,
+          weekday_name: weekdayName(weekday),
+        };
+      } catch (error) {
+        if (error.status) throw error;
+        throw Error.SomethingWentWrong(
+          error.message || "Failed to remove weekly holiday",
+        );
+      }
+    },
+
+    /**
+     * Unified closure check: one-off date OR recurring weekday.
+     */
+    getStoreClosureForDate: async (storeId, date) => {
+      try {
+        const holidayDate = assertDateOnly(date, "date");
+        const [oneOff, weekly] = await Promise.all([
+          partnerDbController.Models.StoreHolidays.findOne({
+            where: { store_id: storeId, holiday_date: holidayDate },
+            raw: true,
+          }),
+          partnerDbController.Models.StoreWeeklyHolidays.findAll({
+            where: { store_id: storeId },
+            raw: true,
+          }),
+        ]);
+        const info = findClosureReason(oneOff, weekly, holidayDate);
+        if (!info) return null;
+        return {
+          closed: true,
+          date: holidayDate,
+          ...info,
+        };
+      } catch (error) {
+        if (error.status) throw error;
+        throw Error.SomethingWentWrong("Failed to check store closure");
+      }
+    },
+
+    listPartnerHolidaysBundle: async (storeId, from = null, to = null) => {
+      const [holidays, weekly] = await Promise.all([
+        partnerDbController.app.listStoreHolidays(storeId, from, to),
+        partnerDbController.app.listWeeklyHolidays(storeId),
+      ]);
+      return { holidays, weekly, weekday_names: WEEKDAY_NAMES };
     },
   }));

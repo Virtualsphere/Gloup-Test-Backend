@@ -137,3 +137,59 @@ export async function sendBookingConfirmedNotifications(appointment) {
         }
     }
 }
+
+/**
+ * Notify the customer that their booking was cancelled (e.g. store holiday).
+ * Skips quietly when device/store data is missing.
+ */
+export async function sendBookingCancelledNotifications(appointment, reason) {
+    try {
+        const store = await userDbController.app.getstore(appointment.store_id);
+        if (!store) {
+            console.warn(
+                `[BookingNotify] Store ${appointment.store_id} not found, skipping cancel notify`
+            );
+            return;
+        }
+
+        const appointmentId = appointment.id;
+        const userDevice = await userDbController.app.getdeviceId(
+            appointment.user_id
+        );
+        if (!userDevice?.device_id) return;
+
+        const token = await persistNormalizedUserToken(
+            appointment.user_id,
+            userDevice.device_id
+        );
+        if (!token) return;
+
+        const reasonText = reason ? ` Reason: ${reason}` : "";
+        const userNotify = {
+            token: [token],
+            eventTitle: "Booking Cancelled",
+            eventDescription: `Your booking with ${store.name} was cancelled because the salon marked this day as a holiday.${reasonText}`,
+        };
+
+        await addUserBookingLogIfNew(
+            appointmentId,
+            userNotify,
+            appointment.user_id,
+            store
+        );
+
+        await sendPushNotification({
+            dedupeKey: `booking:${appointmentId}:user:cancelled`,
+            recipients: [{ token, user_id: appointment.user_id }],
+            title: userNotify.eventTitle,
+            body: userNotify.eventDescription,
+            collapseKey: `booking_${appointmentId}_user_cancel`,
+            persistLogs: false,
+        });
+    } catch (error) {
+        console.warn(
+            `[BookingNotify] Cancel notify failed for appointment ${appointment?.id}:`,
+            error?.message || error
+        );
+    }
+}

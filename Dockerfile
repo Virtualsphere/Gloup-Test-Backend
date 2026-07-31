@@ -31,9 +31,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=deps /app/node_modules ./node_modules
 COPY --chown=node:node . .
 
+# Ensure entrypoint is executable (migrations run before the API listens)
+RUN chmod +x /app/scripts/docker-entrypoint.sh
+
 USER node
 
 EXPOSE 5678
 
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["node", "app.js"]
+CMD ["/app/scripts/docker-entrypoint.sh"]

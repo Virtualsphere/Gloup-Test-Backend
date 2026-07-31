@@ -16,32 +16,57 @@ jobs:
           host: ${{ secrets.SERVER_IP }}
           username: avipa
           key: ${{ secrets.GCP_SSH_KEY }}
+          # Fail the job if any remote command fails (including migrate / health).
+          script_stop: true
           script: |
+            set -euo pipefail
             cd /var/www/gloup/backend/Gloup-Test-Backend
 
             echo "Pulling latest code..."
             git pull origin main
 
-            echo "Building and starting containers (Near Zero-Downtime)..."
+            echo "Building and starting containers..."
             docker compose up -d --build
 
-            echo "Waiting for app health..."
-            for i in $(seq 1 30); do
-              if docker compose exec -T app node -e "fetch('http://127.0.0.1:5678/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+            echo "Waiting for app container to accept exec..."
+            ready=0
+            for i in $(seq 1 60); do
+              if docker compose exec -T app true >/dev/null 2>&1; then
+                ready=1
                 break
               fi
-              sleep 3
+              sleep 2
             done
+            if [ "$ready" -ne 1 ]; then
+              echo "ERROR: app container not ready for exec"
+              docker compose ps
+              docker compose logs --tail=100 app || true
+              exit 1
+            fi
 
-            echo "Applying any pending DB migrations (also run on app startup)..."
+            echo "Applying pending DB migrations (required for this release)..."
             docker compose exec -T app node scripts/migrate.mjs up
 
             echo "Migration status:"
             docker compose exec -T app node scripts/migrate.mjs status
 
+            echo "Waiting for app health..."
+            healthy=0
+            for i in $(seq 1 40); do
+              if docker compose exec -T app node -e "fetch('http://127.0.0.1:5678/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; then
+                healthy=1
+                break
+              fi
+              sleep 3
+            done
+            if [ "$healthy" -ne 1 ]; then
+              echo "ERROR: app health check failed after migrate"
+              docker compose logs --tail=120 app || true
+              exit 1
+            fi
+
             echo "Cleaning up old dangling images..."
             docker image prune -f
 
             echo "Deployment completed"
-
             docker ps

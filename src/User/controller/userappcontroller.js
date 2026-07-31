@@ -1262,6 +1262,36 @@ export const getSlotStatusV2 = async (req, res) => {
   }
 };
 
+export const getStoreHolidaysV2 = async (req, res) => {
+  try {
+    const { saloon_id, from, to } = req.query;
+
+    if (!saloon_id) {
+      return res.status(400).json({
+        success: false,
+        message: "saloon_id is required"
+      });
+    }
+
+    const data = await userappmiddleware.user.getStoreHolidaysV2(
+      saloon_id,
+      from,
+      to
+    );
+
+    return res.status(200).json({
+      success: true,
+      data
+    });
+  } catch (error) {
+    console.log("Error in getStoreHolidaysV2 controller:", error);
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
 export const getGuestDetails = async (req, res) => {
   userappmiddleware.user.getGuestDetails(req.user)
     .then((data) => {

@@ -3308,4 +3308,138 @@ partnerappmiddleware.addstore = {
       throw Error.SomethingWentWrong("Heartbeat failed");
     }
   },
+
+  addStoreHoliday: async ({ user, body }) => {
+    try {
+      if (!user?.id) throw Error.AuthenticationFailed("Partner not authenticated");
+      const date = body?.date;
+      const reason = body?.reason ?? null;
+      if (!date) throw Error.BadRequest("date is required (YYYY-MM-DD)");
+
+      const result = await partnerDbController.app.addStoreHoliday(
+        user.id,
+        date,
+        reason,
+      );
+
+      // Notify cancelled customers (best-effort, outside transaction)
+      try {
+        const { sendBookingCancelledNotifications } = await import(
+          "../../core/utils/bookingNotifications.js"
+        );
+        for (const booking of result.cancelled_bookings || []) {
+          await sendBookingCancelledNotifications(booking, reason);
+        }
+      } catch (notifyErr) {
+        console.warn(
+          "[Holiday] Cancel notifications failed:",
+          notifyErr?.message || notifyErr,
+        );
+      }
+
+      return {
+        holiday: result.holiday,
+        cancelled_count: result.cancelled_count,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong(
+        error.message || "Failed to add holiday",
+      );
+    }
+  },
+
+  removeStoreHoliday: async ({ user, body, query }) => {
+    try {
+      if (!user?.id) throw Error.AuthenticationFailed("Partner not authenticated");
+      const date = body?.date || query?.date;
+      if (!date) throw Error.BadRequest("date is required (YYYY-MM-DD)");
+      return await partnerDbController.app.removeStoreHoliday(user.id, date);
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong(
+        error.message || "Failed to remove holiday",
+      );
+    }
+  },
+
+  listStoreHolidays: async ({ user, query }) => {
+    try {
+      if (!user?.id) throw Error.AuthenticationFailed("Partner not authenticated");
+      const from = query?.from || null;
+      const to = query?.to || null;
+      return await partnerDbController.app.listPartnerHolidaysBundle(
+        user.id,
+        from,
+        to,
+      );
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong("Failed to list holidays");
+    }
+  },
+
+  addWeeklyHoliday: async ({ user, body }) => {
+    try {
+      if (!user?.id) throw Error.AuthenticationFailed("Partner not authenticated");
+      const weekday = body?.weekday ?? body?.day;
+      const reason = body?.reason ?? null;
+      if (weekday === undefined || weekday === null || weekday === "") {
+        throw Error.BadRequest(
+          "weekday is required (0-6 or Sunday…Saturday)",
+        );
+      }
+
+      const result = await partnerDbController.app.addWeeklyHoliday(
+        user.id,
+        weekday,
+        reason,
+      );
+
+      try {
+        const { sendBookingCancelledNotifications } = await import(
+          "../../core/utils/bookingNotifications.js"
+        );
+        for (const booking of result.cancelled_bookings || []) {
+          await sendBookingCancelledNotifications(
+            booking,
+            reason || `Weekly holiday (${result.weekly?.weekday_name || ""})`,
+          );
+        }
+      } catch (notifyErr) {
+        console.warn(
+          "[Holiday] Weekly cancel notifications failed:",
+          notifyErr?.message || notifyErr,
+        );
+      }
+
+      return {
+        weekly: result.weekly,
+        cancelled_count: result.cancelled_count,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong(
+        error.message || "Failed to add weekly holiday",
+      );
+    }
+  },
+
+  removeWeeklyHoliday: async ({ user, body, query }) => {
+    try {
+      if (!user?.id) throw Error.AuthenticationFailed("Partner not authenticated");
+      const weekday = body?.weekday ?? body?.day ?? query?.weekday ?? query?.day;
+      if (weekday === undefined || weekday === null || weekday === "") {
+        throw Error.BadRequest(
+          "weekday is required (0-6 or Sunday…Saturday)",
+        );
+      }
+      return await partnerDbController.app.removeWeeklyHoliday(user.id, weekday);
+    } catch (error) {
+      if (error.status) throw error;
+      throw Error.SomethingWentWrong(
+        error.message || "Failed to remove weekly holiday",
+      );
+    }
+  },
 };

@@ -1768,3 +1768,99 @@ export const partnerHeartbeat = async (req, res) => {
       });
     });
 };
+
+export const addStoreHoliday = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.addStoreHoliday({
+      user: req.user,
+      body: req.body,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Holiday added successfully",
+      data,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+export const removeStoreHoliday = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.removeStoreHoliday({
+      user: req.user,
+      body: req.body,
+      query: req.query,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Holiday removed successfully",
+      data,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+export const listStoreHolidays = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.listStoreHolidays({
+      user: req.user,
+      query: req.query,
+    });
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+export const addWeeklyHoliday = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.addWeeklyHoliday({
+      user: req.user,
+      body: req.body,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Weekly holiday added successfully",
+      data,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+export const removeWeeklyHoliday = async (req, res) => {
+  try {
+    const data = await partnerappmiddleware.addstore.removeWeeklyHoliday({
+      user: req.user,
+      body: req.body,
+      query: req.query,
+    });
+    res.status(200).json({
+      success: true,
+      message: "Weekly holiday removed successfully",
+      data,
+    });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};

@@ -882,6 +882,21 @@ userappmiddleware.user = {
     },
     getSlotStatusV2: async (store_id, date) => {
         try {
+            const holiday = await userDbController.app.getStoreHolidayForDate(
+                store_id,
+                date
+            );
+            if (holiday) {
+                return {
+                    is_holiday: true,
+                    holiday_reason: holiday.reason || null,
+                    holiday_type: holiday.type || "one_off",
+                    weekday: holiday.weekday ?? null,
+                    weekday_name: holiday.weekday_name ?? null,
+                    slots: [],
+                };
+            }
+
             let quantity = 1;
             const getactive = await userDbController.app.getactivechairsubs({ store_id });
             if (getactive && getactive.quantity) {
@@ -906,10 +921,32 @@ userappmiddleware.user = {
                 };
             });
 
-            return slots;
+            return {
+                is_holiday: false,
+                holiday_reason: null,
+                slots,
+            };
         } catch (error) {
             console.error("Error in getSlotStatusV2 middleware:", error);
             throw Error.SomethingWentWrong();
+        }
+    },
+
+    getStoreHolidaysV2: async (store_id, from, to) => {
+        try {
+            if (!store_id) {
+                throw Error.BadRequest("saloon_id is required");
+            }
+            const bundle = await userDbController.app.listStoreHolidaysForRange(
+                store_id,
+                from || null,
+                to || null
+            );
+            // bundle already has dates / holidays / weekly
+            return bundle;
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch store holidays");
         }
     },
     addtocart: async ({ body, user }) => {
@@ -1203,6 +1240,58 @@ userappmiddleware.user = {
                 throw Error.SomethingWentWrong("Order subtotal cannot be zero");
             }
 
+            const resolvedStoreId =
+                store_id || (dbServices[0]?.store_id || dbCombos[0]?.store_id);
+
+            // Availability guards before charging / creating Razorpay order
+            const holiday = await userDbController.app.getStoreHolidayForDate(
+                resolvedStoreId,
+                booking_date
+            );
+            if (holiday) {
+                const weeklyHint =
+                    holiday.type === "weekly" && holiday.weekday_name
+                        ? ` (closed every ${holiday.weekday_name})`
+                        : "";
+                throw Error.BadRequest(
+                    `This salon is closed on the selected date${weeklyHint}. Please choose another day.`
+                );
+            }
+
+            if (slot_id) {
+                const slotBlocked =
+                    await userDbController.app.isSlotBlockedOnDate(
+                        resolvedStoreId,
+                        slot_id,
+                        booking_date
+                    );
+                if (slotBlocked) {
+                    throw Error.BadRequest(
+                        "Selected slot is blocked for this date. Please choose another slot."
+                    );
+                }
+
+                let quantity = 1;
+                const getactive = await userDbController.app.getactivechairsubs({
+                    store_id: resolvedStoreId,
+                });
+                if (getactive && getactive.quantity) {
+                    quantity = parseInt(getactive.quantity, 10) || 1;
+                }
+                const occupied =
+                    await userDbController.app.countOccupyingAppointmentsForSlot(
+                        resolvedStoreId,
+                        slot_id,
+                        booking_date,
+                        null
+                    );
+                if (occupied >= quantity) {
+                    throw Error.BadRequest(
+                        "Selected slot is fully booked. Please choose another slot."
+                    );
+                }
+            }
+
             let finalTotal = calculatedSubTotal;
             let couponDiscountApplied = 0;
 
@@ -1257,7 +1346,7 @@ userappmiddleware.user = {
 
             // 3. Create Appointment
             const appointmentData = {
-                store_id: store_id || (dbServices[0]?.store_id || dbCombos[0]?.store_id),
+                store_id: resolvedStoreId,
                 user_id: user.id,
                 booking_date: booking_date,
                 amount: totalWithTaxes,

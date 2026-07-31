@@ -9,6 +9,14 @@ import {
   storeGenderCondition,
   storeGenderWhereSql,
 } from "../../utils/storeGenderFilter.js";
+import {
+  assertDateOnly,
+  assertDateRange,
+  toDateOnly,
+  mergeClosedDates,
+  findClosureReason,
+  weekdayName,
+} from "../../utils/storeHolidays.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -1527,6 +1535,129 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
     } catch (error) {
       console.log("Error in getSlotStatusData:", error);
       throw Error.SomethingWentWrong();
+    }
+  },
+
+  getStoreHolidayForDate: async (store_id, date) => {
+    try {
+      const holidayDate = assertDateOnly(date, "date");
+      const [oneOff, weekly] = await Promise.all([
+        userDbController.Models.StoreHolidays.findOne({
+          where: { store_id, holiday_date: holidayDate },
+          raw: true,
+        }),
+        userDbController.Models.StoreWeeklyHolidays.findAll({
+          where: { store_id },
+          raw: true,
+        }),
+      ]);
+      const info = findClosureReason(oneOff, weekly, holidayDate);
+      if (!info) return null;
+      return {
+        holiday_date: holidayDate,
+        reason: info.reason,
+        type: info.type,
+        weekday: info.weekday ?? null,
+        weekday_name: info.weekday_name ?? null,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("Error in getStoreHolidayForDate:", error);
+      throw Error.SomethingWentWrong("Failed to fetch store holiday");
+    }
+  },
+
+  listStoreHolidaysForRange: async (store_id, from, to) => {
+    try {
+      const fromD = from ? assertDateOnly(from, "from") : toDateOnly(new Date());
+      const toD = to
+        ? assertDateOnly(to, "to")
+        : (() => {
+            const d = new Date();
+            d.setMonth(d.getMonth() + 2);
+            return toDateOnly(d);
+          })();
+      assertDateRange(fromD, toD, { maxDays: 400 });
+
+      const [oneOff, weekly] = await Promise.all([
+        userDbController.Models.StoreHolidays.findAll({
+          where: {
+            store_id,
+            holiday_date: { [Op.gte]: fromD, [Op.lte]: toD },
+          },
+          attributes: ["holiday_date", "reason"],
+          order: [["holiday_date", "ASC"]],
+          raw: true,
+        }),
+        userDbController.Models.StoreWeeklyHolidays.findAll({
+          where: { store_id },
+          attributes: ["weekday", "reason"],
+          order: [["weekday", "ASC"]],
+          raw: true,
+        }),
+      ]);
+
+      const dates = mergeClosedDates(oneOff, weekly, fromD, toD);
+      return {
+        dates,
+        holidays: oneOff.map((h) => ({
+          date: String(h.holiday_date).slice(0, 10),
+          reason: h.reason || null,
+          type: "one_off",
+        })),
+        weekly: weekly.map((w) => ({
+          weekday: w.weekday,
+          weekday_name: weekdayName(w.weekday),
+          reason: w.reason || null,
+        })),
+        from: fromD,
+        to: toD,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("Error in listStoreHolidaysForRange:", error);
+      throw Error.SomethingWentWrong("Failed to list store holidays");
+    }
+  },
+
+  isSlotBlockedOnDate: async (store_id, slot_id, date) => {
+    try {
+      const blocked = await userDbController.Models.SlotBlockedDates.findOne({
+        where: {
+          store_id,
+          slot_id,
+          blocked_date: String(date).slice(0, 10),
+        },
+        raw: true,
+      });
+      return !!blocked;
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to check slot block");
+    }
+  },
+
+  countOccupyingAppointmentsForSlot: async (store_id, slot_id, date, transaction) => {
+    try {
+      const rows = await connection.query(
+        `SELECT COUNT(id) AS cnt
+         FROM appointments
+         WHERE store_id = :store_id
+           AND slot_id = :slot_id
+           AND DATE(booking_date) = :date
+           AND ${SLOT_OCCUPANCY_SQL}`,
+        {
+          replacements: {
+            store_id,
+            slot_id,
+            date: String(date).slice(0, 10),
+          },
+          type: Sequelize.QueryTypes.SELECT,
+          transaction,
+        }
+      );
+      return parseInt(rows?.[0]?.cnt || 0, 10);
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to check slot occupancy");
     }
   },
   gettotal: async (data) => {
