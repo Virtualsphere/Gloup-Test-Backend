@@ -1183,6 +1183,80 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     throw Error.SomethingWentWrong("Failed to fetch booking details");
   }
 },
+// Same as getBookingsDetails, but filters by appointment/order date (a.booking_date) instead of created_at
+getBookingsDetailsByOrderDate: async (data) => {
+  try {
+    const page = Number(data.page) || 1;
+    const limit = Number(data.limit) || 10;
+    const offset = (page - 1) * limit;
+
+    const dateFilter = (data.fromDate && data.toDate) ? `AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate` : '';
+    const statusFilter = data.status ? `AND a.status = :status` : '';
+
+    const query = `
+      SELECT DISTINCT
+        a.id,
+        a.created_at,
+        a.booking_date,
+        c.firstname AS user_name,
+        d.name AS salon_name,
+        a.status,
+        a.payment_status,
+        DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+        a.amount AS service_amount,
+        a.discounted_amount AS discount_amount,
+        (a.amount - a.discounted_amount) AS subtotal,
+        (a.discounted_amount) + ROUND(((a.discounted_amount) * a.gst / 100), 2) AS payable_amount,
+        DATE_FORMAT(a.created_at, '%d %b, %Y') AS order_date
+      FROM appointments a
+      INNER JOIN User c ON a.user_id = c.id
+      INNER JOIN Store d ON a.store_id = d.id
+      WHERE 1=1
+      ${dateFilter}
+      ${statusFilter}
+      ORDER BY a.booking_date DESC, a.id DESC
+      LIMIT :limit OFFSET :offset
+    `;
+
+    const replacements = {
+      limit,
+      offset
+    };
+    if (data.fromDate && data.toDate) {
+      replacements.fromDate = data.fromDate;
+      replacements.toDate = data.toDate;
+    }
+    if (data.status) {
+      replacements.status = data.status;
+    }
+
+    const rows = await adminDbController.connection.query(query, {
+      replacements,
+      type: Sequelize.QueryTypes.SELECT,
+    });
+
+    const totalQuery = `
+      SELECT COUNT(DISTINCT a.id) AS totalCount
+      FROM appointments a
+      WHERE 1=1
+      ${dateFilter}
+      ${statusFilter}
+    `;
+
+    const totalResult = await adminDbController.connection.query(totalQuery, {
+      replacements,
+      type: Sequelize.QueryTypes.SELECT,
+    });
+
+    return {
+      rows: rows || [],
+      totalCount: totalResult?.[0]?.totalCount || 0,
+    };
+  } catch (error) {
+    console.log("🚀 ~ getBookingsDetailsByOrderDate DB error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch booking details by order date");
+  }
+},
 getBookingsDetailsById: async (data) => {
   try {
     const query = `
@@ -1461,6 +1535,145 @@ updatebookingDBStatus: async (id, status) => {
       return { totalAppointments: result?.totalAppointments || 0 };
     }
     return { totalRevenue: 0, totalAppointments: 0 };
+  },
+  // Booking count per month for a given year, optionally scoped to one salon
+  getMonthlyBookingsReport: async (data) => {
+    try {
+      const year = Number(data.year) || new Date().getFullYear();
+      const storeFilter = data.store_id ? `AND a.store_id = :store_id` : '';
+
+      const sql = `
+        SELECT DATE_FORMAT(a.booking_date, '%Y-%m') as month, COUNT(a.id) as total_bookings
+        FROM appointments a
+        WHERE YEAR(a.booking_date) = :year
+        ${storeFilter}
+        GROUP BY month
+        ORDER BY month ASC
+      `;
+
+      const replacements = { year };
+      if (data.store_id) replacements.store_id = data.store_id;
+
+      const rows = await adminDbController.connection.query(sql, {
+        replacements,
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      const countByMonth = {};
+      rows.forEach((r) => { countByMonth[r.month] = Number(r.total_bookings); });
+
+      const report = [];
+      for (let m = 1; m <= 12; m++) {
+        const month = `${year}-${String(m).padStart(2, "0")}`;
+        report.push({ month, total_bookings: countByMonth[month] || 0 });
+      }
+      return report;
+    } catch (error) {
+      console.log("🚀 ~ getMonthlyBookingsReport error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly bookings report");
+    }
+  },
+  // Paginated list of bookings within a date range, with user + salon details, for reporting/export
+  getBookingsByDateRange: async (data) => {
+    try {
+      const page = Number(data.page) || 1;
+      const limit = Number(data.limit) || 10;
+      const offset = (page - 1) * limit;
+
+      const storeFilter = data.store_id ? `AND a.store_id = :store_id` : '';
+      const statusFilter = data.status ? `AND a.status = :status` : '';
+
+      const replacements = {
+        fromDate: data.fromDate,
+        toDate: data.toDate,
+        limit,
+        offset,
+      };
+      if (data.store_id) replacements.store_id = data.store_id;
+      if (data.status) replacements.status = data.status;
+
+      const query = `
+        SELECT
+          a.id,
+          a.created_at AS booking_date,
+          a.booking_date AS appointment_date,
+          a.status,
+          a.payment_status,
+          CASE WHEN a.payment_status IN ('success', 'sucssess') THEN 'paid' ELSE 'unpaid' END AS paid_status,
+          a.amount,
+          a.discounted_amount,
+          c.id AS user_id,
+          c.firstname AS user_firstname,
+          c.lastname AS user_lastname,
+          c.phone AS user_phone,
+          c.email AS user_email,
+          d.id AS partner_id,
+          d.name AS partner_name,
+          d.phone AS partner_phone,
+          d.email AS partner_email,
+          CONCAT_WS(', ', f.area, f.city, f.district) AS partner_address
+        FROM appointments a
+        INNER JOIN User c ON a.user_id = c.id
+        INNER JOIN Store d ON a.store_id = d.id
+        LEFT JOIN PartnerAddress f ON d.address_id = f.id
+        WHERE DATE(a.created_at) BETWEEN :fromDate AND :toDate
+        ${storeFilter}
+        ${statusFilter}
+        ORDER BY a.created_at DESC, a.id DESC
+        LIMIT :limit OFFSET :offset
+      `;
+
+      const rows = await adminDbController.connection.query(query, {
+        replacements,
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      const totalQuery = `
+        SELECT COUNT(DISTINCT a.id) AS totalCount
+        FROM appointments a
+        INNER JOIN User c ON a.user_id = c.id
+        INNER JOIN Store d ON a.store_id = d.id
+        WHERE DATE(a.created_at) BETWEEN :fromDate AND :toDate
+        ${storeFilter}
+        ${statusFilter}
+      `;
+
+      const totalResult = await adminDbController.connection.query(totalQuery, {
+        replacements,
+        type: Sequelize.QueryTypes.SELECT,
+      });
+
+      return {
+        rows: rows || [],
+        totalCount: totalResult?.[0]?.totalCount || 0,
+      };
+    } catch (error) {
+      console.log("🚀 ~ getBookingsByDateRange error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch bookings by date range");
+    }
+  },
+  // Total booking count for the current month, optionally scoped to one salon
+  getCurrentMonthBookingsCount: async (data) => {
+    try {
+      const now = new Date();
+      const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+      const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+      const where = {
+        booking_date: { [Op.between]: [startOfMonth, endOfMonth] },
+      };
+      if (data.store_id) where.store_id = data.store_id;
+
+      const total = await adminDbController.Models.appointments.count({ where });
+
+      return {
+        month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`,
+        total_bookings: total || 0,
+      };
+    } catch (error) {
+      console.log("🚀 ~ getCurrentMonthBookingsCount error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch current month bookings count");
+    }
   },
   getFilteredStores: async (body) => {
     try {

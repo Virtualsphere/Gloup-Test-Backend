@@ -296,7 +296,64 @@ export const getMonthlyReport = async(req, res) => {
                 res.status(response.status).json(response);
             });
         });
-}  
+}
+
+export const getMonthlyBookingsReport = async(req, res) => {
+    Adminappmiddleware.app.getMonthlyBookingsReport(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getBookingsByDateRange = async(req, res) => {
+    Adminappmiddleware.app.getBookingsByDateRange(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getCurrentMonthBookingsCount = async(req, res) => {
+    Adminappmiddleware.app.getCurrentMonthBookingsCount(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
 
 export const getFilteredStores = async(req, res) => {
     Adminappmiddleware.app.getFilteredStores(req)
@@ -847,6 +904,25 @@ export const getBookingsDetails = async(req, res) => {
             const response = ApplicationResult.forCreated();
             var statuscode = 0;
             ApplicationResponse.success(        
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getBookingsDetailsByOrderDate = async(req, res) => {
+    Adminappmiddleware.app.getBookingsDetailsByOrderDate(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
                 response,
                 null,
                 (response) => (statuscode = response.status)

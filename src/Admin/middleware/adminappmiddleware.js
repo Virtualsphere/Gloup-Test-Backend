@@ -1010,7 +1010,19 @@ Adminappmiddleware.app = {
         } catch (error) {
             console.log("🚀 ~ error:", error)
             throw Error.SomethingWentWrong("Failed to fetch booking details");
-        }   
+        }
+    },
+    getBookingsDetailsByOrderDate: async ({ body, user }) => {
+        try {
+            const result = await adminDbController.app.getBookingsDetailsByOrderDate(body);
+            return {
+            data: result.rows || [],
+            total: result.totalCount || 0,
+            };
+        } catch (error) {
+            console.log("🚀 ~ error:", error)
+            throw Error.SomethingWentWrong("Failed to fetch booking details by order date");
+        }
     },
         getBookingsDetailsById: async ({ body, user }) => {
         try {
@@ -1099,6 +1111,42 @@ Adminappmiddleware.app = {
             return report;
         } else {
             return { totalRevenue: 0, totalAppointments: 0 };
+        }
+    },
+    getMonthlyBookingsReport: async ({ body }) => {
+        try {
+            const report = await adminDbController.app.getMonthlyBookingsReport(body || {});
+            return report || [];
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getMonthlyBookingsReport error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch monthly bookings report");
+        }
+    },
+    getBookingsByDateRange: async ({ body }) => {
+        try {
+            if (!body?.fromDate || !body?.toDate) {
+                throw Error.BadRequest("fromDate and toDate are required");
+            }
+            const result = await adminDbController.app.getBookingsByDateRange(body);
+            return {
+                data: result.rows || [],
+                total: result.totalCount || 0,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getBookingsByDateRange error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch bookings by date range");
+        }
+    },
+    getCurrentMonthBookingsCount: async ({ body }) => {
+        try {
+            const result = await adminDbController.app.getCurrentMonthBookingsCount(body || {});
+            return result;
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getCurrentMonthBookingsCount error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch current month bookings count");
         }
     },
     getFilteredStores: async ({ body }) => {
