@@ -89,7 +89,12 @@ import {
   deletepartnersubscription,
   addpartnersubscription,
   getallpartnersubscriptionfeatures,
-  deleteservice
+  deleteservice,
+  listStoreHolidays,
+  addStoreHoliday,
+  removeStoreHoliday,
+  addWeeklyHoliday,
+  removeWeeklyHoliday,
 } from "../controller/adminappcontroller.js";
 
 import { getservicecategory } from "../../Partner/controller/partnerappcontroller.js";
@@ -144,6 +149,13 @@ approutes.post('/blockandunblockslot', verifyadmin, blockAndUnblockSlot);
 approutes.post('/getblockedslots', verifyadmin, getBlockedSlots);
 approutes.post('/getlanguagelist', verifyadmin, getlanguage);
 approutes.post('/getserviceprovidedforoptions', verifyadmin, getserviceprovidedfor);
+
+// Store holidays (one-off + weekly) — any salon via store_id
+approutes.post('/listholidays', verifyadmin, listStoreHolidays);
+approutes.post('/addholiday', verifyadmin, addStoreHoliday);
+approutes.post('/removeholiday', verifyadmin, removeStoreHoliday);
+approutes.post('/addweeklyholiday', verifyadmin, addWeeklyHoliday);
+approutes.post('/removeweeklyholiday', verifyadmin, removeWeeklyHoliday);
 
 approutes.post('/updaterefundrequest', verifyadmin, updaterefundrequests);
 // approutes.post('/getallsubscription',verifyadmin,getallsubscription);

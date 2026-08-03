@@ -2049,5 +2049,153 @@ await Promise.all(
             if (error.status) throw error;
             throw Error.SomethingWentWrong("Failed to update category image");
         }
-    }
+    },
+
+    /**
+     * Store holidays (one-off + weekly) — admin manages any salon via store_id.
+     */
+    _resolveStoreId: (body = {}) => {
+        const storeId = Number(body.store_id ?? body.storeId);
+        if (!Number.isInteger(storeId) || storeId <= 0) {
+            throw Error.BadRequest("store_id is required");
+        }
+        return storeId;
+    },
+
+    listStoreHolidays: async ({ body }) => {
+        try {
+            const storeId = Adminappmiddleware.app._resolveStoreId(body);
+            const from = body?.from || null;
+            const to = body?.to || null;
+            return await partnerDbController.app.listPartnerHolidaysBundle(
+                storeId,
+                from,
+                to
+            );
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to list store holidays");
+        }
+    },
+
+    addStoreHoliday: async ({ body }) => {
+        try {
+            const storeId = Adminappmiddleware.app._resolveStoreId(body);
+            const date = body?.date;
+            const reason = body?.reason ?? null;
+            if (!date) throw Error.BadRequest("date is required (YYYY-MM-DD)");
+
+            const result = await partnerDbController.app.addStoreHoliday(
+                storeId,
+                date,
+                reason
+            );
+
+            try {
+                const { sendBookingCancelledNotifications } = await import(
+                    "../../core/utils/bookingNotifications.js"
+                );
+                for (const booking of result.cancelled_bookings || []) {
+                    await sendBookingCancelledNotifications(booking, reason);
+                }
+            } catch (notifyErr) {
+                console.warn(
+                    "[Admin Holiday] Cancel notifications failed:",
+                    notifyErr?.message || notifyErr
+                );
+            }
+
+            return {
+                holiday: result.holiday,
+                cancelled_count: result.cancelled_count,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong(
+                error.message || "Failed to add store holiday"
+            );
+        }
+    },
+
+    removeStoreHoliday: async ({ body }) => {
+        try {
+            const storeId = Adminappmiddleware.app._resolveStoreId(body);
+            const date = body?.date;
+            if (!date) throw Error.BadRequest("date is required (YYYY-MM-DD)");
+            return await partnerDbController.app.removeStoreHoliday(storeId, date);
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong(
+                error.message || "Failed to remove store holiday"
+            );
+        }
+    },
+
+    addWeeklyHoliday: async ({ body }) => {
+        try {
+            const storeId = Adminappmiddleware.app._resolveStoreId(body);
+            const weekday = body?.weekday ?? body?.day;
+            const reason = body?.reason ?? null;
+            if (weekday === undefined || weekday === null || weekday === "") {
+                throw Error.BadRequest(
+                    "weekday is required (0-6 or Sunday…Saturday)"
+                );
+            }
+
+            const result = await partnerDbController.app.addWeeklyHoliday(
+                storeId,
+                weekday,
+                reason
+            );
+
+            try {
+                const { sendBookingCancelledNotifications } = await import(
+                    "../../core/utils/bookingNotifications.js"
+                );
+                for (const booking of result.cancelled_bookings || []) {
+                    await sendBookingCancelledNotifications(
+                        booking,
+                        reason ||
+                            `Weekly holiday (${result.weekly?.weekday_name || ""})`
+                    );
+                }
+            } catch (notifyErr) {
+                console.warn(
+                    "[Admin Holiday] Weekly cancel notifications failed:",
+                    notifyErr?.message || notifyErr
+                );
+            }
+
+            return {
+                weekly: result.weekly,
+                cancelled_count: result.cancelled_count,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong(
+                error.message || "Failed to add weekly holiday"
+            );
+        }
+    },
+
+    removeWeeklyHoliday: async ({ body }) => {
+        try {
+            const storeId = Adminappmiddleware.app._resolveStoreId(body);
+            const weekday = body?.weekday ?? body?.day;
+            if (weekday === undefined || weekday === null || weekday === "") {
+                throw Error.BadRequest(
+                    "weekday is required (0-6 or Sunday…Saturday)"
+                );
+            }
+            return await partnerDbController.app.removeWeeklyHoliday(
+                storeId,
+                weekday
+            );
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong(
+                error.message || "Failed to remove weekly holiday"
+            );
+        }
+    },
 }

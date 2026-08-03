@@ -1675,3 +1675,28 @@ export const updateservicecategoryimage = async(req, res) => {
             });
         });
 }
+
+const holidayHandler = (method) => async (req, res) => {
+    Adminappmiddleware.app[method](req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const listStoreHolidays = holidayHandler("listStoreHolidays");
+export const addStoreHoliday = holidayHandler("addStoreHoliday");
+export const removeStoreHoliday = holidayHandler("removeStoreHoliday");
+export const addWeeklyHoliday = holidayHandler("addWeeklyHoliday");
+export const removeWeeklyHoliday = holidayHandler("removeWeeklyHoliday");
