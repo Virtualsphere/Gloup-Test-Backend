@@ -44,6 +44,9 @@ import {
   getFilteredStores,
   getFilterReport,
   getMonthlyReport,
+  getMonthlyBookingsReport,
+  getBookingsByDateRange,
+  getCurrentMonthBookingsCount,
   getpayoutlogs,
   getrefundrequests,
   getRegisteredStore,
@@ -67,6 +70,7 @@ import {
   getverifyPartnerlist,
   verifypartnerdetails,
   getBookingsDetails,
+  getBookingsDetailsByOrderDate,
   getBookingsDetailsById,
   updatebookingstatus,
   downloadBookingPDF,
@@ -202,6 +206,7 @@ approutes.post('/deletecoupons', verifyadmin, updatecoupons);
 
 approutes.post("/getBookings", verifyadmin, getBookings);
 approutes.post("/getBookingsDetails", verifyadmin, getBookingsDetails);
+approutes.post("/getBookingsDetailsByOrderDate", verifyadmin, getBookingsDetailsByOrderDate); // Same as getBookingsDetails but filtered by appointment/order date (booking_date)
 approutes.post("/getBookingsDetailsById", verifyadmin, getBookingsDetailsById);
 approutes.get("/bookings/sse", verifyadmin, bookingSSE);
 // TEMP — remove before production
@@ -221,6 +226,9 @@ approutes.post("/getCancelledOrders", verifyadmin, getCancelledOrders);
 approutes.post("/getTopSaloon", verifyadmin, getTopPerformingSalon);
 approutes.post("/getReports", verifyadmin, getFilterReport);
 approutes.post("/getMonthlyReports", verifyadmin, getMonthlyReport); //Get Monthly Revenue & Appointments
+approutes.post("/getMonthlyBookingsReport", verifyadmin, getMonthlyBookingsReport); // Get Monthly Booking Counts (optionally per salon via store_id)
+approutes.post("/getBookingsByDateRange", verifyadmin, getBookingsByDateRange); // Get Bookings List for a Date Range (user, appointment, payment & partner details)
+approutes.post("/getCurrentMonthBookingsCount", verifyadmin, getCurrentMonthBookingsCount); // Get Total Bookings Count for the Current Month (optionally per salon via store_id)
 approutes.post("/getFilteredStores", verifyadmin, getFilteredStores); // Get Store By Category Filter
 approutes.post("/getCategoryRevenue", verifyadmin, getCategoryRevenue); //Get Revenue By Category, Month, Year
 approutes.post("/getStores", verifyadmin, getStoreBySearch); // Get Store by City Name
