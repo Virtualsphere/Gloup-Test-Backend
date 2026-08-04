@@ -116,6 +116,8 @@ Adminappmiddleware.app = {
 
             const activebookingstoday = await adminDbController.app.getactivebookingstoday(body);
 
+            const cancelledrefundedorders = await adminDbController.app.getcancelledrefundedorders(body);
+
             const monthlyRevenueResult = await adminDbController.app.getmonthlysales(year);
             //console.log("🚀 ~ getdashboard:async ~ monthlyRevenueResult:", monthlyRevenueResult)
 
@@ -150,7 +152,8 @@ Adminappmiddleware.app = {
                 monthly_revenue: processedMonthlyRevenue,
                 total_sales_count: totalsalescount,
                 totalgendersales: getgendersales,
-                active_bookings_today: activebookingstoday
+                active_bookings_today: activebookingstoday,
+                cancelled_refunded_orders: cancelledrefundedorders
             }
 
             return result;

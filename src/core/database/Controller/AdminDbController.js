@@ -454,6 +454,19 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch active bookings");
     }
   },
+  getcancelledrefundedorders: async () => {
+    try {
+      return await adminDbController.Models.appointments.count({
+        where: {
+          status: {
+            [Op.in]: ["cancelled", "refunded"]
+          }
+        }
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch cancelled/refunded orders");
+    }
+  },
   gettopsaloons: async () => {
     try {
       let sql = `SELECT S.id, S.name, S.email, S.phone, S.images, COUNT(A.id) AS total_appointments
