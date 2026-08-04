@@ -1479,6 +1479,16 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to edit service");
         }
     },
+    updateServiceImportant: async ({ body }) => {
+        try {
+            const result = await adminDbController.app.updateServiceImportant(body);
+            return result;
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ updateServiceImportant:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to update service importance");
+        }
+    },
     getservicecategorylist: async ({ body }) => {
         try {
             const categoryList = await adminDbController.app.getServiceCategoryList(body);
