@@ -25,6 +25,7 @@ import {
   deletereviewrequest,
   editPartner,
   editService,
+  updateServiceImportant,
   getAdvancedSearch,
   getallcategory,
   getallcoupons,
@@ -138,6 +139,7 @@ approutes.post(
 );
 approutes.post("/getPartnerPaymentStatus", verifyadmin, getPartnerPaymentStatus);
 approutes.post('/editservice', verifyadmin, editService);
+approutes.post('/updateserviceimportant', verifyadmin, updateServiceImportant);
 approutes.post('/getservicecategorylist', verifyadmin, getservicecategorylist);
 approutes.post('/updateservicecategoryimage', verifyadmin, S3upload.single('image'), updateservicecategoryimage);
 approutes.post("/getservices", verifyadmin, getservices);

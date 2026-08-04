@@ -2462,6 +2462,23 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
       throw Error.SomethingWentWrong("Failed to edit service");
     }
   },
+  updateServiceImportant: async (data) => {
+    try {
+      if (!data.id) {
+        throw Error.BadRequest("Service ID is required");
+      }
+
+      await adminDbController.Models.StoreServices.update(
+        { important: !!data.important },
+        { where: { id: data.id } }
+      );
+
+      return { id: data.id, important: !!data.important };
+    } catch (error) {
+      console.log("❌ updateServiceImportant error:", error);
+      throw Error.SomethingWentWrong("Failed to update service importance");
+    }
+  },
  getServiceCategoryList: async () => {
   try {
     const categories = await partnerDbController.Models.Servicecategory.findAll({

@@ -342,6 +342,11 @@ StoreServices.init({
     type: DataTypes.BIGINT,
     allowNull: true,
   },
+  important: {
+    type: DataTypes.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  },
   duration: {
     type: DataTypes.TIME,
     allowNUll: true
