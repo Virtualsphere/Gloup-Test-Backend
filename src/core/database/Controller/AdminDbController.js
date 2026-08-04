@@ -1673,7 +1673,7 @@ updatebookingDBStatus: async (id, status) => {
       const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
 
       const where = {
-        booking_date: { [Op.between]: [startOfMonth, endOfMonth] },
+        created_at: { [Op.between]: [startOfMonth, endOfMonth] },
       };
       if (data.store_id) where.store_id = data.store_id;
 
