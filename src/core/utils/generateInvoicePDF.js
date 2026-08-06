@@ -2,6 +2,15 @@ import puppeteer from "puppeteer";
 import fs from "fs/promises";
 import path from "path";
 import { fileURLToPath } from "url";
+import { randomUUID } from "crypto";
+
+// Chromium's default profile/temp dir lives under the OS tmp dir. In hardened
+// containers /tmp is often mounted noexec/size-limited, which causes
+// intermittent "Printing failed" / "Target closed" errors under load. Giving
+// each launch its own directory on the app's normal writable layer sidesteps
+// that entirely; the unique suffix avoids user-data-dir collisions if two
+// invoices render concurrently.
+const CHROME_TMP_ROOT = path.join(process.cwd(), ".chrome-tmp");
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.join(__dirname, "..", "assests", "invoice");
@@ -370,28 +379,38 @@ const generateInvoicePDF = async (invoice) => {
     </html>
     `;
 
+    const userDataDir = path.join(CHROME_TMP_ROOT, randomUUID());
+    await fs.mkdir(userDataDir, { recursive: true });
+
     const launchOptions = {
       headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+      userDataDir,
     };
     if (process.env.PUPPETEER_EXECUTABLE_PATH) {
       launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
     }
 
-    const browser = await puppeteer.launch(launchOptions);
-    const page = await browser.newPage();
+    let browser;
+    try {
+      browser = await puppeteer.launch(launchOptions);
+      const page = await browser.newPage();
 
-    await page.setContent(html, { waitUntil: "load", timeout: 0 });
+      await page.setContent(html, { waitUntil: "load", timeout: 0 });
 
-    const pdfBuffer = await page.pdf({
-      format: "A4",
-      printBackground: true,
-      margin: { top: "10mm", bottom: "10mm", left: "10mm", right: "10mm" },
-    });
+      const pdfBuffer = await page.pdf({
+        format: "A4",
+        printBackground: true,
+        margin: { top: "10mm", bottom: "10mm", left: "10mm", right: "10mm" },
+      });
 
-    await browser.close();
-
-    return pdfBuffer;
+      return pdfBuffer;
+    } finally {
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
+      await fs.rm(userDataDir, { recursive: true, force: true }).catch(() => {});
+    }
   } catch (error) {
     console.error("generateInvoicePDF error:", error);
     throw error;
