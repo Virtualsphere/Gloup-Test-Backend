@@ -75,6 +75,9 @@ import {
   getBookingsDetailsById,
   updatebookingstatus,
   downloadBookingPDF,
+  getInvoicePartnersToday,
+  getInvoiceDetailsForPartner,
+  downloadInvoicePDF,
   downloadUsersExcel,
   updaterefundBooking,
   getservicecategorylist,
@@ -234,6 +237,9 @@ approutes.get("/bookings/sse/test", verifyadmin, (req, res) => {
 });
 approutes.post("/updateBookingStatus", verifyadmin, updatebookingstatus);
 approutes.post("/downloadBookingPDF/:id", verifyadmin, downloadBookingPDF);
+approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday);
+approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
+approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/refundbookings", verifyadmin, updaterefundBooking);
 
 approutes.post("/getCancelledOrders", verifyadmin, getCancelledOrders);
