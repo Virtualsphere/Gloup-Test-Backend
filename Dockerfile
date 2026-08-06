@@ -34,6 +34,8 @@ COPY --chown=node:node . .
 # Ensure entrypoint is executable (migrations run before the API listens)
 RUN chmod +x /app/scripts/docker-entrypoint.sh
 
+RUN mkdir -p /app/.chrome-tmp && chown -R node:node /app/.chrome-tmp
+
 USER node
 
 EXPOSE 5678
