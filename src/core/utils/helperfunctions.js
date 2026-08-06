@@ -9,6 +9,10 @@ import {
     persistNormalizedUserToken,
 } from "../../core/utils/fcmTokenService.js";
 import { sendPushNotification } from "../../core/utils/pushNotificationService.js";
+import { adminDbController } from "../../core/database/Controller/AdminDbController.js";
+import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
+import { sendInvoiceViaWhatsApp } from "../../core/utils/invoiceWhatsapp.js";
+import generateInvoicePDF from "../../core/utils/generateInvoicePDF.js";
 import cron from 'node-cron';
 
 
@@ -80,8 +84,55 @@ export class CronHelper {
     static initCronJobs() {
         this.scheduleSubscriptionUpdates();
         this.schedulePendingAppointmentExpiry();
+        this.scheduleDailyPartnerInvoices();
 
         // Add other cron jobs here
+    }
+
+    // Every day at 8:30 AM IST: generate each partner's invoice PDF for
+    // today's bookings, upload it, and send it over WhatsApp.
+    // sendInvoiceViaWhatsApp is a stub until the MSG91 WhatsApp template is
+    // wired up — this cron is safe to leave running in the meantime.
+    static scheduleDailyPartnerInvoices() {
+        cron.schedule('30 8 * * *', async () => {
+            try {
+                const { partners, date } = await adminDbController.app.getInvoicePartnersToday();
+
+                for (const partner of partners) {
+                    try {
+                        const invoice = await adminDbController.app.getInvoiceDetailsForPartner({
+                            partner_id: partner.partner_id,
+                        });
+
+                        const pdfBuffer = await generateInvoicePDF(invoice);
+
+                        const uploaded = await uploadToS3(
+                            {
+                                originalname: `invoice-${partner.partner_id}-${date}.pdf`,
+                                mimetype: "application/pdf",
+                                buffer: pdfBuffer,
+                            },
+                            "invoices"
+                        );
+
+                        await sendInvoiceViaWhatsApp({
+                            partner: invoice.partner,
+                            pdfUrl: uploaded.url,
+                            invoiceDate: date,
+                        });
+                    } catch (partnerError) {
+                        console.error(
+                            `[Cron] Failed to send invoice for partner ${partner.partner_id}:`,
+                            partnerError
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error("Error in daily partner invoice cron:", error);
+            }
+        }, {
+            timezone: 'Asia/Kolkata'
+        });
     }
 
     static schedulePendingAppointmentExpiry() {

@@ -1871,6 +1871,32 @@ await Promise.all(
         throw error;
     }
     },
+    getInvoicePartnersToday: async () => {
+        try {
+            return await adminDbController.app.getInvoicePartnersToday();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getInvoicePartnersToday:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch today's invoice partners");
+        }
+    },
+    getInvoiceDetailsForPartner: async ({ body }) => {
+        try {
+            return await adminDbController.app.getInvoiceDetailsForPartner(body);
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getInvoiceDetailsForPartner:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch invoice details");
+        }
+    },
+    downloadInvoicePDF: async (req) => {
+        try {
+            const partnerId = req.params.partnerId;
+            return await adminDbController.app.generateInvoicePDFForPartner({ partner_id: partnerId });
+        } catch (error) {
+            throw error;
+        }
+    },
     updaterefundBookingStatus: async ({ body, user }) => {
         try {
             const updateStatus = await adminDbController.app.updateRefundBookingStatus({ body, user });

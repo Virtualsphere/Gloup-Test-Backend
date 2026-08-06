@@ -8,6 +8,7 @@ import { getBookingsDetails, getlanguage, getserviceprovidedfor } from "../../..
 const { Op, Sequelize, fn, col } = require("sequelize");
 var randomize = require('randomatic');
 import generatePDF  from "../../utils/generatePDF.js";
+import generateInvoicePDF from "../../utils/generateInvoicePDF.js";
 import { partnerDbController } from "./partnerDbController.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import logger from "../../utils/logger.js";
@@ -3795,6 +3796,189 @@ verifypartnerdetails: async (data) => {
     }
   },
 
- 
-  
+  // ── Partner Invoice (daily booking summary per salon) ──────────────────
+
+  // Partners that received at least one booking today ("today" = created_at),
+  // with a booking count each, for the invoice landing page.
+  getInvoicePartnersToday: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT
+          d.id AS partner_id,
+          d.name AS partner_name,
+          d.phone AS partner_phone,
+          d.email AS partner_email,
+          COUNT(DISTINCT a.id) AS booking_count
+        FROM appointments a
+        INNER JOIN Store d ON a.store_id = d.id
+        WHERE DATE(a.created_at) = CURDATE()
+          AND a.status != 'cancelled'
+        GROUP BY d.id, d.name, d.phone, d.email
+        ORDER BY d.name ASC
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const totalBookings = rows.reduce(
+        (sum, row) => sum + Number(row.booking_count || 0),
+        0
+      );
+
+      return {
+        date: new Date().toISOString().split("T")[0],
+        total_bookings: totalBookings,
+        total_partners: rows.length,
+        partners: rows.map((row) => ({
+          partner_id: row.partner_id,
+          partner_name: row.partner_name,
+          partner_phone: row.partner_phone,
+          partner_email: row.partner_email,
+          booking_count: Number(row.booking_count || 0),
+        })),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getInvoicePartnersToday error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch today's invoice partners");
+    }
+  },
+
+  // Line-item breakdown (service/combo + amount) of one partner's bookings
+  // created today, priced per the "important" flag: important services bill
+  // at the normal amount, everything else bills at the discounted amount.
+  getInvoiceDetailsForPartner: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const storeRows = await adminDbController.connection.query(
+        `
+        SELECT
+          d.id AS partner_id,
+          d.name AS partner_name,
+          d.phone AS partner_phone,
+          d.email AS partner_email,
+          f.addressLine1, f.addressLine2, f.area, f.city, f.district, f.state, f.zipcode
+        FROM Store d
+        LEFT JOIN PartnerAddress f ON d.address_id = f.id
+        WHERE d.id = :partnerId
+        LIMIT 1
+        `,
+        {
+          replacements: { partnerId: data.partner_id },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      if (!storeRows.length) {
+        throw Error.NotFound("Partner not found");
+      }
+
+      const itemRows = await adminDbController.connection.query(
+        `
+        SELECT
+          a.id AS appointment_id,
+          a.created_at AS booking_time,
+          a.status,
+          a.payment_status,
+          ss.id AS service_id,
+          ss.service_name,
+          ss.amount AS service_amount,
+          ss.discounted_amount AS service_discounted_amount,
+          ss.important AS service_important,
+          cb.id AS combo_id,
+          cb.combo AS combo_name,
+          cb.amount AS combo_amount
+        FROM appointments a
+        INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+        LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+        LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        WHERE a.store_id = :partnerId
+          AND DATE(a.created_at) = CURDATE()
+          AND a.status != 'cancelled'
+        ORDER BY a.created_at ASC, a.id ASC
+        `,
+        {
+          replacements: { partnerId: data.partner_id },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      let total = 0;
+      const items = itemRows
+        .map((row) => {
+          let serviceName;
+          let amount;
+          let important = false;
+
+          if (row.service_id) {
+            serviceName = row.service_name;
+            important = !!row.service_important;
+            const baseAmount = Number(row.service_amount) || 0;
+            const discountedAmount = Number(row.service_discounted_amount) || 0;
+            amount = important
+              ? baseAmount
+              : discountedAmount > 0
+                ? discountedAmount
+                : baseAmount;
+          } else if (row.combo_id) {
+            serviceName = row.combo_name;
+            amount = Number(row.combo_amount) || 0;
+          } else {
+            return null;
+          }
+
+          total += amount;
+
+          return {
+            appointment_id: row.appointment_id,
+            booking_time: row.booking_time,
+            status: row.status,
+            payment_status: row.payment_status,
+            service_name: serviceName,
+            important,
+            amount: Number(amount.toFixed(2)),
+          };
+        })
+        .filter(Boolean);
+
+      const store = storeRows[0];
+
+      return {
+        partner: {
+          id: store.partner_id,
+          name: store.partner_name,
+          phone: store.partner_phone,
+          email: store.partner_email,
+          address: [store.addressLine1, store.addressLine2, store.area, store.city, store.district]
+            .filter(Boolean)
+            .join(", "),
+          state: store.state,
+          zipcode: store.zipcode,
+        },
+        date: new Date().toISOString().split("T")[0],
+        items,
+        total_bookings: items.length,
+        total_amount: Number(total.toFixed(2)),
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getInvoiceDetailsForPartner error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch invoice details");
+    }
+  },
+
+  generateInvoicePDFForPartner: async (data) => {
+    try {
+      const invoice = await adminDbController.app.getInvoiceDetailsForPartner(data);
+      const pdfBuffer = await generateInvoicePDF(invoice);
+      return pdfBuffer;
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ generateInvoicePDFForPartner error:", error);
+      throw Error.SomethingWentWrong("Failed to generate invoice PDF");
+    }
+  },
+
 };
