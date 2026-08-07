@@ -386,6 +386,10 @@ const generateInvoicePDF = async (invoice) => {
       headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
       userDataDir,
+      env: {
+        ...process.env,
+        TMPDIR: CHROME_TMP_ROOT,
+      },
     };
     if (process.env.PUPPETEER_EXECUTABLE_PATH) {
       launchOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
