@@ -137,7 +137,7 @@ app.use(function (req, res, next) {
 import { CronHelper } from "./src/core/utils/helperfunctions.js";
 
 const AppConfig = config.mode === "production" ? config.production : config.development;
-setup(AppConfig).then((config) => {
+setup(AppConfig).then(async (config) => {
   // app.listen(config.server.port);
   const port = config.server.port || 5678;
   const server = app.listen(port, '0.0.0.0', () => {
@@ -150,6 +150,21 @@ setup(AppConfig).then((config) => {
 
   CronHelper.initCronJobs();
   Logger.info(chalk.green(`Scheduled tasks initialized`));
+
+  // Real-time presence → admin SSE (Redis pub/sub, multi-instance safe)
+  try {
+    const { initPresenceFanout } = await import("./src/core/utils/presenceService.js");
+    const { broadcastLiveStats } = await import("./src/core/utils/sseManager.js");
+    await initPresenceFanout((payload) => {
+      if (payload?.type === "LIVE_STATS") broadcastLiveStats(payload);
+    });
+  } catch (err) {
+    Logger.error(
+      chalk.yellow(
+        `Presence fanout init skipped: ${err?.message || err}`
+      )
+    );
+  }
 }).catch((error) => {
   Logger.error(error?.stack || error?.message || String(error));
   process.exit(1);

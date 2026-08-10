@@ -165,16 +165,32 @@ Adminappmiddleware.app = {
 
     getLiveStats: async () => {
         try {
-            const [activeUsers, activePartners, newSignups] = await Promise.all([
-                adminDbController.app.getActiveUsersNow(2),
-                adminDbController.app.getActivePartnersNow(2),
+            const presence = await import("../../core/utils/presenceService.js");
+            const [redisUsers, redisPartners, newSignups] = await Promise.all([
+                presence.countActiveUsers(),
+                presence.countActivePartners(),
                 adminDbController.app.getNewSignupsToday(),
             ]);
+
+            // Prefer Redis presence; fall back to MySQL session window (~90s).
+            const [mysqlUsers, mysqlPartners] = await Promise.all([
+                redisUsers == null
+                    ? adminDbController.app.getActiveUsersNow(1.5)
+                    : Promise.resolve(null),
+                redisPartners == null
+                    ? adminDbController.app.getActivePartnersNow(1.5)
+                    : Promise.resolve(null),
+            ]);
+
             return {
-                active_users_now: activeUsers,
-                active_partners_now: activePartners,
+                active_users_now: redisUsers ?? mysqlUsers ?? 0,
+                active_partners_now: redisPartners ?? mysqlPartners ?? 0,
                 new_users_today: newSignups.new_users,
                 new_partners_today: newSignups.new_partners,
+                presence_source:
+                    redisUsers != null && redisPartners != null
+                        ? "redis"
+                        : "mysql",
             };
         } catch (error) {
             throw Error.SomethingWentWrong("Failed to fetch live stats");

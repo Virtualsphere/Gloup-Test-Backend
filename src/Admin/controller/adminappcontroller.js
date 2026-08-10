@@ -3,7 +3,7 @@ import { ApplicationResponse } from "../../core/inc/response/ApplicationResponse
 import { ApplicationResult } from "../../core/result.js";
 import { Adminappmiddleware } from "../middleware/adminappmiddleware.js";
 import { addClient, removeClient } from "../../core/utils/sseManager.js";
-dotenv.config(); 
+dotenv.config();
 
 
 export const getallusers = async(req, res) => {
@@ -878,7 +878,7 @@ export const getLiveStats = async (req, res) => {
         });
 };
 
-export const bookingSSE = (req, res) => {
+export const bookingSSE = async (req, res) => {
   // SSE headers
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -891,6 +891,34 @@ export const bookingSSE = (req, res) => {
   }, 30000);
 
   addClient(res);
+
+  // Snapshot current presence so the dashboard is accurate immediately
+  try {
+    const presence = await import("../../core/utils/presenceService.js");
+    const counts = await presence.getPresenceCounts();
+    if (counts.active_users_now != null && counts.active_partners_now != null) {
+      res.write(
+        `data: ${JSON.stringify({
+          type: "LIVE_STATS",
+          active_users_now: counts.active_users_now,
+          active_partners_now: counts.active_partners_now,
+          ts: Date.now(),
+        })}\n\n`
+      );
+    } else {
+      const data = await Adminappmiddleware.app.getLiveStats();
+      res.write(
+        `data: ${JSON.stringify({
+          type: "LIVE_STATS",
+          active_users_now: data.active_users_now,
+          active_partners_now: data.active_partners_now,
+          ts: Date.now(),
+        })}\n\n`
+      );
+    }
+  } catch (err) {
+    console.warn("[SSE] initial LIVE_STATS failed:", err?.message || err);
+  }
 
   req.on("close", () => {
     clearInterval(heartbeat);

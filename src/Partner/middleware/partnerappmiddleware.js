@@ -3302,6 +3302,16 @@ partnerappmiddleware.addstore = {
         { updated_at: isOnline ? new Date() : new Date(0) },
         { where: { storeId: user.id, status: "active" } }
       );
+      try {
+        const presence = await import("../../core/utils/presenceService.js");
+        if (isOnline) await presence.markPartnerOnline(user.id);
+        else await presence.markPartnerOffline(user.id);
+      } catch (presenceErr) {
+        console.warn(
+          "[Heartbeat] Partner presence Redis update failed:",
+          presenceErr?.message || presenceErr
+        );
+      }
       return { ok: true, online: isOnline };
     } catch (error) {
       if (error.status) throw error;

@@ -2986,6 +2986,16 @@ userappmiddleware.user = {
                 { updated_at: isOnline ? new Date() : new Date(0) },
                 { where: { user_id: user.id, status: "active" } }
             );
+            try {
+                const presence = await import("../../core/utils/presenceService.js");
+                if (isOnline) await presence.markUserOnline(user.id);
+                else await presence.markUserOffline(user.id);
+            } catch (presenceErr) {
+                console.warn(
+                    "[Heartbeat] User presence Redis update failed:",
+                    presenceErr?.message || presenceErr
+                );
+            }
             return { ok: true, online: isOnline };
         } catch (error) {
             if (error.status) throw error;
