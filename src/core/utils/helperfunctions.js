@@ -102,6 +102,7 @@ export class CronHelper {
                     try {
                         const invoice = await adminDbController.app.getInvoiceDetailsForPartner({
                             partner_id: partner.partner_id,
+                            date,
                         });
 
                         const pdfBuffer = await generateInvoicePDF(invoice);

@@ -18,6 +18,7 @@ import {
     formatDurationFromDecimal,
     normalizeCategoryKey,
 } from "../../utils/excelParser.js";
+import { toIstDatePart } from "../../schema/formats.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -26,6 +27,20 @@ const ALLOWED_STATUS_TRANSITIONS = {
   cancelled: [],
   refunded: [],
 };
+
+const INVOICE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Invoice day = appointment calendar day (IST). Optional YYYY-MM-DD override. */
+function resolveInvoiceDate(dateInput) {
+  if (dateInput != null && String(dateInput).trim() !== "") {
+    const d = String(dateInput).trim().slice(0, 10);
+    if (!INVOICE_DATE_RE.test(d)) {
+      throw Error.BadRequest("date must be YYYY-MM-DD");
+    }
+    return d;
+  }
+  return toIstDatePart(new Date());
+}
 
 
 
@@ -3798,10 +3813,15 @@ verifypartnerdetails: async (data) => {
 
   // ── Partner Invoice (daily booking summary per salon) ──────────────────
 
-  // Partners that received at least one booking today ("today" = created_at),
-  // with a booking count each, for the invoice landing page.
-  getInvoicePartnersToday: async () => {
+  /**
+   * Partners with at least one appointment on the invoice day.
+   * Day = appointment booking_date (salon visit day), Asia/Kolkata calendar.
+   * Optional data.date (YYYY-MM-DD); defaults to today IST.
+   */
+  getInvoicePartnersToday: async (data = {}) => {
     try {
+      const invoiceDate = resolveInvoiceDate(data?.date);
+
       const rows = await adminDbController.connection.query(
         `
         SELECT
@@ -3812,12 +3832,15 @@ verifypartnerdetails: async (data) => {
           COUNT(DISTINCT a.id) AS booking_count
         FROM appointments a
         INNER JOIN Store d ON a.store_id = d.id
-        WHERE DATE(a.created_at) = CURDATE()
+        WHERE DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
         GROUP BY d.id, d.name, d.phone, d.email
         ORDER BY d.name ASC
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        {
+          replacements: { invoiceDate },
+          type: Sequelize.QueryTypes.SELECT,
+        }
       );
 
       const totalBookings = rows.reduce(
@@ -3826,7 +3849,7 @@ verifypartnerdetails: async (data) => {
       );
 
       return {
-        date: new Date().toISOString().split("T")[0],
+        date: invoiceDate,
         total_bookings: totalBookings,
         total_partners: rows.length,
         partners: rows.map((row) => ({
@@ -3838,19 +3861,22 @@ verifypartnerdetails: async (data) => {
         })),
       };
     } catch (error) {
+      if (error.status) throw error;
       console.log("🚀 ~ getInvoicePartnersToday error:", error);
       throw Error.SomethingWentWrong("Failed to fetch today's invoice partners");
     }
   },
 
-  // Line-item breakdown (service/combo + amount) of one partner's bookings
-  // created today, priced per the "important" flag: important services bill
-  // at the normal amount, everything else bills at the discounted amount.
+  // Line-item breakdown for one partner's appointments on the invoice day
+  // (booking_date). Priced by "important" flag: important → full amount,
+  // otherwise discounted when present.
   getInvoiceDetailsForPartner: async (data) => {
     try {
       if (!data.partner_id) {
         throw Error.BadRequest("partner_id is required");
       }
+
+      const invoiceDate = resolveInvoiceDate(data?.date);
 
       const storeRows = await adminDbController.connection.query(
         `
@@ -3879,7 +3905,8 @@ verifypartnerdetails: async (data) => {
         `
         SELECT
           a.id AS appointment_id,
-          a.created_at AS booking_time,
+          a.booking_date AS appointment_date,
+          a.created_at AS order_time,
           a.status,
           a.payment_status,
           ss.id AS service_id,
@@ -3895,12 +3922,15 @@ verifypartnerdetails: async (data) => {
         LEFT JOIN StoreServices ss ON ai.service_id = ss.id
         LEFT JOIN Combo cb ON ai.combo_id = cb.id
         WHERE a.store_id = :partnerId
-          AND DATE(a.created_at) = CURDATE()
+          AND DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        ORDER BY a.created_at ASC, a.id ASC
+        ORDER BY a.booking_date ASC, a.id ASC
         `,
         {
-          replacements: { partnerId: data.partner_id },
+          replacements: {
+            partnerId: data.partner_id,
+            invoiceDate,
+          },
           type: Sequelize.QueryTypes.SELECT,
         }
       );
@@ -3933,7 +3963,10 @@ verifypartnerdetails: async (data) => {
 
           return {
             appointment_id: row.appointment_id,
-            booking_time: row.booking_time,
+            // Keep booking_time for PDF/UI compat; value is appointment day
+            booking_time: row.appointment_date,
+            appointment_date: row.appointment_date,
+            order_time: row.order_time,
             status: row.status,
             payment_status: row.payment_status,
             service_name: serviceName,
@@ -3957,7 +3990,7 @@ verifypartnerdetails: async (data) => {
           state: store.state,
           zipcode: store.zipcode,
         },
-        date: new Date().toISOString().split("T")[0],
+        date: invoiceDate,
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),

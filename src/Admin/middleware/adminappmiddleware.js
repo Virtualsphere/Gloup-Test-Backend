@@ -1887,9 +1887,9 @@ await Promise.all(
         throw error;
     }
     },
-    getInvoicePartnersToday: async () => {
+    getInvoicePartnersToday: async ({ body } = {}) => {
         try {
-            return await adminDbController.app.getInvoicePartnersToday();
+            return await adminDbController.app.getInvoicePartnersToday(body || {});
         } catch (error) {
             if (error.status) throw error;
             console.log("🚀 ~ getInvoicePartnersToday:async ~ error:", error);
@@ -1898,7 +1898,7 @@ await Promise.all(
     },
     getInvoiceDetailsForPartner: async ({ body }) => {
         try {
-            return await adminDbController.app.getInvoiceDetailsForPartner(body);
+            return await adminDbController.app.getInvoiceDetailsForPartner(body || {});
         } catch (error) {
             if (error.status) throw error;
             console.log("🚀 ~ getInvoiceDetailsForPartner:async ~ error:", error);
@@ -1908,7 +1908,11 @@ await Promise.all(
     downloadInvoicePDF: async (req) => {
         try {
             const partnerId = req.params.partnerId;
-            return await adminDbController.app.generateInvoicePDFForPartner({ partner_id: partnerId });
+            const date = req.body?.date || req.query?.date || null;
+            return await adminDbController.app.generateInvoicePDFForPartner({
+                partner_id: partnerId,
+                date,
+            });
         } catch (error) {
             throw error;
         }
