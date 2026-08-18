@@ -28,7 +28,7 @@ const COMPANY = {
     "Vilar Road, Thanjavur, Thanjavur – 613006,",
     "Tamil Nadu, India",
   ],
-  phone: "+91 70 5050 6400",
+  phone: "+91 75 3880 8796",
   emails: ["contact@gloup.in", "booking@gloup.in"],
   website: "www.gloup.in",
   gstin: "33AAGCJ1397N1Z5",
