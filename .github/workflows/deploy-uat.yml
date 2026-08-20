@@ -11,7 +11,21 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy backend to UAT VM
+      - name: Checkout UAT branch
+        uses: actions/checkout@v4
+
+      - name: Sync backend code to UAT server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.UAT_SERVER_IP }}
+          username: ${{ secrets.UAT_SSH_USER }}
+          key: ${{ secrets.UAT_SSH_KEY }}
+          source: "."
+          target: /var/www/gloup/uat/backend/Gloup-Test-Backend
+          overwrite: true
+          strip_components: 0
+
+      - name: Build and restart UAT backend
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.UAT_SERVER_IP }}
@@ -21,11 +35,6 @@ jobs:
           script: |
             set -euo pipefail
             cd /var/www/gloup/uat/backend/Gloup-Test-Backend
-
-            echo "Pulling latest UAT code..."
-            git fetch origin
-            git checkout uat
-            git pull origin uat
 
             echo "Building and starting containers..."
             docker compose up -d --build
