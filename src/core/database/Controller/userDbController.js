@@ -1227,11 +1227,18 @@ userDbController.app = {
 
   getstorereviews: async (data) => {
     try {
-      return await userDbController.Models.Reviews.findAll({
-        where: {
-          store_id: data.store_id
-        }
-      })
+      const sql = `
+        SELECT r.id, r.rating, r.review_description, r.cretaed_at, r.updated_at,
+               u.firstname, u.lastname, u.profilePic
+        FROM Reviews r
+        JOIN User u ON r.user_id = u.id
+        WHERE r.store_id = :store_id AND r.status = 'active'
+        ORDER BY r.cretaed_at DESC
+      `;
+      const [results] = await userDbController.sequelize.query(sql, {
+        replacements: { store_id: data.store_id },
+      });
+      return results;
     } catch (error) {
       throw Error.SomethingWentWrong();
     }
@@ -2283,6 +2290,36 @@ WHERE S.status = 'active'
     } catch (error) {
       console.error("Error in getReviewsV2:", error);
       throw Error.InternalError("Failed to fetch reviews");
+    }
+  },
+
+  getPendingReviews: async (userId) => {
+    try {
+      const sql = `
+        SELECT DISTINCT a.store_id, a.id as appointment_id, a.booking_date,
+               s.name as store_name, s.images as store_images
+        FROM appointments a
+        JOIN Store s ON a.store_id = s.id
+        LEFT JOIN Reviews r ON r.store_id = a.store_id AND r.user_id = a.user_id AND r.status = 'active'
+        WHERE a.user_id = :userId
+          AND a.appointment_status = 'completed'
+          AND r.id IS NULL
+        ORDER BY a.booking_date DESC
+        LIMIT 5
+      `;
+      const [results] = await userDbController.sequelize.query(sql, {
+        replacements: { userId },
+      });
+      return results.map((row) => ({
+        store_id: row.store_id,
+        appointment_id: row.appointment_id,
+        booking_date: row.booking_date,
+        store_name: row.store_name,
+        store_images: row.store_images ? JSON.parse(row.store_images) : null,
+      }));
+    } catch (error) {
+      console.error("Error in getPendingReviews:", error);
+      throw Error.InternalError("Failed to fetch pending reviews");
     }
   },
 
@@ -3641,10 +3678,18 @@ END AS distance
     });
   },
   getReviewsv2: async (store_id) => {
-    return await Models.Reviews.findAll({
-      where: { store_id, status: 'active' },
-      raw: true
+    const sql = `
+      SELECT r.id, r.rating, r.review_description, r.cretaed_at,
+             u.firstname, u.lastname, u.profilePic, u.phone
+      FROM Reviews r
+      JOIN User u ON r.user_id = u.id
+      WHERE r.store_id = :store_id AND r.status = 'active'
+      ORDER BY r.cretaed_at DESC
+    `;
+    const [results] = await connection.query(sql, {
+      replacements: { store_id },
     });
+    return results;
   },
   getRatingSummaryv2: async (store_id) => {
     const sql = `

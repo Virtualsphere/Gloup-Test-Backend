@@ -1205,6 +1205,21 @@ export const getReviewsV2 = async (req, res) => {
   }
 };
 
+export const getPendingReviewsV2 = async (req, res) => {
+  try {
+    const data = await userappmiddleware.user.getPendingReviewsV2(req);
+    return res.status(200).json({
+      success: true,
+      data
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
 export const updateReviewV2 = async (req, res) => {
   try {
     const data = await userappmiddleware.user.updateReviewV2(req);

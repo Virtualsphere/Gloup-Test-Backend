@@ -1,32 +1,31 @@
-name: Deploy Backend (Prod)
+name: Deploy Backend (UAT)
 
 on:
   push:
     branches:
-      - main
+      - uat
 
 jobs:
   deploy:
-    name: Deploy to Production
+    name: Deploy to UAT
     runs-on: ubuntu-latest
 
     steps:
-      - name: Deploy backend to production VM
+      - name: Deploy backend to UAT VM
         uses: appleboy/ssh-action@v1.2.0
         with:
-          host: ${{ secrets.SERVER_IP }}
-          username: avipa
-          key: ${{ secrets.GCP_SSH_KEY }}
-          # Fail the job if any remote command fails (including migrate / health).
+          host: ${{ secrets.UAT_SERVER_IP }}
+          username: ${{ secrets.UAT_SSH_USER }}
+          key: ${{ secrets.UAT_SSH_KEY }}
           script_stop: true
           script: |
             set -euo pipefail
-            cd /var/www/gloup/backend/Gloup-Test-Backend
+            cd /var/www/gloup/uat/backend/Gloup-Test-Backend
 
-            echo "Pulling latest production code..."
+            echo "Pulling latest UAT code..."
             git fetch origin
-            git checkout main
-            git pull origin main
+            git checkout uat
+            git pull origin uat
 
             echo "Building and starting containers..."
             docker compose up -d --build
@@ -47,7 +46,7 @@ jobs:
               exit 1
             fi
 
-            echo "Applying pending DB migrations (required for this release)..."
+            echo "Applying pending DB migrations..."
             docker compose exec -T app node scripts/migrate.mjs up
 
             echo "Migration status:"
@@ -71,5 +70,5 @@ jobs:
             echo "Cleaning up old dangling images..."
             docker image prune -f
 
-            echo "Deployment completed"
+            echo "UAT deployment completed"
             docker ps

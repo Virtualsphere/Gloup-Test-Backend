@@ -53,21 +53,38 @@ const metricsMiddleware = promBundle({
 app.use(metricsMiddleware);
 
 
-app.use(cors({
-  origin: [
-    'https://gloup.in',
-    'https://www.gloup.in',
-    'https://admin.gloup.in',
-    'http://localhost:3000',
-    'http://localhost:3001',
-    'http://localhost:5173'
-  ],
+const corsOrigins = [
+  'https://gloup.in',
+  'https://www.gloup.in',
+  'https://admin.gloup.in',
+  'http://localhost:3000',
+  'http://localhost:3001',
+  'http://localhost:5173',
+];
+
+// LAN testing (local machine, never used on prod or UAT)
+const lanHost = process.env.LAN_HOST;
+if (lanHost) {
+  for (const port of [5173, 3000, 3001, 4173]) {
+    corsOrigins.push(`http://${lanHost}:${port}`);
+  }
+}
+
+// UAT admin panel origin — set UAT_ADMIN_ORIGIN in UAT .env only, never in prod .env
+const uatAdminOrigin = process.env.UAT_ADMIN_ORIGIN;
+if (uatAdminOrigin) {
+  corsOrigins.push(uatAdminOrigin);
+}
+
+const corsOptions = {
+  origin: corsOrigins,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'adminauth', 'userauth']
-}));
+  allowedHeaders: ['Content-Type', 'Authorization', 'adminauth', 'userauth', 'partnertoken']
+};
 
-app.options('*', cors());
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.set("view engine", "ejs");
 app.set("views", "./src/core/views/ui/");

@@ -595,6 +595,16 @@ userappmiddleware.user = {
         }
     },
 
+    getPendingReviewsV2: async ({ user }) => {
+        try {
+            const pending = await userDbController.app.getPendingReviews(user.id);
+            return pending;
+        } catch (error) {
+            console.error("Error in getPendingReviewsV2:", error);
+            throw Error.SomethingWentWrong("Failed to fetch pending reviews");
+        }
+    },
+
     updateReviewV2: async ({ body, query, user }) => {
         try {
             const reviewId = query.id;

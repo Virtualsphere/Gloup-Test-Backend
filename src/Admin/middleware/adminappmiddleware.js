@@ -234,7 +234,7 @@ Adminappmiddleware.app = {
     addnotification: async ({ body, user }) => {
         try {
 
-            const { notification_type, sent_to, title, description, store_id } = body;
+            const { notification_type, sent_to, title, description, store_id, image } = body;
 
             /* ------------------------------------------
                Helper: Extract valid tokens safely
@@ -264,6 +264,7 @@ Adminappmiddleware.app = {
                     recipients: tokenObjects,
                     title,
                     body: description,
+                    image: image || undefined,
                     collapseKey: `admin_${notificationId}`,
                     persistLogs: true,
                     notificationOnly: true,

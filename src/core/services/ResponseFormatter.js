@@ -262,11 +262,23 @@ function formatLanguages(languages = []) {
   return languages.map((language) => language.name);
 }
 
+function formatReviewUserName(review) {
+  const fullName = `${review.firstname || ''} ${review.lastname || ''}`.trim();
+  if (fullName) return fullName;
+  if (review.phone) {
+    const ph = String(review.phone);
+    return ph.length >= 4
+      ? `${ph.slice(0, 2)}${'*'.repeat(ph.length - 4)}${ph.slice(-2)}`
+      : 'User';
+  }
+  return 'User';
+}
+
 function formatReviews(reviews = []) {
   return reviews.map((review) => ({
     id: `review_${review.id}`,
-    userName: "User",
-    userImage: null,
+    userName: formatReviewUserName(review),
+    userImage: review.profilePic || null,
     timeAgo: calculateTimeAgo(review.cretaed_at),
     rating: review.rating,
     reviewText: review.review_description,
