@@ -78,6 +78,9 @@ import {
   getInvoicePartnersToday,
   getInvoiceDetailsForPartner,
   downloadInvoicePDF,
+  getInvoicePartnersMonthly,
+  getMonthlyInvoiceDetailsForPartner,
+  downloadMonthlyInvoicePDF,
   downloadUsersExcel,
   updaterefundBooking,
   getservicecategorylist,
@@ -240,6 +243,9 @@ approutes.post("/downloadBookingPDF/:id", verifyadmin, downloadBookingPDF);
 approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday);
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
+approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);
+approutes.post("/getmonthlyinvoicedetails", verifyadmin, getMonthlyInvoiceDetailsForPartner);
+approutes.post("/downloadmonthlyinvoicepdf/:partnerId", verifyadmin, downloadMonthlyInvoicePDF);
 approutes.post("/refundbookings", verifyadmin, updaterefundBooking);
 
 approutes.post("/getCancelledOrders", verifyadmin, getCancelledOrders);

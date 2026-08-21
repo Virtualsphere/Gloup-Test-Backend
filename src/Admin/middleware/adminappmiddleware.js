@@ -23,7 +23,11 @@ import {
     hashNotificationContent,
     sendPushNotification,
 } from "../../core/utils/pushNotificationService.js";
-import { sendMarketingBroadcast } from "../../core/utils/whatsappNotification.js"
+import {
+    sendMarketingBroadcast,
+    sendBookingCancelledWhatsApp,
+    sendBookingRefundWhatsApp,
+} from "../../core/utils/whatsappNotification.js"
 import {
     createPushTraceId,
     findDuplicateTokens,
@@ -814,6 +818,8 @@ Adminappmiddleware.app = {
                 if (getappoinment.is_wallet === true) {
                     const addwallet = await adminDbController.app.addwallet(getappoinment.user_id, getappoinment.discounted_amount);
 
+                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+
                     return "Refunded amount to your wallet successfully";
                 }
                 const response = await razorpay.payments.refund(getappoinment.payment_id, {
@@ -822,10 +828,14 @@ Adminappmiddleware.app = {
                 })
                 //console.log("🚀 ~ updaterefundrequests:async ~ response:", response)
 
+                await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+
                 return "Refunded amount successfully";
             } else {
 
                 const updaterequest = await adminDbController.app.updaterequest(body);
+
+                await sendBookingCancelledWhatsApp(getappoinment.id);
 
                 return "Refund Request Updated Successfully";
 
@@ -1918,10 +1928,45 @@ await Promise.all(
             throw error;
         }
     },
+    getInvoicePartnersMonthly: async ({ body } = {}) => {
+        try {
+            return await adminDbController.app.getInvoicePartnersMonthly(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getInvoicePartnersMonthly:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch monthly invoice partners");
+        }
+    },
+    getMonthlyInvoiceDetailsForPartner: async ({ body }) => {
+        try {
+            return await adminDbController.app.getInvoiceDetailsForPartnerMonthly(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getMonthlyInvoiceDetailsForPartner:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch monthly invoice details");
+        }
+    },
+    downloadMonthlyInvoicePDF: async (req) => {
+        try {
+            const partnerId = req.params.partnerId;
+            const month = req.body?.month || req.query?.month || null;
+            return await adminDbController.app.generateMonthlyInvoicePDFForPartner({
+                partner_id: partnerId,
+                month,
+            });
+        } catch (error) {
+            throw error;
+        }
+    },
     updaterefundBookingStatus: async ({ body, user }) => {
         try {
+            const getappoinment = await adminDbController.app.getappointmentbyid(body.id);
+
             const updateStatus = await adminDbController.app.updateRefundBookingStatus({ body, user });
             if (updateStatus) {
+                if (getappoinment) {
+                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+                }
                 return "Booking refund status updated successfully";
             } else {
                 throw Error.NotFound("No Booking Found");
