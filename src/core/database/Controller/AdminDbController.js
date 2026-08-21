@@ -9,6 +9,7 @@ const { Op, Sequelize, fn, col } = require("sequelize");
 var randomize = require('randomatic');
 import generatePDF  from "../../utils/generatePDF.js";
 import generateInvoicePDF from "../../utils/generateInvoicePDF.js";
+import generateMonthlyInvoicePDF from "../../utils/generateMonthlyInvoicePDF.js";
 import { partnerDbController } from "./partnerDbController.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import logger from "../../utils/logger.js";
@@ -40,6 +41,28 @@ function resolveInvoiceDate(dateInput) {
     return d;
   }
   return toIstDatePart(new Date());
+}
+
+const INVOICE_MONTH_RE = /^\d{4}-\d{2}$/;
+
+/** Invoice month = appointment booking_date month (IST). Optional YYYY-MM override; defaults to current month IST. */
+function resolveInvoiceMonthRange(monthInput) {
+  let year, month;
+  if (monthInput != null && String(monthInput).trim() !== "") {
+    const m = String(monthInput).trim().slice(0, 7);
+    if (!INVOICE_MONTH_RE.test(m)) {
+      throw Error.BadRequest("month must be YYYY-MM");
+    }
+    [year, month] = m.split("-").map(Number);
+  } else {
+    const todayIst = toIstDatePart(new Date());
+    [year, month] = todayIst.split("-").map(Number);
+  }
+  const pad = (n) => String(n).padStart(2, "0");
+  const fromDate = `${year}-${pad(month)}-01`;
+  const lastDay = new Date(year, month, 0).getDate();
+  const toDate = `${year}-${pad(month)}-${pad(lastDay)}`;
+  return { month: `${year}-${pad(month)}`, fromDate, toDate };
 }
 
 
@@ -4011,6 +4034,214 @@ verifypartnerdetails: async (data) => {
       if (error.status) throw error;
       console.log("🚀 ~ generateInvoicePDFForPartner error:", error);
       throw Error.SomethingWentWrong("Failed to generate invoice PDF");
+    }
+  },
+
+  // ── Partner Invoice (monthly booking summary per salon) ─────────────────
+
+  /**
+   * Partners with at least one appointment in the invoice month.
+   * Month = appointment booking_date month (salon visit day), Asia/Kolkata calendar.
+   * Optional data.month (YYYY-MM); defaults to current month IST.
+   */
+  getInvoicePartnersMonthly: async (data = {}) => {
+    try {
+      const { month, fromDate, toDate } = resolveInvoiceMonthRange(data?.month);
+
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT
+          d.id AS partner_id,
+          d.name AS partner_name,
+          d.phone AS partner_phone,
+          d.email AS partner_email,
+          COUNT(DISTINCT a.id) AS booking_count
+        FROM appointments a
+        INNER JOIN Store d ON a.store_id = d.id
+        WHERE DATE(a.booking_date) BETWEEN :fromDate AND :toDate
+          AND a.status != 'cancelled'
+        GROUP BY d.id, d.name, d.phone, d.email
+        ORDER BY d.name ASC
+        `,
+        {
+          replacements: { fromDate, toDate },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      const totalBookings = rows.reduce(
+        (sum, row) => sum + Number(row.booking_count || 0),
+        0
+      );
+
+      return {
+        month,
+        from_date: fromDate,
+        to_date: toDate,
+        total_bookings: totalBookings,
+        total_partners: rows.length,
+        partners: rows.map((row) => ({
+          partner_id: row.partner_id,
+          partner_name: row.partner_name,
+          partner_phone: row.partner_phone,
+          partner_email: row.partner_email,
+          booking_count: Number(row.booking_count || 0),
+        })),
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getInvoicePartnersMonthly error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly invoice partners");
+    }
+  },
+
+  // Line-item breakdown for one partner's appointments in the invoice month
+  // (booking_date). Priced by "important" flag: important → full amount,
+  // otherwise discounted when present.
+  getInvoiceDetailsForPartnerMonthly: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const { month, fromDate, toDate } = resolveInvoiceMonthRange(data?.month);
+
+      const storeRows = await adminDbController.connection.query(
+        `
+        SELECT
+          d.id AS partner_id,
+          d.name AS partner_name,
+          d.phone AS partner_phone,
+          d.email AS partner_email,
+          f.addressLine1, f.addressLine2, f.area, f.city, f.district, f.state, f.zipcode
+        FROM Store d
+        LEFT JOIN PartnerAddress f ON d.address_id = f.id
+        WHERE d.id = :partnerId
+        LIMIT 1
+        `,
+        {
+          replacements: { partnerId: data.partner_id },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      if (!storeRows.length) {
+        throw Error.NotFound("Partner not found");
+      }
+
+      const itemRows = await adminDbController.connection.query(
+        `
+        SELECT
+          a.id AS appointment_id,
+          a.booking_date AS appointment_date,
+          a.created_at AS order_time,
+          a.status,
+          a.payment_status,
+          ss.id AS service_id,
+          ss.service_name,
+          ss.amount AS service_amount,
+          ss.discounted_amount AS service_discounted_amount,
+          ss.important AS service_important,
+          cb.id AS combo_id,
+          cb.combo AS combo_name,
+          cb.amount AS combo_amount
+        FROM appointments a
+        INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+        LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+        LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        WHERE a.store_id = :partnerId
+          AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate
+          AND a.status != 'cancelled'
+        ORDER BY a.booking_date ASC, a.id ASC
+        `,
+        {
+          replacements: {
+            partnerId: data.partner_id,
+            fromDate,
+            toDate,
+          },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+      let total = 0;
+      const items = itemRows
+        .map((row) => {
+          let serviceName;
+          let amount;
+          let important = false;
+
+          if (row.service_id) {
+            serviceName = row.service_name;
+            important = !!row.service_important;
+            const baseAmount = Number(row.service_amount) || 0;
+            const discountedAmount = Number(row.service_discounted_amount) || 0;
+            amount = important
+              ? baseAmount
+              : discountedAmount > 0
+                ? discountedAmount
+                : baseAmount;
+          } else if (row.combo_id) {
+            serviceName = row.combo_name;
+            amount = Number(row.combo_amount) || 0;
+          } else {
+            return null;
+          }
+
+          total += amount;
+
+          return {
+            appointment_id: row.appointment_id,
+            // Keep booking_time for PDF/UI compat; value is appointment day
+            booking_time: row.appointment_date,
+            appointment_date: row.appointment_date,
+            order_time: row.order_time,
+            status: row.status,
+            payment_status: row.payment_status,
+            service_name: serviceName,
+            important,
+            amount: Number(amount.toFixed(2)),
+          };
+        })
+        .filter(Boolean);
+
+      const store = storeRows[0];
+
+      return {
+        partner: {
+          id: store.partner_id,
+          name: store.partner_name,
+          phone: store.partner_phone,
+          email: store.partner_email,
+          address: [store.addressLine1, store.addressLine2, store.area, store.city, store.district]
+            .filter(Boolean)
+            .join(", "),
+          state: store.state,
+          zipcode: store.zipcode,
+        },
+        month,
+        from_date: fromDate,
+        to_date: toDate,
+        items,
+        total_bookings: items.length,
+        total_amount: Number(total.toFixed(2)),
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getInvoiceDetailsForPartnerMonthly error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly invoice details");
+    }
+  },
+
+  generateMonthlyInvoicePDFForPartner: async (data) => {
+    try {
+      const invoice = await adminDbController.app.getInvoiceDetailsForPartnerMonthly(data);
+      const pdfBuffer = await generateMonthlyInvoicePDF(invoice);
+      return pdfBuffer;
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ generateMonthlyInvoicePDFForPartner error:", error);
+      throw Error.SomethingWentWrong("Failed to generate monthly invoice PDF");
     }
   },
 
