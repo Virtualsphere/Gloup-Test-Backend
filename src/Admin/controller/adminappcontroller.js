@@ -798,6 +798,25 @@ export const getreviewrequest = async(req, res) => {
         });
 }   
 
+export const getallreviews = async(req, res) => {
+    Adminappmiddleware.app.getallreviews(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}   
+
 
 
 export const updatereviewrequest = async(req, res) => {

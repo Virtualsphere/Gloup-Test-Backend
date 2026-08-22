@@ -907,6 +907,14 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch review request");
         }
     },
+    getallreviews: async ({ body, user }) => {
+        try {
+            const data = await adminDbController.app.getallreviews(body);
+            return data;
+        } catch (error) {
+            throw Error.SomethingWentWrong("Failed to fetch salon reviews");
+        }
+    },
     updatereviewrequest: async ({ body, user }) => {
         try {
             if (body.status === "approved") {

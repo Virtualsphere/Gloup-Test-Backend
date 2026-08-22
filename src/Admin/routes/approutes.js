@@ -54,6 +54,7 @@ import {
   getRevenueCategory,
   getRevenueCategoryGrowth,
   getreviewrequest,
+  getallreviews,
   getSalons,
   getservices,
   getStoreBySearch,
@@ -202,6 +203,7 @@ approutes.post(
 //reviews 
 // approutes.post('/getrefundrequestrequest',verifyadmin,deletereviewrequest);
 approutes.post('/getreviewrequest', verifyadmin, getreviewrequest);
+approutes.post('/getallreviews', verifyadmin, getallreviews);
 approutes.post('/updatereviewrequest', verifyadmin, updatereviewrequest);
 
 // Partner subscription

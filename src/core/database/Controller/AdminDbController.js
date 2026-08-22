@@ -1063,6 +1063,82 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to fetch review requests");
     }
   },
+  getallreviews: async (body = {}) => {
+    try {
+      const { store_id, status } = body;
+      const replacements = {};
+      let reviewWhere = "WHERE 1=1";
+      let summaryWhere = "WHERE 1=1";
+
+      if (store_id) {
+        reviewWhere += " AND R.store_id = :store_id";
+        summaryWhere += " AND R.store_id = :store_id";
+        replacements.store_id = store_id;
+      }
+
+      if (status && status !== "all") {
+        reviewWhere += " AND R.status = :status";
+        summaryWhere += " AND R.status = :status";
+        replacements.status = status;
+      }
+
+      const reviewsSql = `
+        SELECT
+          R.id AS review_id,
+          R.rating,
+          R.review_description,
+          R.status AS review_status,
+          R.cretaed_at,
+          R.updated_at,
+          R.store_id,
+          S.name AS store_name,
+          S.email AS store_email,
+          S.phone AS store_phone,
+          U.id AS user_id,
+          U.firstname AS user_firstname,
+          U.lastname AS user_lastname,
+          U.phone AS user_phone,
+          U.email AS user_email
+        FROM Reviews R
+        INNER JOIN Store S ON R.store_id = S.id
+        INNER JOIN User U ON R.user_id = U.id
+        ${reviewWhere}
+        ORDER BY R.cretaed_at DESC
+        LIMIT 1000
+      `;
+
+      const summarySql = `
+        SELECT
+          R.store_id,
+          S.name AS store_name,
+          S.email AS store_email,
+          S.phone AS store_phone,
+          ROUND(AVG(R.rating), 2) AS average_rating,
+          COUNT(R.id) AS review_count
+        FROM Reviews R
+        INNER JOIN Store S ON R.store_id = S.id
+        ${summaryWhere}
+        GROUP BY R.store_id, S.name, S.email, S.phone
+        ORDER BY average_rating DESC, review_count DESC
+      `;
+
+      const [reviews, salonSummaries] = await Promise.all([
+        adminDbController.connection.query(reviewsSql, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+        adminDbController.connection.query(summarySql, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return { reviews, salonSummaries };
+    } catch (error) {
+      console.log("🚀 ~ getallreviews error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch salon reviews");
+    }
+  },
   getrefundrequest: async (body) => {
     try {
       let sql = `SELECT r.*, a.razorpay_id, a.payment.id , a.amount as discounted_amount, u.firstname as user_firstname, u.lastname as user_lastname, u.phone as user_phone, s.name as store_name, s.email as store_email, s.phone as store_phone FROM refund_request r JOIN s ON a.store_id = s.id JOIN User u ON a.user_id = u.id WHERE r.status = 'pending' ORDER BY r.created_at DESC`;

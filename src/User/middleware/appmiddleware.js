@@ -44,10 +44,10 @@ const badRequest = (message) => {
  * Falls back to the authenticated user's profile so that older app builds
  * (which do not send these fields) keep working.
  */
-function validateCustomerContact({ customer_name, customer_phone, customer_email }, user) {
-    const name = (customer_name ?? `${user.firstname || ''} ${user.lastname || ''}`).toString().trim();
-    const phone = (customer_phone ?? user.phone ?? '').toString().trim();
-    const email = (customer_email ?? user.email ?? '').toString().trim().toLowerCase();
+function validateCustomerContact({ customer_name, customer_phone, customer_email }) {
+    const name = (customer_name ?? '').toString().trim();
+    const phone = (customer_phone ?? '').toString().trim();
+    const email = (customer_email ?? '').toString().trim().toLowerCase();
 
     if (!name) {
         throw badRequest("Customer name is required");
@@ -1208,12 +1208,12 @@ userappmiddleware.user = {
                 discounted_amount, customer_name, customer_phone, customer_email
             } = body;
 
-            // 0. Customer contact details (required from app v2.6.5+;
-            //    fall back to the authenticated user's profile for older clients)
-            const contact = validateCustomerContact(
-                { customer_name, customer_phone, customer_email },
-                user
-            );
+            // 0. Customer contact details (required from app before booking)
+            const contact = validateCustomerContact({
+                customer_name,
+                customer_phone,
+                customer_email,
+            });
 
             // 1. Validation & Pre-calculations
             const serviceIds = (services || []).map(s => s.service_id);
