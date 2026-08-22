@@ -1227,11 +1227,19 @@ userDbController.app = {
 
   getstorereviews: async (data) => {
     try {
-      return await userDbController.Models.Reviews.findAll({
-        where: {
-          store_id: data.store_id
-        }
-      })
+      const sql = `
+        SELECT r.id, r.rating, r.review_description, r.cretaed_at, r.updated_at,
+               u.firstname, u.lastname, u.profilePic
+        FROM Reviews r
+        JOIN User u ON r.user_id = u.id
+        WHERE r.store_id = :store_id AND r.status = 'active'
+        ORDER BY r.cretaed_at DESC
+      `;
+      const results = await connection.query(sql, {
+        replacements: { store_id: data.store_id ?? data.id },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+      return results;
     } catch (error) {
       throw Error.SomethingWentWrong();
     }
@@ -2105,14 +2113,19 @@ WHERE S.status = 'active'
   },
   updaterating: async (data, id) => {
     try {
+      const reviewId = data.id ?? data.review_id;
+      if (!reviewId) {
+        throw Error.BadRequest("Review id is required");
+      }
       return await userDbController.Models.Reviews.update({
         rating: data.rating,
         review_description: data.description,
-        cretaed_at: new Date(),
         updated_at: new Date()
       }, {
         where: {
-          id: data.store_id
+          id: reviewId,
+          user_id: id,
+          status: "active",
         }
       })
     } catch (error) {
@@ -2283,6 +2296,51 @@ WHERE S.status = 'active'
     } catch (error) {
       console.error("Error in getReviewsV2:", error);
       throw Error.InternalError("Failed to fetch reviews");
+    }
+  },
+
+  getPendingReviews: async (userId) => {
+    try {
+      const sql = `
+        SELECT DISTINCT a.store_id, a.id as appointment_id, a.booking_date,
+               s.name as store_name, s.images as store_images
+        FROM appointments a
+        JOIN Store s ON a.store_id = s.id
+        LEFT JOIN Reviews r ON r.store_id = a.store_id AND r.user_id = a.user_id AND r.status = 'active'
+        WHERE a.user_id = :userId
+          AND a.status = 'completed'
+          AND r.id IS NULL
+        ORDER BY a.booking_date DESC
+        LIMIT 50
+      `;
+      const results = await connection.query(sql, {
+        replacements: { userId },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+      return results.map((row) => {
+        let storeImages = null;
+        if (row.store_images) {
+          if (Array.isArray(row.store_images)) {
+            storeImages = row.store_images;
+          } else {
+            try {
+              storeImages = JSON.parse(row.store_images);
+            } catch {
+              storeImages = null;
+            }
+          }
+        }
+        return {
+          store_id: row.store_id,
+          appointment_id: row.appointment_id,
+          booking_date: row.booking_date,
+          store_name: row.store_name,
+          store_images: storeImages,
+        };
+      });
+    } catch (error) {
+      console.error("Error in getPendingReviews:", error);
+      throw Error.InternalError("Failed to fetch pending reviews");
     }
   },
 
@@ -3641,10 +3699,18 @@ END AS distance
     });
   },
   getReviewsv2: async (store_id) => {
-    return await Models.Reviews.findAll({
-      where: { store_id, status: 'active' },
-      raw: true
+    const sql = `
+      SELECT r.id, r.rating, r.review_description, r.cretaed_at,
+             u.firstname, u.lastname, u.profilePic, u.phone
+      FROM Reviews r
+      JOIN User u ON r.user_id = u.id
+      WHERE r.store_id = :store_id AND r.status = 'active'
+      ORDER BY r.cretaed_at DESC
+    `;
+    const [results] = await connection.query(sql, {
+      replacements: { store_id },
     });
+    return results;
   },
   getRatingSummaryv2: async (store_id) => {
     const sql = `

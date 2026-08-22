@@ -54,6 +54,7 @@ import {
   getRevenueCategory,
   getRevenueCategoryGrowth,
   getreviewrequest,
+  getallreviews,
   getSalons,
   getservices,
   getStoreBySearch,
@@ -78,6 +79,9 @@ import {
   getInvoicePartnersToday,
   getInvoiceDetailsForPartner,
   downloadInvoicePDF,
+  getInvoicePartnersMonthly,
+  getMonthlyInvoiceDetailsForPartner,
+  downloadMonthlyInvoicePDF,
   downloadUsersExcel,
   updaterefundBooking,
   getservicecategorylist,
@@ -182,7 +186,7 @@ approutes.post("/getallcategory", verifyadmin, getallcategory);
 approutes.post("/deletecategory", verifyadmin, deletecategory);
 
 //notification 
-approutes.post('/addnotification', verifyadmin, addnotification);
+approutes.post('/addnotification', verifyadmin, S3upload.single('image'), addnotification);
 approutes.post('/send-targeted-notification', verifyadmin, sendTargetedNotification);
 approutes.post('/getalnotification', verifyadmin, getallnotification);
 approutes.post('/getnotificationbyid', verifyadmin, getnotificationbyid);
@@ -199,6 +203,7 @@ approutes.post(
 //reviews 
 // approutes.post('/getrefundrequestrequest',verifyadmin,deletereviewrequest);
 approutes.post('/getreviewrequest', verifyadmin, getreviewrequest);
+approutes.post('/getallreviews', verifyadmin, getallreviews);
 approutes.post('/updatereviewrequest', verifyadmin, updatereviewrequest);
 
 // Partner subscription
@@ -240,6 +245,9 @@ approutes.post("/downloadBookingPDF/:id", verifyadmin, downloadBookingPDF);
 approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday);
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
+approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);
+approutes.post("/getmonthlyinvoicedetails", verifyadmin, getMonthlyInvoiceDetailsForPartner);
+approutes.post("/downloadmonthlyinvoicepdf/:partnerId", verifyadmin, downloadMonthlyInvoicePDF);
 approutes.post("/refundbookings", verifyadmin, updaterefundBooking);
 
 approutes.post("/getCancelledOrders", verifyadmin, getCancelledOrders);

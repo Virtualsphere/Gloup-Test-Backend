@@ -235,6 +235,89 @@ export async function sendBookingConfirmedWhatsApp(appointmentId) {
   }
 }
 
+/**
+ * Sends the "booking cancelled" WhatsApp message to the customer.
+ * Uses the same namespace as the other transactional templates (gloup_sms flow).
+ */
+async function sendUserCancelledWhatsApp(data) {
+  const customerName = [data.user_firstname, data.user_lastname].filter(Boolean).join(" ") || "Customer";
+
+  return sendWhatsAppTemplate({
+    templateName: "gloup_booking_cancel",
+    languageCode: "en",
+    namespace: "7e6a90a7_e658_4047_acdf_4f945d9a45f4",
+    to: data.user_phone,
+    components: {
+      body_customer_name: textComponent("customer_name", customerName),
+      body_booking_id: textComponent("booking_id", data.id),
+      body_salon_name: textComponent("salon_name", data.salon_name),
+      body_booking_date: textComponent("booking_date", data.booking_date_fmt),
+      body_booking_time: textComponent("booking_time", data.booking_time_fmt),
+      body_service_details_name: textComponent("service_details_name", data.service_names),
+      body_payment_status: textComponent("payment_status", formatPaymentStatus(data.payment_status)),
+    },
+  });
+}
+
+/**
+ * Sends the "refund initiated" WhatsApp message to the customer.
+ */
+async function sendUserRefundWhatsApp(data, refundAmount) {
+  const customerName = [data.user_firstname, data.user_lastname].filter(Boolean).join(" ") || "Customer";
+
+  return sendWhatsAppTemplate({
+    templateName: "gloup_booking_refund",
+    languageCode: "en",
+    namespace: "7e6a90a7_e658_4047_acdf_4f945d9a45f4",
+    to: data.user_phone,
+    components: {
+      body_customer_name: textComponent("customer_name", customerName),
+      body_booking_id: textComponent("booking_id", data.id),
+      body_salon_name: textComponent("salon_name", data.salon_name),
+      body_booking_date: textComponent("booking_date", data.booking_date_fmt),
+      body_booking_time: textComponent("booking_time", data.booking_time_fmt),
+      body_service_details_name: textComponent("service_details_name", data.service_names),
+      body_refund_amount: textComponent("refund_amount", refundAmount),
+    },
+  });
+}
+
+/**
+ * Fetches booking data and sends the "booking cancelled" WhatsApp message to the customer.
+ * Call after an admin cancels/rejects a refund on an appointment.
+ */
+export async function sendBookingCancelledWhatsApp(appointmentId) {
+  try {
+    const data = await getBookingWhatsAppPayload(appointmentId);
+    if (!data) {
+      console.warn(`[WhatsApp] No booking data found for appointment ${appointmentId}, skipping`);
+      return;
+    }
+    await sendUserCancelledWhatsApp(data);
+  } catch (error) {
+    console.error("[WhatsApp] sendBookingCancelledWhatsApp error:", error);
+    // Swallow — never let WhatsApp failures break the refund flow
+  }
+}
+
+/**
+ * Fetches booking data and sends the "refund initiated" WhatsApp message to the customer.
+ * Call after an admin approves/processes a refund on an appointment.
+ */
+export async function sendBookingRefundWhatsApp(appointmentId, refundAmount) {
+  try {
+    const data = await getBookingWhatsAppPayload(appointmentId);
+    if (!data) {
+      console.warn(`[WhatsApp] No booking data found for appointment ${appointmentId}, skipping`);
+      return;
+    }
+    await sendUserRefundWhatsApp(data, refundAmount);
+  } catch (error) {
+    console.error("[WhatsApp] sendBookingRefundWhatsApp error:", error);
+    // Swallow — never let WhatsApp failures break the refund flow
+  }
+}
+
 /* =======================================================================
    MARKETING BROADCAST (gloup_marketing template)
    ---------------------------------------------------------------------

@@ -45,9 +45,24 @@ export async function sendEachForMulticastViaHttpV1(message) {
                     body: JSON.stringify({
                         message: {
                             token,
-                            notification: message.notification,
+                            notification: {
+                                title: message.notification?.title,
+                                body: message.notification?.body,
+                                ...(message.notification?.imageUrl && {
+                                    image: message.notification.imageUrl,
+                                }),
+                            },
                             data: message.data,
-                            android: message.android,
+                            android: message.android?.notification?.imageUrl
+                                ? {
+                                      ...message.android,
+                                      notification: {
+                                          ...message.android.notification,
+                                          image: message.android.notification.imageUrl,
+                                          imageUrl: undefined,
+                                      },
+                                  }
+                                : message.android,
                             apns: message.apns,
                         },
                     }),

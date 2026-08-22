@@ -1544,7 +1544,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
     },
     getstorereviews: async (data, id) => {
       try {
-        let sql = `SELECT R.*, U.firstname, U.lastname, U.profilepic FROM Reviews R JOIN User U ON R.user_id = U.id WHERE R.store_id = :store_id AND R.status = 'active' ORDER BY R.cretaed_at DESC`;
+        let sql = `SELECT R.*, U.firstname, U.lastname, U.profilePic FROM Reviews R JOIN User U ON R.user_id = U.id WHERE R.store_id = :store_id AND R.status = 'active' ORDER BY R.cretaed_at DESC`;
         const result = await partnerDbController.connection.query(sql, {
           replacements: { store_id: id },
           type: Sequelize.QueryTypes.SELECT,

@@ -798,6 +798,25 @@ export const getreviewrequest = async(req, res) => {
         });
 }   
 
+export const getallreviews = async(req, res) => {
+    Adminappmiddleware.app.getallreviews(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}   
+
 
 
 export const updatereviewrequest = async(req, res) => {
@@ -1515,6 +1534,64 @@ export const downloadInvoicePDF = async (req, res) => {
         res.setHeader(
             "Content-Disposition",
             `attachment; filename=Invoice_${req.params.partnerId}_${new Date().toISOString().slice(0, 10)}.pdf`
+        );
+        res.setHeader("Content-Length", pdfBuffer.length);
+
+        res.end(pdfBuffer);
+    } catch (error) {
+        ApplicationResponse.error(error, null, (response) => {
+            res.status(response.status).json(response);
+        });
+    }
+};
+
+export const getInvoicePartnersMonthly = async (req, res) => {
+    Adminappmiddleware.app.getInvoicePartnersMonthly(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const getMonthlyInvoiceDetailsForPartner = async (req, res) => {
+    Adminappmiddleware.app.getMonthlyInvoiceDetailsForPartner(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const downloadMonthlyInvoicePDF = async (req, res) => {
+    try {
+        const pdfBuffer = await Adminappmiddleware.app.downloadMonthlyInvoicePDF(req);
+
+        res.status(200);
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename=MonthlyInvoice_${req.params.partnerId}_${new Date().toISOString().slice(0, 7)}.pdf`
         );
         res.setHeader("Content-Length", pdfBuffer.length);
 

@@ -114,12 +114,16 @@ await verifyFirebaseCredential();
 export const FirebaseService = {
     notify: async (tokens, notification, fcmoptions) => {
         try {
+            const notificationPayload = {
+                title: notification.title,
+                body: notification.body,
+            };
+            if (notification.image) {
+                notificationPayload.imageUrl = notification.image;
+            }
             const response = await sendMulticast({
                 tokens: tokens,
-                notification: {
-                    title: notification.title,
-                    body: notification.body,
-                },
+                notification: notificationPayload,
                 data: notification.data,
                 android: notification.android,
                 apns: notification.apns,
@@ -275,24 +279,32 @@ export const FirebaseService = {
                 apns.headers = { "apns-collapse-id": collapseKey };
             }
 
+            const notif = {
+                title: body.eventTitle || "",
+                body: body.eventDescription || "",
+            };
+            if (body.image) {
+                notif.imageUrl = body.image;
+                // Android: also set image on the android.notification config
+                android.notification.imageUrl = body.image;
+                // APNs: attach via fcm_options image
+                apns.fcmOptions = { ...(apns.fcmOptions || {}), imageUrl: body.image };
+            }
+
             const message = {
                 tokens: tokens,
-
-                notification: {
-                    title: body.eventTitle || "",
-                    body: body.eventDescription || "",
-                },
-
+                notification: notif,
                 android,
                 apns,
-            };
-
-            if (!body.notificationOnly) {
-                message.data = {
+                // Do NOT put title/body in data when notification payload exists —
+                // some Android OEMs render both and show duplicate tray items.
+                // Keep only routing + image metadata for the client.
+                data: {
                     click_action: "FLUTTER_NOTIFICATION_CLICK",
-                    screen: screenValue,
-                };
-            }
+                    screen: screenValue || "",
+                    ...(body.image ? { image: String(body.image) } : {}),
+                },
+            };
 
             const response = await sendMulticast(message);
 

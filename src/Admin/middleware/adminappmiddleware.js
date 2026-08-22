@@ -23,7 +23,11 @@ import {
     hashNotificationContent,
     sendPushNotification,
 } from "../../core/utils/pushNotificationService.js";
-import { sendMarketingBroadcast } from "../../core/utils/whatsappNotification.js"
+import {
+    sendMarketingBroadcast,
+    sendBookingCancelledWhatsApp,
+    sendBookingRefundWhatsApp,
+} from "../../core/utils/whatsappNotification.js"
 import {
     createPushTraceId,
     findDuplicateTokens,
@@ -231,10 +235,23 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch coupons");
         }
     },
-    addnotification: async ({ body, user }) => {
+    addnotification: async ({ body, user, file }) => {
         try {
 
             const { notification_type, sent_to, title, description, store_id } = body;
+
+            // Prefer uploaded file; fall back to image URL from body
+            let imageUrl =
+                typeof body.image === "string" && body.image.trim()
+                    ? body.image.trim()
+                    : null;
+            if (file) {
+                const uploaded = await uploadToS3(file, "notifications");
+                if (!uploaded?.url) {
+                    throw Error.SomethingWentWrong("Notification image upload failed");
+                }
+                imageUrl = uploaded.url;
+            }
 
             /* ------------------------------------------
                Helper: Extract valid tokens safely
@@ -264,6 +281,7 @@ Adminappmiddleware.app = {
                     recipients: tokenObjects,
                     title,
                     body: description,
+                    image: imageUrl || undefined,
                     collapseKey: `admin_${notificationId}`,
                     persistLogs: true,
                     notificationOnly: true,
@@ -330,7 +348,7 @@ Adminappmiddleware.app = {
                         userLogs.push({
                             notification_id: notificationId,
                             user_id: userItem?.dataValues?.user_id,
-                            image: null,
+                            image: imageUrl,
                             title,
                             description,
                             status: "active",
@@ -354,7 +372,7 @@ Adminappmiddleware.app = {
                         partnerLogs.push({
                             notification_id: notificationId,
                             partner_id: partnerItem?.dataValues?.store_id,
-                            image: null,
+                            image: imageUrl,
                             title,
                             description,
                             status: "active",
@@ -491,7 +509,7 @@ Adminappmiddleware.app = {
      */
     sendTargetedNotification: async ({ body }) => {
         try {
-            const { title, description } = body;
+            const { title, description, image } = body;
             const rawRecipientType = (body.recipient_type || body.sent_to || "")
                 .toLowerCase()
                 .trim();
@@ -519,6 +537,9 @@ Adminappmiddleware.app = {
                     "recipient_id is required (or user_id / partner_id / store_id)"
                 );
             }
+
+            const imageUrl =
+                typeof image === "string" && image.trim() ? image.trim() : null;
 
             let userId = null;
             let partnerId = null;
@@ -577,6 +598,7 @@ Adminappmiddleware.app = {
                 recipientName,
                 tokenCount: tokens.length,
                 tokens,
+                image: imageUrl,
             });
 
             if (recipientType === "user") {
@@ -584,7 +606,7 @@ Adminappmiddleware.app = {
                     {
                         notification_id: notificationId,
                         user_id: userId,
-                        image: null,
+                        image: imageUrl,
                         title: trimmedTitle,
                         description: trimmedDescription,
                         status: "active",
@@ -596,7 +618,7 @@ Adminappmiddleware.app = {
                     {
                         notification_id: notificationId,
                         partner_id: partnerId,
-                        image: null,
+                        image: imageUrl,
                         title: trimmedTitle,
                         description: trimmedDescription,
                         status: "active",
@@ -620,7 +642,10 @@ Adminappmiddleware.app = {
                           recipients: tokenObjects,
                           title: trimmedTitle,
                           body: trimmedDescription,
-                          collapseKey: `admin_${notificationId}`,
+                          image: imageUrl || undefined,
+                          // Stable tag so retests replace the previous tray item
+                          // instead of stacking duplicates for the same user.
+                          collapseKey: `admin_targeted_${recipientType}_${recipientId}`,
                           persistLogs: true,
                           notificationOnly: true,
                           debugTraceId: pushTraceId,
@@ -813,6 +838,8 @@ Adminappmiddleware.app = {
                 if (getappoinment.is_wallet === true) {
                     const addwallet = await adminDbController.app.addwallet(getappoinment.user_id, getappoinment.discounted_amount);
 
+                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+
                     return "Refunded amount to your wallet successfully";
                 }
                 const response = await razorpay.payments.refund(getappoinment.payment_id, {
@@ -821,10 +848,14 @@ Adminappmiddleware.app = {
                 })
                 //console.log("🚀 ~ updaterefundrequests:async ~ response:", response)
 
+                await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+
                 return "Refunded amount successfully";
             } else {
 
                 const updaterequest = await adminDbController.app.updaterequest(body);
+
+                await sendBookingCancelledWhatsApp(getappoinment.id);
 
                 return "Refund Request Updated Successfully";
 
@@ -876,19 +907,25 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch review request");
         }
     },
+    getallreviews: async ({ body, user }) => {
+        try {
+            const data = await adminDbController.app.getallreviews(body);
+            return data;
+        } catch (error) {
+            throw Error.SomethingWentWrong("Failed to fetch salon reviews");
+        }
+    },
     updatereviewrequest: async ({ body, user }) => {
         try {
             if (body.status === "approved") {
-                const deleterequest = await adminDbController.app.deletereview(body, user.id);
-
-                const updaterequest = await adminDbController.app.updaterequest(body);
-
+                await adminDbController.app.deletereview(body, user.id);
+                await adminDbController.app.updatereviewdeleterequest(body);
                 return "Review Request Deleted Successfully";
             } else if (body.status === "rejected") {
-                const updaterequest = await adminDbController.app.updaterequest(body);
-
+                await adminDbController.app.updatereviewdeleterequest(body);
                 return "Review Request Updated Successfully";
             }
+            throw Error.BadRequest("Invalid review request status");
         } catch (error) {
             throw Error.SomethingWentWrong("Failed to update review request");
         }
@@ -1917,10 +1954,45 @@ await Promise.all(
             throw error;
         }
     },
+    getInvoicePartnersMonthly: async ({ body } = {}) => {
+        try {
+            return await adminDbController.app.getInvoicePartnersMonthly(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getInvoicePartnersMonthly:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch monthly invoice partners");
+        }
+    },
+    getMonthlyInvoiceDetailsForPartner: async ({ body }) => {
+        try {
+            return await adminDbController.app.getInvoiceDetailsForPartnerMonthly(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getMonthlyInvoiceDetailsForPartner:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch monthly invoice details");
+        }
+    },
+    downloadMonthlyInvoicePDF: async (req) => {
+        try {
+            const partnerId = req.params.partnerId;
+            const month = req.body?.month || req.query?.month || null;
+            return await adminDbController.app.generateMonthlyInvoicePDFForPartner({
+                partner_id: partnerId,
+                month,
+            });
+        } catch (error) {
+            throw error;
+        }
+    },
     updaterefundBookingStatus: async ({ body, user }) => {
         try {
+            const getappoinment = await adminDbController.app.getappointmentbyid(body.id);
+
             const updateStatus = await adminDbController.app.updateRefundBookingStatus({ body, user });
             if (updateStatus) {
+                if (getappoinment) {
+                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+                }
                 return "Booking refund status updated successfully";
             } else {
                 throw Error.NotFound("No Booking Found");

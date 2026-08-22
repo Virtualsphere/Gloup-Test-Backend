@@ -11,15 +11,15 @@ export const setup = async (gloablConfig) => {
     //////console.log();
     await processBlock(dbConnection, chalk.green('Database Authenticated  ✔️ '), chalk.red('Database Connection Failed ✖️'));
 
+    // Sync creates missing tables first (force:false). Fresh DBs need this before alter migrations.
+    await processBlock(dbSync, chalk.green('Database Tables Synced  ✔️ '), chalk.red('Database Sync Failed ✖️'));
+
     // Versioned schema migrations (Umzug) — alters/indexes that sync() cannot do safely
     await processBlock(
         runPendingMigrations,
         chalk.green('Database Migrations Applied  ✔️ '),
         chalk.red('Database Migrations Failed ✖️')
     );
-    
-    // Sync creates missing tables only (force:false). Column/ENUM changes belong in migrations/.
-    await processBlock(dbSync, chalk.green('Database Tables Synced  ✔️ '), chalk.red('Database Sync Failed ✖️'));
     
     // Set App Configurations Globals
     await processBlock(Configurations, chalk.green('Configurations Validated  ✔️ ✔️ '),  chalk.red('Configurations Invalid ✖️'));
