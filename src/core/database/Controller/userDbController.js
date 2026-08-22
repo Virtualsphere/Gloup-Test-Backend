@@ -1235,8 +1235,9 @@ userDbController.app = {
         WHERE r.store_id = :store_id AND r.status = 'active'
         ORDER BY r.cretaed_at DESC
       `;
-      const [results] = await userDbController.sequelize.query(sql, {
-        replacements: { store_id: data.store_id },
+      const results = await connection.query(sql, {
+        replacements: { store_id: data.store_id ?? data.id },
+        type: Sequelize.QueryTypes.SELECT,
       });
       return results;
     } catch (error) {
@@ -2112,14 +2113,19 @@ WHERE S.status = 'active'
   },
   updaterating: async (data, id) => {
     try {
+      const reviewId = data.id ?? data.review_id;
+      if (!reviewId) {
+        throw Error.BadRequest("Review id is required");
+      }
       return await userDbController.Models.Reviews.update({
         rating: data.rating,
         review_description: data.description,
-        cretaed_at: new Date(),
         updated_at: new Date()
       }, {
         where: {
-          id: data.store_id
+          id: reviewId,
+          user_id: id,
+          status: "active",
         }
       })
     } catch (error) {
@@ -2302,21 +2308,36 @@ WHERE S.status = 'active'
         JOIN Store s ON a.store_id = s.id
         LEFT JOIN Reviews r ON r.store_id = a.store_id AND r.user_id = a.user_id AND r.status = 'active'
         WHERE a.user_id = :userId
-          AND a.appointment_status = 'completed'
+          AND a.status = 'completed'
           AND r.id IS NULL
         ORDER BY a.booking_date DESC
         LIMIT 50
       `;
-      const [results] = await userDbController.sequelize.query(sql, {
+      const results = await connection.query(sql, {
         replacements: { userId },
+        type: Sequelize.QueryTypes.SELECT,
       });
-      return results.map((row) => ({
-        store_id: row.store_id,
-        appointment_id: row.appointment_id,
-        booking_date: row.booking_date,
-        store_name: row.store_name,
-        store_images: row.store_images ? JSON.parse(row.store_images) : null,
-      }));
+      return results.map((row) => {
+        let storeImages = null;
+        if (row.store_images) {
+          if (Array.isArray(row.store_images)) {
+            storeImages = row.store_images;
+          } else {
+            try {
+              storeImages = JSON.parse(row.store_images);
+            } catch {
+              storeImages = null;
+            }
+          }
+        }
+        return {
+          store_id: row.store_id,
+          appointment_id: row.appointment_id,
+          booking_date: row.booking_date,
+          store_name: row.store_name,
+          store_images: storeImages,
+        };
+      });
     } catch (error) {
       console.error("Error in getPendingReviews:", error);
       throw Error.InternalError("Failed to fetch pending reviews");

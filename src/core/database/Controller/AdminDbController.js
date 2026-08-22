@@ -1037,6 +1037,16 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to delete review");
     }
   },
+  updatereviewdeleterequest: async (data) => {
+    try {
+      return await adminDbController.Models.review_delete_requests.update(
+        { status: data.status },
+        { where: { id: data.id } },
+      );
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to update review delete request");
+    }
+  },
   getreviewrequest: async (body) => {
     try {
       let sql = `SELECT S.name as store_name, S.email as store_email, u.firstname as user_firstname, u.lastname as user_lastname, R.review_description, R.rating, RD.* FROM review_delete_requests RD

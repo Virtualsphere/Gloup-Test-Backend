@@ -370,7 +370,10 @@ userappmiddleware.user = {
 
             return "Review Added Successfully"
         } catch (error) {
-            //////console.log("🚀 ~ addreview: ~ error:", error)
+            const message = error?.message || "";
+            if (message.includes("already added a review")) {
+                throw error;
+            }
             throw Error.SomethingWentWrong()
         }
     },

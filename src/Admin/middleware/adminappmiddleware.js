@@ -910,16 +910,14 @@ Adminappmiddleware.app = {
     updatereviewrequest: async ({ body, user }) => {
         try {
             if (body.status === "approved") {
-                const deleterequest = await adminDbController.app.deletereview(body, user.id);
-
-                const updaterequest = await adminDbController.app.updaterequest(body);
-
+                await adminDbController.app.deletereview(body, user.id);
+                await adminDbController.app.updatereviewdeleterequest(body);
                 return "Review Request Deleted Successfully";
             } else if (body.status === "rejected") {
-                const updaterequest = await adminDbController.app.updaterequest(body);
-
+                await adminDbController.app.updatereviewdeleterequest(body);
                 return "Review Request Updated Successfully";
             }
+            throw Error.BadRequest("Invalid review request status");
         } catch (error) {
             throw Error.SomethingWentWrong("Failed to update review request");
         }
