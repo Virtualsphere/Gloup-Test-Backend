@@ -296,14 +296,15 @@ export const FirebaseService = {
                 notification: notif,
                 android,
                 apns,
-            };
-
-            if (!body.notificationOnly) {
-                message.data = {
+                // Do NOT put title/body in data when notification payload exists —
+                // some Android OEMs render both and show duplicate tray items.
+                // Keep only routing + image metadata for the client.
+                data: {
                     click_action: "FLUTTER_NOTIFICATION_CLICK",
-                    screen: screenValue,
-                };
-            }
+                    screen: screenValue || "",
+                    ...(body.image ? { image: String(body.image) } : {}),
+                },
+            };
 
             const response = await sendMulticast(message);
 

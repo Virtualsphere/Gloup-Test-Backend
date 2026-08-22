@@ -185,7 +185,7 @@ approutes.post("/getallcategory", verifyadmin, getallcategory);
 approutes.post("/deletecategory", verifyadmin, deletecategory);
 
 //notification 
-approutes.post('/addnotification', verifyadmin, addnotification);
+approutes.post('/addnotification', verifyadmin, S3upload.single('image'), addnotification);
 approutes.post('/send-targeted-notification', verifyadmin, sendTargetedNotification);
 approutes.post('/getalnotification', verifyadmin, getallnotification);
 approutes.post('/getnotificationbyid', verifyadmin, getnotificationbyid);

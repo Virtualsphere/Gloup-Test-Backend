@@ -2305,7 +2305,7 @@ WHERE S.status = 'active'
           AND a.appointment_status = 'completed'
           AND r.id IS NULL
         ORDER BY a.booking_date DESC
-        LIMIT 5
+        LIMIT 50
       `;
       const [results] = await userDbController.sequelize.query(sql, {
         replacements: { userId },

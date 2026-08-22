@@ -239,8 +239,10 @@ partnerauthmiddleware.auth = {
   },
   logout: async ({ headers }) => {
     try {
-      // const result = await partnerDbController.auth.logout(headers.adminauthtoken);
-      const result = await partnerDbController.auth.logout(headers.partnertoken);
+      const rawToken = String(headers.partnertoken || "")
+        .replace(/^Bearer\s+/i, "")
+        .trim();
+      const result = await partnerDbController.auth.logout(rawToken);
 
       return "logout sucssesfull"
     } catch (error) {
@@ -287,7 +289,14 @@ partnerauthmiddleware.auth = {
     if (headers.hasOwnProperty("partnertoken")) {
       //check authentication
       const passwordSecret = process.env.passwordSecret;
-      const findSession = await partnerDbController.auth.findsession(headers.partnertoken);
+      // Clients sometimes send `Bearer <token>`; session rows store the raw encrypted token.
+      const rawToken = String(headers.partnertoken || "")
+        .replace(/^Bearer\s+/i, "")
+        .trim();
+      if (!rawToken) {
+        throw Error.AuthenticationFailed();
+      }
+      const findSession = await partnerDbController.auth.findsession(rawToken);
       if (findSession != null && findSession != undefined && findSession.status == "active") {
 
         //decrypt token
@@ -305,11 +314,11 @@ partnerauthmiddleware.auth = {
           }
         } else {
           //inactive token if expired null || undefined
-          const destroySessionResult = await partnerDbController.auth.destroysession(headers.partnertoken);
+          const destroySessionResult = await partnerDbController.auth.destroysession(findSession.id);
           if (destroySessionResult) {
             throw Error.AuthenticationFailed("Session Timed Out");
           }
-
+          throw Error.AuthenticationFailed("Session Timed Out");
         }
       } else {
         throw Error.AuthenticationFailed();

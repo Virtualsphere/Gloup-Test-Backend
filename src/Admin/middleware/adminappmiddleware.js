@@ -235,10 +235,23 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch coupons");
         }
     },
-    addnotification: async ({ body, user }) => {
+    addnotification: async ({ body, user, file }) => {
         try {
 
-            const { notification_type, sent_to, title, description, store_id, image } = body;
+            const { notification_type, sent_to, title, description, store_id } = body;
+
+            // Prefer uploaded file; fall back to image URL from body
+            let imageUrl =
+                typeof body.image === "string" && body.image.trim()
+                    ? body.image.trim()
+                    : null;
+            if (file) {
+                const uploaded = await uploadToS3(file, "notifications");
+                if (!uploaded?.url) {
+                    throw Error.SomethingWentWrong("Notification image upload failed");
+                }
+                imageUrl = uploaded.url;
+            }
 
             /* ------------------------------------------
                Helper: Extract valid tokens safely
@@ -268,7 +281,7 @@ Adminappmiddleware.app = {
                     recipients: tokenObjects,
                     title,
                     body: description,
-                    image: image || undefined,
+                    image: imageUrl || undefined,
                     collapseKey: `admin_${notificationId}`,
                     persistLogs: true,
                     notificationOnly: true,
@@ -335,7 +348,7 @@ Adminappmiddleware.app = {
                         userLogs.push({
                             notification_id: notificationId,
                             user_id: userItem?.dataValues?.user_id,
-                            image: null,
+                            image: imageUrl,
                             title,
                             description,
                             status: "active",
@@ -359,7 +372,7 @@ Adminappmiddleware.app = {
                         partnerLogs.push({
                             notification_id: notificationId,
                             partner_id: partnerItem?.dataValues?.store_id,
-                            image: null,
+                            image: imageUrl,
                             title,
                             description,
                             status: "active",
@@ -496,7 +509,7 @@ Adminappmiddleware.app = {
      */
     sendTargetedNotification: async ({ body }) => {
         try {
-            const { title, description } = body;
+            const { title, description, image } = body;
             const rawRecipientType = (body.recipient_type || body.sent_to || "")
                 .toLowerCase()
                 .trim();
@@ -524,6 +537,9 @@ Adminappmiddleware.app = {
                     "recipient_id is required (or user_id / partner_id / store_id)"
                 );
             }
+
+            const imageUrl =
+                typeof image === "string" && image.trim() ? image.trim() : null;
 
             let userId = null;
             let partnerId = null;
@@ -582,6 +598,7 @@ Adminappmiddleware.app = {
                 recipientName,
                 tokenCount: tokens.length,
                 tokens,
+                image: imageUrl,
             });
 
             if (recipientType === "user") {
@@ -589,7 +606,7 @@ Adminappmiddleware.app = {
                     {
                         notification_id: notificationId,
                         user_id: userId,
-                        image: null,
+                        image: imageUrl,
                         title: trimmedTitle,
                         description: trimmedDescription,
                         status: "active",
@@ -601,7 +618,7 @@ Adminappmiddleware.app = {
                     {
                         notification_id: notificationId,
                         partner_id: partnerId,
-                        image: null,
+                        image: imageUrl,
                         title: trimmedTitle,
                         description: trimmedDescription,
                         status: "active",
@@ -625,7 +642,10 @@ Adminappmiddleware.app = {
                           recipients: tokenObjects,
                           title: trimmedTitle,
                           body: trimmedDescription,
-                          collapseKey: `admin_${notificationId}`,
+                          image: imageUrl || undefined,
+                          // Stable tag so retests replace the previous tray item
+                          // instead of stacking duplicates for the same user.
+                          collapseKey: `admin_targeted_${recipientType}_${recipientId}`,
                           persistLogs: true,
                           notificationOnly: true,
                           debugTraceId: pushTraceId,
