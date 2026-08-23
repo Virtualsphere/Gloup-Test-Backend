@@ -3610,6 +3610,10 @@ verifypartnerdetails: async (data) => {
 
     console.log("🚀 blockAndUnblockSlot error:", error);
 
+    if (error && error.type && error.code) {
+      throw error;
+    }
+
     throw Error.SomethingWentWrong("Failed to update time slot status");
   }
   },
