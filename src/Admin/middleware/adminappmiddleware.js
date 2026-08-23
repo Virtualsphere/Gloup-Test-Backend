@@ -2025,6 +2025,9 @@ await Promise.all(
             }
         } catch (error) {
             console.log("🚀 ~ blockAndUnblockSlot:async ~ error:", error);
+            if (error && error.type && error.code) {
+                throw error;
+            }
             throw Error.SomethingWentWrong("Failed to update time slot");
         }
     },
