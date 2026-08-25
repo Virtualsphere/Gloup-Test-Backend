@@ -4046,10 +4046,10 @@ verifypartnerdetails: async (data) => {
           a.created_at AS order_time,
           a.status,
           a.payment_status,
+          ai.service_amount AS charged_amount,
           ss.id AS service_id,
           ss.service_name,
           ss.amount AS service_amount,
-          ss.discounted_amount AS service_discounted_amount,
           ss.important AS service_important,
           cb.id AS combo_id,
           cb.combo AS combo_name,
@@ -4073,30 +4073,35 @@ verifypartnerdetails: async (data) => {
       );
 
       let total = 0;
+      let totalDiscount = 0;
       const items = itemRows
         .map((row) => {
           let serviceName;
-          let amount;
+          let baseAmount;
           let important = false;
 
           if (row.service_id) {
             serviceName = row.service_name;
             important = !!row.service_important;
-            const baseAmount = Number(row.service_amount) || 0;
-            const discountedAmount = Number(row.service_discounted_amount) || 0;
-            amount = important
-              ? baseAmount
-              : discountedAmount > 0
-                ? discountedAmount
-                : baseAmount;
+            baseAmount = Number(row.service_amount) || 0;
           } else if (row.combo_id) {
             serviceName = row.combo_name;
-            amount = Number(row.combo_amount) || 0;
+            baseAmount = Number(row.combo_amount) || 0;
           } else {
             return null;
           }
 
+          // The amount actually billed for this booking — already reflects
+          // whichever flat/tiered discount applied at the time it was
+          // booked (see appointment_items.service_amount / resolveDiscountedAmount).
+          // We do NOT recompute this from the service's current pricing,
+          // since that would ignore tiers and drift if prices changed since.
+          // Important services are always shown at full price, no discount.
+          const amount = important ? baseAmount : (Number(row.charged_amount) || 0);
+          const discountApplied = Math.max(0, Number((baseAmount - amount).toFixed(2)));
+
           total += amount;
+          totalDiscount += discountApplied;
 
           return {
             appointment_id: row.appointment_id,
@@ -4108,6 +4113,8 @@ verifypartnerdetails: async (data) => {
             payment_status: row.payment_status,
             service_name: serviceName,
             important,
+            base_amount: Number(baseAmount.toFixed(2)),
+            discount_applied: discountApplied,
             amount: Number(amount.toFixed(2)),
           };
         })
@@ -4146,6 +4153,7 @@ verifypartnerdetails: async (data) => {
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),
+        total_discount: Number(totalDiscount.toFixed(2)),
         payout_status: payout ? "completed" : "pending",
         payout_amount: payout ? Number(payout.amount || 0) : null,
         payout_marked_by: payout?.marked_by ?? null,
@@ -4350,10 +4358,10 @@ verifypartnerdetails: async (data) => {
           a.created_at AS order_time,
           a.status,
           a.payment_status,
+          ai.service_amount AS charged_amount,
           ss.id AS service_id,
           ss.service_name,
           ss.amount AS service_amount,
-          ss.discounted_amount AS service_discounted_amount,
           ss.important AS service_important,
           cb.id AS combo_id,
           cb.combo AS combo_name,
@@ -4378,30 +4386,33 @@ verifypartnerdetails: async (data) => {
       );
 
       let total = 0;
+      let totalDiscount = 0;
       const items = itemRows
         .map((row) => {
           let serviceName;
-          let amount;
+          let baseAmount;
           let important = false;
 
           if (row.service_id) {
             serviceName = row.service_name;
             important = !!row.service_important;
-            const baseAmount = Number(row.service_amount) || 0;
-            const discountedAmount = Number(row.service_discounted_amount) || 0;
-            amount = important
-              ? baseAmount
-              : discountedAmount > 0
-                ? discountedAmount
-                : baseAmount;
+            baseAmount = Number(row.service_amount) || 0;
           } else if (row.combo_id) {
             serviceName = row.combo_name;
-            amount = Number(row.combo_amount) || 0;
+            baseAmount = Number(row.combo_amount) || 0;
           } else {
             return null;
           }
 
+          // Actual billed amount for this booking (already reflects
+          // whatever flat/tiered discount applied at booking time) —
+          // not recomputed from the service's current pricing.
+          // Important services are always shown at full price, no discount.
+          const amount = important ? baseAmount : (Number(row.charged_amount) || 0);
+          const discountApplied = Math.max(0, Number((baseAmount - amount).toFixed(2)));
+
           total += amount;
+          totalDiscount += discountApplied;
 
           return {
             appointment_id: row.appointment_id,
@@ -4413,6 +4424,8 @@ verifypartnerdetails: async (data) => {
             payment_status: row.payment_status,
             service_name: serviceName,
             important,
+            base_amount: Number(baseAmount.toFixed(2)),
+            discount_applied: discountApplied,
             amount: Number(amount.toFixed(2)),
           };
         })
@@ -4438,6 +4451,7 @@ verifypartnerdetails: async (data) => {
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),
+        total_discount: Number(totalDiscount.toFixed(2)),
       };
     } catch (error) {
       if (error.status) throw error;
