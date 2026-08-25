@@ -123,9 +123,8 @@ function formatTime(date) {
 /**
  * invoice shape (from AdminDbController.getInvoiceDetailsForPartner):
  * { partner: { id, name, phone, email, address, state, zipcode },
- *   date, items: [{ appointment_id, booking_time, service_name, important,
- *                    base_amount, discount_applied, amount }],
- *   total_bookings, total_amount, total_discount }
+ *   date, items: [{ appointment_id, booking_time, service_name, important, amount }],
+ *   total_bookings, total_amount }
  */
 const generateInvoicePDF = async (invoice) => {
   try {
@@ -141,27 +140,24 @@ const generateInvoicePDF = async (invoice) => {
     const invoiceNo = `INV-GLOUP-${invoiceDate.toISOString().slice(0, 10).replace(/-/g, "")}-${invoice.partner.id}`;
 
     const subTotal = Number(invoice.total_amount) || 0;
-    const totalDiscount = Number(invoice.total_discount) || 0;
     const gstAmount = Number(((subTotal * GST_RATE) / 100).toFixed(2));
     const grandTotal = Number((subTotal + gstAmount).toFixed(2));
 
     const rowsHtml = (invoice.items || [])
-      .map((item, index) => {
-        const baseAmount = Number(item.base_amount ?? item.amount) || 0;
-        const discount = Number(item.discount_applied) || 0;
-        return `
+      .map(
+        (item, index) => `
         <tr>
           <td class="num">${index + 1}</td>
           <td>
             <div class="svc-name">${escapeHtml(item.service_name)}${item.important ? ' <span class="tag">Important</span>' : ""}</div>
             <div class="svc-sub">Booking #${item.appointment_id} &middot; ${formatTime(item.booking_time)}</div>
           </td>
-          <td class="amt">${baseAmount.toFixed(2)}</td>
-          <td class="amt">${discount > 0 ? discount.toFixed(2) : "&ndash;"}</td>
+          <td class="num">1</td>
+          <td class="amt">${Number(item.amount).toFixed(2)}</td>
           <td class="amt">${Number(item.amount).toFixed(2)}</td>
         </tr>
-      `;
-      })
+      `
+      )
       .join("");
 
     const html = `
@@ -330,8 +326,8 @@ const generateInvoicePDF = async (invoice) => {
           <tr>
             <th class="num">#</th>
             <th>Description</th>
+            <th class="num">Qty</th>
             <th class="amt">Rate (&#8377;)</th>
-            <th class="amt">Discount (&#8377;)</th>
             <th class="amt">Amount (&#8377;)</th>
           </tr>
         </thead>
@@ -347,7 +343,6 @@ const generateInvoicePDF = async (invoice) => {
         </div>
         <div class="totals">
           <table>
-            ${totalDiscount > 0 ? `<tr><td>Total Discount</td><td>&#8377;${totalDiscount.toFixed(2)}</td></tr>` : ""}
             <tr><td>Sub Total</td><td>&#8377;${subTotal.toFixed(2)}</td></tr>
             <tr><td>GST @ ${GST_RATE}%</td><td>&#8377;${gstAmount.toFixed(2)}</td></tr>
             <tr class="grand"><td>TOTAL</td><td>&#8377;${grandTotal.toFixed(2)}</td></tr>
