@@ -1607,6 +1607,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             S.description,
             S.income,
             S.phone,
+            S.whatsapp_number,
             S.images,
             S.bank_account_holder ,
             S.account_number , 
