@@ -1,54 +1,59 @@
-import axios from "axios";
+import { sendWhatsAppTemplate, textComponent } from "./whatsappNotification.js";
+
+const INVOICE_NAMESPACE = "7e6a90a7_e658_4047_acdf_4f945d9a45f4";
+
+/** "YYYY-MM-DD" -> "DD-MM-YYYY", matching the date format used by every
+ * other partner/customer-facing WhatsApp template in this codebase. */
+function formatDisplayDate(isoDate) {
+  const parts = String(isoDate || "").split("-");
+  if (parts.length !== 3) return isoDate || "";
+  const [year, month, day] = parts;
+  return `${day}-${month}-${year}`;
+}
+
+function formatPayout(amount) {
+  return `₹${Number(amount || 0).toFixed(2)}`;
+}
 
 /**
- * Sends a partner's daily invoice PDF over WhatsApp via MSG91.
- *
- * STUB: the real MSG91 WhatsApp template/flow ID isn't wired up yet — swap
- * WHATSAPP_INVOICE_TEMPLATE_ID in and uncomment the axios call once it's
- * available. Until then this just logs what it would have sent, so the cron
- * job (CronHelper.scheduleDailyPartnerInvoices, 8:30 AM IST) can be turned on
- * safely without actually messaging anyone.
+ * Sends a partner's daily invoice PDF over WhatsApp via MSG91's
+ * "gloup_partner_invoice" template. Uses the partner's dedicated WhatsApp
+ * number, falling back to their regular phone — same precedence used for
+ * the booking-notification templates in whatsappNotification.js.
  */
-export const sendInvoiceViaWhatsApp = async ({ partner, pdfUrl, invoiceDate }) => {
-  if (!partner?.phone) {
-    console.log(`[InvoiceWhatsApp] skip: partner ${partner?.id} has no phone on file`);
+export const sendInvoiceViaWhatsApp = async ({ partner, pdfUrl, invoiceDate, payoutAmount }) => {
+  const to = partner?.whatsapp_number || partner?.phone;
+
+  if (!to) {
+    console.log(`[InvoiceWhatsApp] skip: partner ${partner?.id} has no phone/whatsapp number on file`);
     return { skipped: true, reason: "no_phone" };
   }
 
-  console.log(
-    `[InvoiceWhatsApp] STUB — would send invoice for ${invoiceDate} to ` +
-    `${partner.name} (${partner.phone}) — PDF: ${pdfUrl}`
-  );
+  if (!pdfUrl) {
+    console.log(`[InvoiceWhatsApp] skip: partner ${partner?.id} has no invoice PDF URL`);
+    return { skipped: true, reason: "no_pdf" };
+  }
 
-  // Real MSG91 WhatsApp send, once template_id/authkey are provided:
-  //
-  // const endPoint = `https://api.msg91.com/api/v5/whatsapp/whatsapp-outbound-message/`;
-  // return axios.post(
-  //   endPoint,
-  //   {
-  //     integrated_number: process.env.MSG91_WHATSAPP_NUMBER,
-  //     content_type: "template",
-  //     payload: {
-  //       messaging_product: "whatsapp",
-  //       type: "template",
-  //       template: {
-  //         name: process.env.WHATSAPP_INVOICE_TEMPLATE_ID,
-  //         language: { code: "en", policy: "deterministic" },
-  //         to_and_components: [
-  //           {
-  //             to: ["91" + partner.phone],
-  //             components: {
-  //               header_1: { type: "document", value: pdfUrl },
-  //               body_1: { type: "text", value: partner.name },
-  //               body_2: { type: "text", value: invoiceDate },
-  //             },
-  //           },
-  //         ],
-  //       },
-  //     },
-  //   },
-  //   { headers: { authkey: process.env.AUTHKEY, "Content-Type": "application/json" } }
-  // );
+  const result = await sendWhatsAppTemplate({
+    templateName: "gloup_partner_invoice",
+    languageCode: "en",
+    namespace: INVOICE_NAMESPACE,
+    to,
+    components: {
+      header_1: {
+        filename: `Invoice_${partner?.id}_${invoiceDate}.pdf`,
+        type: "document",
+        value: pdfUrl,
+      },
+      body_partner_name: textComponent("partner_name", partner?.name),
+      body_date: textComponent("date", formatDisplayDate(invoiceDate)),
+      body_payout: textComponent("payout", formatPayout(payoutAmount)),
+    },
+  });
 
-  return { skipped: false, stub: true };
+  if (!result) {
+    return { skipped: true, reason: "send_failed" };
+  }
+
+  return { skipped: false, response: result };
 };

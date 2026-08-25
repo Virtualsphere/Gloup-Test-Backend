@@ -89,14 +89,16 @@ export class CronHelper {
         // Add other cron jobs here
     }
 
-    // Every day at 8:30 AM IST: generate each partner's invoice PDF for
-    // today's bookings, upload it, and send it over WhatsApp.
-    // sendInvoiceViaWhatsApp is a stub until the MSG91 WhatsApp template is
-    // wired up — this cron is safe to leave running in the meantime.
+    // Every day at 8:30 PM IST: generate each partner's invoice PDF for
+    // today's bookings, upload it, and send it over WhatsApp
+    // (gloup_partner_invoice template, via sendInvoiceViaWhatsApp).
     static scheduleDailyPartnerInvoices() {
-        cron.schedule('30 8 * * *', async () => {
+        cron.schedule('30 20 * * *', async () => {
             try {
                 const { partners, date } = await adminDbController.app.getInvoicePartnersToday();
+
+                let sent = 0;
+                let failed = 0;
 
                 for (const partner of partners) {
                     try {
@@ -116,18 +118,28 @@ export class CronHelper {
                             "invoices"
                         );
 
-                        await sendInvoiceViaWhatsApp({
+                        const result = await sendInvoiceViaWhatsApp({
                             partner: invoice.partner,
                             pdfUrl: uploaded.url,
                             invoiceDate: date,
+                            payoutAmount: invoice.total_amount,
                         });
+
+                        if (result?.skipped) {
+                            failed++;
+                        } else {
+                            sent++;
+                        }
                     } catch (partnerError) {
+                        failed++;
                         console.error(
                             `[Cron] Failed to send invoice for partner ${partner.partner_id}:`,
                             partnerError
                         );
                     }
                 }
+
+                console.log(`[Cron] Daily partner invoices: ${sent} sent, ${failed} failed/skipped (${date})`);
             } catch (error) {
                 console.error("Error in daily partner invoice cron:", error);
             }

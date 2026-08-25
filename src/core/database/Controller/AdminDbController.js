@@ -3950,6 +3950,7 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
+          d.whatsapp_number AS partner_whatsapp,
           COUNT(DISTINCT a.id) AS booking_count,
           ip.id AS payout_id,
           ip.amount AS payout_amount,
@@ -3960,7 +3961,7 @@ verifypartnerdetails: async (data) => {
         LEFT JOIN InvoicePayouts ip ON ip.store_id = d.id AND ip.invoice_date = :invoiceDate
         WHERE DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        GROUP BY d.id, d.name, d.phone, d.email, ip.id, ip.amount, ip.marked_by, ip.paid_at
+        GROUP BY d.id, d.name, d.phone, d.email, d.whatsapp_number, ip.id, ip.amount, ip.marked_by, ip.paid_at
         ${statusFilter === "completed" ? "HAVING ip.id IS NOT NULL" : ""}
         ${statusFilter === "pending" ? "HAVING ip.id IS NULL" : ""}
         ORDER BY d.name ASC
@@ -3985,6 +3986,7 @@ verifypartnerdetails: async (data) => {
           partner_name: row.partner_name,
           partner_phone: row.partner_phone,
           partner_email: row.partner_email,
+          partner_whatsapp: row.partner_whatsapp,
           booking_count: Number(row.booking_count || 0),
           payout_status: row.payout_id ? "completed" : "pending",
           payout_amount: row.payout_id ? Number(row.payout_amount || 0) : null,
@@ -4017,6 +4019,7 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
+          d.whatsapp_number AS partner_whatsapp,
           f.addressLine1, f.addressLine2, f.area, f.city, f.district, f.state, f.zipcode
         FROM Store d
         LEFT JOIN PartnerAddress f ON d.address_id = f.id
@@ -4129,6 +4132,7 @@ verifypartnerdetails: async (data) => {
           id: store.partner_id,
           name: store.partner_name,
           phone: store.partner_phone,
+          whatsapp_number: store.partner_whatsapp,
           email: store.partner_email,
           address: [store.addressLine1, store.addressLine2, store.area, store.city, store.district]
             .filter(Boolean)
