@@ -3935,6 +3935,14 @@ verifypartnerdetails: async (data) => {
     try {
       const invoiceDate = resolveInvoiceDate(data?.date);
 
+      let statusFilter = null;
+      if (data?.status != null && String(data.status).trim() !== "") {
+        statusFilter = String(data.status).trim();
+        if (!["completed", "pending"].includes(statusFilter)) {
+          throw Error.BadRequest("status must be completed or pending");
+        }
+      }
+
       const rows = await adminDbController.connection.query(
         `
         SELECT
@@ -3942,12 +3950,19 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
-          COUNT(DISTINCT a.id) AS booking_count
+          COUNT(DISTINCT a.id) AS booking_count,
+          ip.id AS payout_id,
+          ip.amount AS payout_amount,
+          ip.marked_by AS payout_marked_by,
+          ip.paid_at AS payout_paid_at
         FROM appointments a
         INNER JOIN Store d ON a.store_id = d.id
+        LEFT JOIN InvoicePayouts ip ON ip.store_id = d.id AND ip.invoice_date = :invoiceDate
         WHERE DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        GROUP BY d.id, d.name, d.phone, d.email
+        GROUP BY d.id, d.name, d.phone, d.email, ip.id, ip.amount, ip.marked_by, ip.paid_at
+        ${statusFilter === "completed" ? "HAVING ip.id IS NOT NULL" : ""}
+        ${statusFilter === "pending" ? "HAVING ip.id IS NULL" : ""}
         ORDER BY d.name ASC
         `,
         {
@@ -3971,6 +3986,10 @@ verifypartnerdetails: async (data) => {
           partner_phone: row.partner_phone,
           partner_email: row.partner_email,
           booking_count: Number(row.booking_count || 0),
+          payout_status: row.payout_id ? "completed" : "pending",
+          payout_amount: row.payout_id ? Number(row.payout_amount || 0) : null,
+          payout_marked_by: row.payout_marked_by ?? null,
+          payout_paid_at: row.payout_paid_at ?? null,
         })),
       };
     } catch (error) {
@@ -4091,6 +4110,20 @@ verifypartnerdetails: async (data) => {
 
       const store = storeRows[0];
 
+      const payoutRows = await adminDbController.connection.query(
+        `
+        SELECT id, amount, marked_by, paid_at
+        FROM InvoicePayouts
+        WHERE store_id = :partnerId AND invoice_date = :invoiceDate
+        LIMIT 1
+        `,
+        {
+          replacements: { partnerId: data.partner_id, invoiceDate },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      const payout = payoutRows[0];
+
       return {
         partner: {
           id: store.partner_id,
@@ -4107,11 +4140,95 @@ verifypartnerdetails: async (data) => {
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),
+        payout_status: payout ? "completed" : "pending",
+        payout_amount: payout ? Number(payout.amount || 0) : null,
+        payout_marked_by: payout?.marked_by ?? null,
+        payout_paid_at: payout?.paid_at ?? null,
       };
     } catch (error) {
       if (error.status) throw error;
       console.log("🚀 ~ getInvoiceDetailsForPartner error:", error);
       throw Error.SomethingWentWrong("Failed to fetch invoice details");
+    }
+  },
+
+  // Mark a partner's daily invoice as paid out. Idempotent upsert keyed on
+  // (store_id, invoice_date); snapshots the current invoice total as the
+  // paid amount for audit purposes.
+  markInvoicePayout: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const invoiceDate = resolveInvoiceDate(data?.date);
+
+      const invoice = await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+
+      if (!invoice.total_bookings) {
+        throw Error.BadRequest("No bookings found for this partner on this date");
+      }
+
+      await adminDbController.connection.query(
+        `
+        INSERT INTO InvoicePayouts (store_id, invoice_date, amount, marked_by, paid_at)
+        VALUES (:partnerId, :invoiceDate, :amount, :markedBy, NOW())
+        ON DUPLICATE KEY UPDATE
+          amount = VALUES(amount),
+          marked_by = VALUES(marked_by),
+          paid_at = NOW()
+        `,
+        {
+          replacements: {
+            partnerId: data.partner_id,
+            invoiceDate,
+            amount: invoice.total_amount,
+            markedBy: data.marked_by ?? null,
+          },
+          type: Sequelize.QueryTypes.INSERT,
+        }
+      );
+
+      return await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ markInvoicePayout error:", error);
+      throw Error.SomethingWentWrong("Failed to mark invoice as paid");
+    }
+  },
+
+  // Revert a payout (admin mis-click). Deleting a non-existent row is a
+  // no-op, so this is safe to call idempotently.
+  undoInvoicePayout: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const invoiceDate = resolveInvoiceDate(data?.date);
+
+      await adminDbController.connection.query(
+        `DELETE FROM InvoicePayouts WHERE store_id = :partnerId AND invoice_date = :invoiceDate`,
+        {
+          replacements: { partnerId: data.partner_id, invoiceDate },
+          type: Sequelize.QueryTypes.DELETE,
+        }
+      );
+
+      return await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ undoInvoicePayout error:", error);
+      throw Error.SomethingWentWrong("Failed to undo invoice payout");
     }
   },
 
