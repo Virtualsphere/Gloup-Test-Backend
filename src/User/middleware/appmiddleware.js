@@ -16,6 +16,7 @@ import axios from "axios";
 import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
+import { resolveDiscountedAmount } from "../../core/utils/servicePricing.js";
 
 
 const admin = require('firebase-admin');
@@ -708,6 +709,12 @@ userappmiddleware.user = {
             const get_serviece_category = await userDbController.app.getservicecategory(body.id);
             const aminities = await userDbController.app.getaminities(body);
             const getservices = await userDbController.app.getservices(body);
+            const bookingCountForPricing = user?.paid_booking_count ?? null;
+            if (Array.isArray(getservices)) {
+                getservices.forEach((item) => {
+                    item.discounted_amount = resolveDiscountedAmount(item, bookingCountForPricing);
+                });
+            }
             const getallproffesionals = await userDbController.app.getallprofessionals(body);
             const getcombos = await userDbController.app.getcombos(body);
             const getratings = await userDbController.app.getallstoreratings(body);
@@ -980,7 +987,7 @@ userappmiddleware.user = {
             let total = 0
             //Service Data Amount Calculation
             for (const item of body?.service) {
-                const get_total_amount = await userDbController.app.gettotal(item.id)
+                const get_total_amount = await userDbController.app.gettotal(item.id, user.paid_booking_count)
                 console.log("🚀 ~ get_total_amount:", get_total_amount)
                 if (!get_total_amount || get_total_amount === null || get_total_amount === undefined) {
                     throw Error.SomethingWentWrong("could not get total amount")
@@ -1053,7 +1060,7 @@ userappmiddleware.user = {
                     if (body.service != null && body.service != undefined && body.service.length > 0) {
                         for (const item of body.service) {
                             // Get the total amount for each service item
-                            const get_total_amount = await userDbController.app.gettotal(item.id);
+                            const get_total_amount = await userDbController.app.gettotal(item.id, user.paid_booking_count);
                             const amount = (get_total_amount.discounted_amount !== null && get_total_amount.discounted_amount > 0)
                                 ? get_total_amount.discounted_amount
                                 : get_total_amount.amount;
@@ -1116,7 +1123,7 @@ userappmiddleware.user = {
                     if (body.service != null && body.service != undefined && body.service.length > 0) {
                         for (const item of body.service) {
                             // Get the total amount for each service item
-                            const get_total_amount = await userDbController.app.gettotal(item.id);
+                            const get_total_amount = await userDbController.app.gettotal(item.id, user.paid_booking_count);
                             // Determine the amount to be charged for the service item
                             const amount = (get_total_amount.discounted_amount !== null && get_total_amount.discounted_amount > 0)
                                 ? get_total_amount.discounted_amount
@@ -1163,7 +1170,7 @@ userappmiddleware.user = {
 
                 if (body.service != null && body.service != undefined && body.service.length > 0) {
                     for (const item of body.service) {
-                        const get_total_amount = await userDbController.app.gettotal(item.id);
+                        const get_total_amount = await userDbController.app.gettotal(item.id, user.paid_booking_count);
                         const amount = (get_total_amount.discounted_amount !== null && get_total_amount.discounted_amount > 0)
                             ? get_total_amount.discounted_amount
                             : get_total_amount.amount;
@@ -1239,8 +1246,19 @@ userappmiddleware.user = {
                 throw Error.SomethingWentWrong("One or more combos are invalid or inactive");
             }
 
+            // Resolve each service's tier-appropriate discount once, up front,
+            // so the subtotal calc below and the item-amount calc further down
+            // both see the same already-resolved discounted_amount.
+            const resolvedDbServices = dbServices.map(s => {
+                const plain = s.get ? s.get({ plain: true }) : s;
+                return {
+                    ...plain,
+                    discounted_amount: resolveDiscountedAmount(plain, user.paid_booking_count),
+                };
+            });
+
             let calculatedSubTotal = 0;
-            dbServices.forEach(s => {
+            resolvedDbServices.forEach(s => {
                 const discountedAmount = parseFloat(s.discounted_amount) || 0;
                 const baseAmount = parseFloat(s.amount) || 0;
                 calculatedSubTotal += (discountedAmount > 0 ? discountedAmount : baseAmount);
@@ -1254,7 +1272,7 @@ userappmiddleware.user = {
             }
 
             const resolvedStoreId =
-                store_id || (dbServices[0]?.store_id || dbCombos[0]?.store_id);
+                store_id || (resolvedDbServices[0]?.store_id || dbCombos[0]?.store_id);
 
             // Availability guards before charging / creating Razorpay order
             const holiday = await userDbController.app.getStoreHolidayForDate(
@@ -1387,7 +1405,7 @@ userappmiddleware.user = {
 
             // 4. Add Items
             const items = [];
-            dbServices.forEach(s => {
+            resolvedDbServices.forEach(s => {
                 items.push({
                     appointment_id: appointment.id,
                     service_id: s.id,
@@ -1562,7 +1580,7 @@ userappmiddleware.user = {
 
             // Service calculation
             for (const item of body.service || []) {
-                const data = await userDbController.app.gettotal(item.id);
+                const data = await userDbController.app.gettotal(item.id, user.paid_booking_count);
                 const amount = data.discounted_amount > 0 ? data.discounted_amount : data.amount;
                 total += amount;
             }
@@ -1615,7 +1633,7 @@ userappmiddleware.user = {
 
             // Add services
             for (const item of body.service || []) {
-                const data = await userDbController.app.gettotal(item.id);
+                const data = await userDbController.app.gettotal(item.id, user.paid_booking_count);
                 const amount = data.discounted_amount > 0 ? data.discounted_amount : data.amount;
                 await userDbController.app.addserviceitems(
                     body, user.id, item.id, amount, appointment.id, transaction
@@ -1687,7 +1705,7 @@ userappmiddleware.user = {
                 return "payment sucssessfull";
             }
 
-            const response = await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature);
+            const response = await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature, user.id);
             console.log("🚀 ~ response:", response)
 
             if (!response) {
@@ -2699,7 +2717,7 @@ userappmiddleware.user = {
         }
     },
 
-    getstoredetailsv2: async ({ body }) => {
+    getstoredetailsv2: async ({ body, user }) => {
         try {
 
             const { store_id, sex } = body;
@@ -2734,9 +2752,18 @@ userappmiddleware.user = {
                 throw Error.NotFound("Salon not found");
             }
             console.log("Raw languages from DB:", languages);
+
+            const bookingCountForPricing = user?.paid_booking_count ?? null;
+            const pricedServices = Array.isArray(services)
+                ? services.map((s) => ({
+                    ...s,
+                    discounted_amount: resolveDiscountedAmount(s, bookingCountForPricing),
+                }))
+                : services;
+
             return formatSalonResponse({
                 store,
-                services,
+                services: pricedServices,
                 stylists,
                 reviews,
                 languages,

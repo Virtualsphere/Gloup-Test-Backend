@@ -2429,6 +2429,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
 
         service_category: Number(data.category),
         service_for: data.service_for,
+        tier_discounts: data.tier_discounts ?? null,
       });
 
       console.log("store: ", store);
@@ -2574,7 +2575,8 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         status: data.status,
         service_category: data.category,
         priority: data.priority,
-        service_for: data.service_for
+        service_for: data.service_for,
+        tier_discounts: data.tier_discounts ?? null,
       }, {
         where: { id: data.id }
       });

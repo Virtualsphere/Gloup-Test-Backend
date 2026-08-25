@@ -367,6 +367,10 @@ StoreServices.init({
     type: DataTypes.ENUM('male', 'female', 'unisex'),
     allowNull: true,
   },
+  tier_discounts: {
+    type: DataTypes.JSON,
+    allowNull: true,
+  },
 }, {
   sequelize: connection,
   freezeTableName: true,
