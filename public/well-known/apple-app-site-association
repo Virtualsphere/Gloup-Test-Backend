@@ -4,7 +4,11 @@
     "details": [
       {
         "appID": "HP59PZAVRP.com.gloup.userapp",
-        "paths": ["/download*"]
+        "paths": ["/download", "/download/", "/open", "/open/*"]
+      },
+      {
+        "appID": "HP59PZAVRP.com.gloup.partnerapp",
+        "paths": ["/download/partner", "/download/partner/*"]
       }
     ]
   }
