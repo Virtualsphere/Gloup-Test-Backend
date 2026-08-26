@@ -124,7 +124,14 @@ function formatTime(date) {
  * invoice shape (from AdminDbController.getInvoiceDetailsForPartner):
  * { partner: { id, name, phone, email, address, state, zipcode },
  *   date, items: [{ appointment_id, booking_time, service_name, important, amount }],
- *   total_bookings, total_amount }
+ *   total_bookings, total_amount,
+ *   // Manual subscription deduction (all optional — absent/0 when the
+ *   // partner has no active subscription). Preview fields (subscription_*)
+ *   // reflect what WOULD happen if paid now; payout_* fields are the
+ *   // frozen historical fact once actually marked paid.
+ *   subscription_total_due, subscription_deduction_today, subscription_remaining_debt,
+ *   subscription_plan_amount, subscription_gst_amount, net_payout_preview,
+ *   payout_status, payout_amount, payout_subscription_deducted }
  */
 const generateInvoicePDF = async (invoice) => {
   try {
@@ -142,6 +149,21 @@ const generateInvoicePDF = async (invoice) => {
     const subTotal = Number(invoice.total_amount) || 0;
     const gstAmount = Number(((subTotal * GST_RATE) / 100).toFixed(2));
     const grandTotal = Number((subTotal + gstAmount).toFixed(2));
+
+    // Manual subscription fee deduction — preview if not yet paid out,
+    // otherwise the actual committed figures from that payout.
+    const isPaidOut = invoice.payout_status === "completed";
+    const subDeduction = isPaidOut
+      ? Number(invoice.payout_subscription_deducted || 0)
+      : Number(invoice.subscription_deduction_today || 0);
+    const subRemainingDebt = isPaidOut
+      ? Number(invoice.subscription_total_due || 0)
+      : Number(invoice.subscription_remaining_debt || 0);
+    const subPlanAmount = invoice.subscription_plan_amount;
+    const subGstAmount = invoice.subscription_gst_amount;
+    const subNetPayout = isPaidOut
+      ? Number(invoice.payout_amount || 0)
+      : Number(invoice.net_payout_preview ?? subTotal);
 
     const rowsHtml = (invoice.items || [])
       .map(
@@ -259,6 +281,29 @@ const generateInvoicePDF = async (invoice) => {
         .totals .payable td:first-child { border-radius: 4px 0 0 4px; }
         .totals .payable td:last-child { border-radius: 0 4px 4px 0; }
 
+        .sub-box {
+          background: #fdf3e2;
+          border: 1px solid #f0d9a8;
+          border-radius: 6px;
+          padding: 10px 14px;
+          margin: -6px 0 20px;
+        }
+        .sub-row { display: flex; justify-content: space-between; padding: 2px 0; color: #9a5b06; font-size: 11px; }
+        .sub-row.breakdown {
+          font-size: 9.5px;
+          opacity: 0.85;
+          border-bottom: 1px dashed #e3c583;
+          padding-bottom: 5px;
+          margin-bottom: 3px;
+        }
+        .sub-row.strong {
+          font-weight: 700;
+          border-top: 1px solid #f0d9a8;
+          padding-top: 5px;
+          margin-top: 3px;
+          font-size: 11.5px;
+        }
+
         .footer { display: flex; justify-content: space-between; gap: 24px; margin-top: 8px; }
         .terms { width: 58%; font-size: 10.5px; color: #444; }
         .terms h4 { margin: 0 0 6px; font-size: 11px; color: #2457e8; }
@@ -350,6 +395,28 @@ const generateInvoicePDF = async (invoice) => {
           </table>
         </div>
       </div>
+
+      ${subDeduction > 0 ? `
+      <div class="sub-box">
+        ${subPlanAmount != null ? `
+        <div class="sub-row breakdown">
+          <span>Subscription Plan (&#8377;${Number(subPlanAmount).toFixed(2)}) + 18% GST (&#8377;${Number(subGstAmount).toFixed(2)})</span>
+          <span>= &#8377;${(Number(subPlanAmount) + Number(subGstAmount)).toFixed(2)} / cycle</span>
+        </div>` : ""}
+        <div class="sub-row">
+          <span>Deducted From This Invoice${!isPaidOut ? " (preview)" : ""}</span>
+          <span>&minus; &#8377;${subDeduction.toFixed(2)}</span>
+        </div>
+        ${subRemainingDebt > 0 ? `
+        <div class="sub-row">
+          <span>Remaining Debt${!isPaidOut ? " (after this payout)" : ""}</span>
+          <span>&#8377;${subRemainingDebt.toFixed(2)}</span>
+        </div>` : ""}
+        <div class="sub-row strong">
+          <span>${isPaidOut ? "Payout (After Deduction)" : "Net Payout After Deduction"}</span>
+          <span>&#8377;${subNetPayout.toFixed(2)}</span>
+        </div>
+      </div>` : ""}
 
       <div class="footer">
         <div class="terms">

@@ -1963,6 +1963,60 @@ await Promise.all(
             throw Error.SomethingWentWrong("Failed to undo invoice payout");
         }
     },
+    getPartnersNeedingManualSubscription: async () => {
+        try {
+            return await adminDbController.app.getPartnersNeedingManualSubscription();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getPartnersNeedingManualSubscription:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch partners needing subscription");
+        }
+    },
+    getAllManualPartnerSubscriptions: async () => {
+        try {
+            return await adminDbController.app.getAllManualPartnerSubscriptions();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getAllManualPartnerSubscriptions:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch partner subscriptions");
+        }
+    },
+    assignManualPartnerSubscription: async ({ body }) => {
+        try {
+            return await adminDbController.app.assignManualPartnerSubscription(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ assignManualPartnerSubscription:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to assign partner subscription");
+        }
+    },
+    updateManualPartnerSubscription: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateManualPartnerSubscription(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ updateManualPartnerSubscription:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to update partner subscription");
+        }
+    },
+    deactivateManualPartnerSubscription: async ({ body }) => {
+        try {
+            return await adminDbController.app.deactivateManualPartnerSubscription(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ deactivateManualPartnerSubscription:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to deactivate partner subscription");
+        }
+    },
+    resetAllUserPaidBookingCounts: async () => {
+        try {
+            return await adminDbController.app.resetAllUserPaidBookingCounts();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ resetAllUserPaidBookingCounts:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to reset user booking counts");
+        }
+    },
     downloadInvoicePDF: async (req) => {
         try {
             const partnerId = req.params.partnerId;

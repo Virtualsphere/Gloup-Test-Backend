@@ -20,6 +20,7 @@ import {
     normalizeCategoryKey,
 } from "../../utils/excelParser.js";
 import { toIstDatePart } from "../../schema/formats.js";
+import { accrueDue, cycleFee } from "../../utils/partnerSubscriptionBilling.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -4124,7 +4125,7 @@ verifypartnerdetails: async (data) => {
 
       const payoutRows = await adminDbController.connection.query(
         `
-        SELECT id, amount, marked_by, paid_at
+        SELECT id, amount, marked_by, paid_at, subscription_deducted
         FROM InvoicePayouts
         WHERE store_id = :partnerId AND invoice_date = :invoiceDate
         LIMIT 1
@@ -4135,6 +4136,33 @@ verifypartnerdetails: async (data) => {
         }
       );
       const payout = payoutRows[0];
+
+      // Read-only preview of what a manual subscription deduction WOULD be
+      // if this day's payout were marked paid right now. Nothing is
+      // mutated here — markInvoicePayout does the actual accrual commit.
+      //
+      // totalDue is EVERYTHING currently owed (can span multiple stacked
+      // cycles, see accrueDue) — it is NOT what comes out of this one
+      // invoice. Only min(totalDue, thisInvoiceGross) can ever be deducted
+      // from a single day; whatever's left over is remainingDebt, carried
+      // forward to be deducted from future invoices.
+      let totalDue = 0;
+      let subscriptionPlanAmount = null;
+      let subscriptionGstAmount = null;
+      const sub = await adminDbController.app.getActiveManualSubscription(data.partner_id);
+      if (sub) {
+        totalDue = accrueDue(sub, invoiceDate).due;
+        // Per-cycle breakdown (plan + GST), for display next to the
+        // deduction — totalDue can be a multiple of this if more than one
+        // cycle stacked up (see accrueDue).
+        subscriptionPlanAmount = Number(sub.plan_amount);
+        subscriptionGstAmount = Number(
+          (cycleFee(sub.plan_amount) - subscriptionPlanAmount).toFixed(2)
+        );
+      }
+      const grossAmount = Number(total.toFixed(2));
+      const deductionToday = Number(Math.min(totalDue, grossAmount).toFixed(2));
+      const remainingDebt = Number((totalDue - deductionToday).toFixed(2));
 
       return {
         partner: {
@@ -4152,12 +4180,19 @@ verifypartnerdetails: async (data) => {
         date: invoiceDate,
         items,
         total_bookings: items.length,
-        total_amount: Number(total.toFixed(2)),
+        total_amount: grossAmount,
         total_discount: Number(totalDiscount.toFixed(2)),
+        subscription_total_due: Number(totalDue.toFixed(2)),
+        subscription_deduction_today: deductionToday,
+        subscription_remaining_debt: remainingDebt,
+        subscription_plan_amount: subscriptionPlanAmount,
+        subscription_gst_amount: subscriptionGstAmount,
+        net_payout_preview: Number((grossAmount - deductionToday).toFixed(2)),
         payout_status: payout ? "completed" : "pending",
         payout_amount: payout ? Number(payout.amount || 0) : null,
         payout_marked_by: payout?.marked_by ?? null,
         payout_paid_at: payout?.paid_at ?? null,
+        payout_subscription_deducted: payout ? Number(payout.subscription_deducted || 0) : null,
       };
     } catch (error) {
       if (error.status) throw error;
@@ -4166,9 +4201,34 @@ verifypartnerdetails: async (data) => {
     }
   },
 
+  // Active PartnerManualSubscriptions row for a partner, or null. Entirely
+  // separate from the Razorpay-driven PartnerSubscriptions system.
+  getActiveManualSubscription: async (storeId) => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT id, store_id, plan_amount, status, outstanding_due, next_due_date, activated_at
+        FROM PartnerManualSubscriptions
+        WHERE store_id = :storeId AND status = 'active'
+        LIMIT 1
+        `,
+        {
+          replacements: { storeId },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      return rows[0] || null;
+    } catch (error) {
+      console.log("🚀 ~ getActiveManualSubscription error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscription");
+    }
+  },
+
   // Mark a partner's daily invoice as paid out. Idempotent upsert keyed on
   // (store_id, invoice_date); snapshots the current invoice total as the
-  // paid amount for audit purposes.
+  // paid amount for audit purposes. If the partner has an active manual
+  // subscription, this is also where the monthly fee is actually deducted
+  // (getInvoiceDetailsForPartner only ever previews it, never commits it).
   markInvoicePayout: async (data) => {
     try {
       if (!data.partner_id) {
@@ -4186,21 +4246,53 @@ verifypartnerdetails: async (data) => {
         throw Error.BadRequest("No bookings found for this partner on this date");
       }
 
+      let payoutAmount = invoice.total_amount;
+      let subscriptionDeducted = 0;
+      let outstandingBefore = null;
+      let nextDueBefore = null;
+
+      const sub = await adminDbController.app.getActiveManualSubscription(data.partner_id);
+      if (sub) {
+        outstandingBefore = Number(sub.outstanding_due) || 0;
+        nextDueBefore = sub.next_due_date;
+
+        const { due, nextDue } = accrueDue(sub, invoiceDate);
+        subscriptionDeducted = Number(Math.min(due, invoice.total_amount).toFixed(2));
+        const remainingDue = Number((due - subscriptionDeducted).toFixed(2));
+        payoutAmount = Number((invoice.total_amount - subscriptionDeducted).toFixed(2));
+
+        await adminDbController.connection.query(
+          `UPDATE PartnerManualSubscriptions SET outstanding_due = :remainingDue, next_due_date = :nextDue WHERE id = :id`,
+          {
+            replacements: { remainingDue, nextDue, id: sub.id },
+            type: Sequelize.QueryTypes.UPDATE,
+          }
+        );
+      }
+
       await adminDbController.connection.query(
         `
-        INSERT INTO InvoicePayouts (store_id, invoice_date, amount, marked_by, paid_at)
-        VALUES (:partnerId, :invoiceDate, :amount, :markedBy, NOW())
+        INSERT INTO InvoicePayouts
+          (store_id, invoice_date, amount, marked_by, paid_at, subscription_deducted, subscription_outstanding_before, subscription_next_due_before)
+        VALUES
+          (:partnerId, :invoiceDate, :amount, :markedBy, NOW(), :subscriptionDeducted, :outstandingBefore, :nextDueBefore)
         ON DUPLICATE KEY UPDATE
           amount = VALUES(amount),
           marked_by = VALUES(marked_by),
-          paid_at = NOW()
+          paid_at = NOW(),
+          subscription_deducted = VALUES(subscription_deducted),
+          subscription_outstanding_before = VALUES(subscription_outstanding_before),
+          subscription_next_due_before = VALUES(subscription_next_due_before)
         `,
         {
           replacements: {
             partnerId: data.partner_id,
             invoiceDate,
-            amount: invoice.total_amount,
+            amount: payoutAmount,
             markedBy: data.marked_by ?? null,
+            subscriptionDeducted,
+            outstandingBefore,
+            nextDueBefore,
           },
           type: Sequelize.QueryTypes.INSERT,
         }
@@ -4218,7 +4310,12 @@ verifypartnerdetails: async (data) => {
   },
 
   // Revert a payout (admin mis-click). Deleting a non-existent row is a
-  // no-op, so this is safe to call idempotently.
+  // no-op, so this is safe to call idempotently. If that payout had
+  // deducted a manual subscription fee, restores the subscription's
+  // outstanding_due/next_due_date back to their exact pre-deduction
+  // snapshot — correct as long as this is undoing the most recent
+  // subscription-affecting payout for that partner (the normal "oops,
+  // undo my last click" use case this button serves).
   undoInvoicePayout: async (data) => {
     try {
       if (!data.partner_id) {
@@ -4226,6 +4323,34 @@ verifypartnerdetails: async (data) => {
       }
 
       const invoiceDate = resolveInvoiceDate(data?.date);
+
+      const existingRows = await adminDbController.connection.query(
+        `
+        SELECT subscription_deducted, subscription_outstanding_before, subscription_next_due_before
+        FROM InvoicePayouts
+        WHERE store_id = :partnerId AND invoice_date = :invoiceDate
+        LIMIT 1
+        `,
+        {
+          replacements: { partnerId: data.partner_id, invoiceDate },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      const existing = existingRows[0];
+
+      if (existing && Number(existing.subscription_deducted) > 0) {
+        await adminDbController.connection.query(
+          `UPDATE PartnerManualSubscriptions SET outstanding_due = :outstandingBefore, next_due_date = :nextDueBefore WHERE store_id = :partnerId`,
+          {
+            replacements: {
+              outstandingBefore: existing.subscription_outstanding_before,
+              nextDueBefore: existing.subscription_next_due_before,
+              partnerId: data.partner_id,
+            },
+            type: Sequelize.QueryTypes.UPDATE,
+          }
+        );
+      }
 
       await adminDbController.connection.query(
         `DELETE FROM InvoicePayouts WHERE store_id = :partnerId AND invoice_date = :invoiceDate`,
@@ -4243,6 +4368,159 @@ verifypartnerdetails: async (data) => {
       if (error.status) throw error;
       console.log("🚀 ~ undoInvoicePayout error:", error);
       throw Error.SomethingWentWrong("Failed to undo invoice payout");
+    }
+  },
+
+  // ── Partner Manual Subscriptions (free-15-bookings -> flat monthly fee) ──
+  // Entirely separate from the Razorpay-driven PartnerSubscriptions system.
+
+  // Partners past the free-15-bookings threshold with no active manual
+  // subscription yet — the "needs subscription" list on the admin page.
+  getPartnersNeedingManualSubscription: async () => {
+    try {
+      return await adminDbController.connection.query(
+        `
+        SELECT d.id AS partner_id, d.name AS partner_name, d.phone AS partner_phone,
+               d.email AS partner_email, d.total_booking_count
+        FROM Store d
+        WHERE d.total_booking_count >= 15
+          AND NOT EXISTS (
+            SELECT 1 FROM PartnerManualSubscriptions pms
+            WHERE pms.store_id = d.id AND pms.status = 'active'
+          )
+        ORDER BY d.total_booking_count DESC
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+    } catch (error) {
+      console.log("🚀 ~ getPartnersNeedingManualSubscription error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partners needing subscription");
+    }
+  },
+
+  getAllManualPartnerSubscriptions: async () => {
+    try {
+      return await adminDbController.connection.query(
+        `
+        SELECT pms.id, pms.store_id, d.name AS partner_name, d.phone AS partner_phone,
+               pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date, pms.activated_at
+        FROM PartnerManualSubscriptions pms
+        INNER JOIN Store d ON d.id = pms.store_id
+        ORDER BY pms.status ASC, pms.activated_at DESC
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+    } catch (error) {
+      console.log("🚀 ~ getAllManualPartnerSubscriptions error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscriptions");
+    }
+  },
+
+  // Creates (or reactivates + resets) a partner's manual subscription. The
+  // first cycle's fee becomes due immediately — next_due_date = today, so
+  // the very next accrueDue() call (preview or a Payout click) picks it up.
+  assignManualPartnerSubscription: async (data) => {
+    try {
+      if (!data.store_id) throw Error.BadRequest("store_id is required");
+      const planAmount = Number(data.plan_amount);
+      if (!planAmount || planAmount <= 0) {
+        throw Error.BadRequest("plan_amount must be a positive number");
+      }
+
+      const today = toIstDatePart(new Date());
+
+      await adminDbController.connection.query(
+        `
+        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at)
+        VALUES (:storeId, :planAmount, 'active', 0, :today, :today)
+        ON DUPLICATE KEY UPDATE
+          plan_amount = VALUES(plan_amount),
+          status = 'active',
+          outstanding_due = 0,
+          next_due_date = VALUES(next_due_date),
+          activated_at = VALUES(activated_at)
+        `,
+        {
+          replacements: { storeId: data.store_id, planAmount, today },
+          type: Sequelize.QueryTypes.INSERT,
+        }
+      );
+
+      return await adminDbController.app.getActiveManualSubscription(data.store_id);
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ assignManualPartnerSubscription error:", error);
+      throw Error.SomethingWentWrong("Failed to assign partner subscription");
+    }
+  },
+
+  // Updates only the plan amount — applies from the next accrual onward,
+  // not retroactively to the current cycle's already-accrued due amount.
+  updateManualPartnerSubscription: async (data) => {
+    try {
+      if (!data.store_id) throw Error.BadRequest("store_id is required");
+      const planAmount = Number(data.plan_amount);
+      if (!planAmount || planAmount <= 0) {
+        throw Error.BadRequest("plan_amount must be a positive number");
+      }
+
+      const existing = await adminDbController.app.getActiveManualSubscription(data.store_id);
+      if (!existing) {
+        throw Error.NotFound("No active subscription found for this partner");
+      }
+
+      await adminDbController.connection.query(
+        `UPDATE PartnerManualSubscriptions SET plan_amount = :planAmount WHERE store_id = :storeId`,
+        {
+          replacements: { planAmount, storeId: data.store_id },
+          type: Sequelize.QueryTypes.UPDATE,
+        }
+      );
+
+      return await adminDbController.app.getActiveManualSubscription(data.store_id);
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ updateManualPartnerSubscription error:", error);
+      throw Error.SomethingWentWrong("Failed to update partner subscription");
+    }
+  },
+
+  deactivateManualPartnerSubscription: async (data) => {
+    try {
+      if (!data.store_id) throw Error.BadRequest("store_id is required");
+
+      await adminDbController.connection.query(
+        `UPDATE PartnerManualSubscriptions SET status = 'inactive' WHERE store_id = :storeId`,
+        {
+          replacements: { storeId: data.store_id },
+          type: Sequelize.QueryTypes.UPDATE,
+        }
+      );
+
+      return { store_id: data.store_id, status: "inactive" };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ deactivateManualPartnerSubscription error:", error);
+      throw Error.SomethingWentWrong("Failed to deactivate partner subscription");
+    }
+  },
+
+  // One-off maintenance action: zeroes User.paid_booking_count for every
+  // user, so tiered-discount pricing treats everyone as brand new from
+  // this point forward instead of counting their pre-existing booking
+  // history (per client decision — history should not count). Manually
+  // triggered on demand (e.g. after a Docker rebuild); does not touch the
+  // migration that originally backfilled this column, which stays as-is.
+  resetAllUserPaidBookingCounts: async () => {
+    try {
+      const [affectedCount] = await adminDbController.Models.User.update(
+        { paid_booking_count: 0 },
+        { where: {} }
+      );
+      return { reset_count: affectedCount };
+    } catch (error) {
+      console.log("🚀 ~ resetAllUserPaidBookingCounts error:", error);
+      throw Error.SomethingWentWrong("Failed to reset user booking counts");
     }
   },
 
