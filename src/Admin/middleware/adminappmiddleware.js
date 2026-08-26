@@ -1942,6 +1942,27 @@ await Promise.all(
             throw Error.SomethingWentWrong("Failed to fetch invoice details");
         }
     },
+    markInvoicePayout: async ({ body, user }) => {
+        try {
+            return await adminDbController.app.markInvoicePayout({
+                ...(body || {}),
+                marked_by: user?.id ?? null,
+            });
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ markInvoicePayout:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to mark invoice as paid");
+        }
+    },
+    undoInvoicePayout: async ({ body }) => {
+        try {
+            return await adminDbController.app.undoInvoicePayout(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ undoInvoicePayout:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to undo invoice payout");
+        }
+    },
     downloadInvoicePDF: async (req) => {
         try {
             const partnerId = req.params.partnerId;
@@ -2025,6 +2046,9 @@ await Promise.all(
             }
         } catch (error) {
             console.log("🚀 ~ blockAndUnblockSlot:async ~ error:", error);
+            if (error && error.type && error.code) {
+                throw error;
+            }
             throw Error.SomethingWentWrong("Failed to update time slot");
         }
     },

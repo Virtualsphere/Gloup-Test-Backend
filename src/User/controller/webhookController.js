@@ -145,7 +145,8 @@ async function handlePaymentCaptured(payload) {
         const rowsUpdated = await userDbController.app.updatebooking(
             razorpayOrderId,
             razorpayPaymentId,
-            null
+            null,
+            appointment.user_id
         );
 
         if (!rowsUpdated) {

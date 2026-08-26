@@ -78,6 +78,8 @@ import {
   downloadBookingPDF,
   getInvoicePartnersToday,
   getInvoiceDetailsForPartner,
+  markInvoicePayout,
+  undoInvoicePayout,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
   getMonthlyInvoiceDetailsForPartner,
@@ -244,6 +246,8 @@ approutes.post("/updateBookingStatus", verifyadmin, updatebookingstatus);
 approutes.post("/downloadBookingPDF/:id", verifyadmin, downloadBookingPDF);
 approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday);
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
+approutes.post("/markinvoicepayout", verifyadmin, markInvoicePayout);
+approutes.post("/undoinvoicepayout", verifyadmin, undoInvoicePayout);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);
 approutes.post("/getmonthlyinvoicedetails", verifyadmin, getMonthlyInvoiceDetailsForPartner);

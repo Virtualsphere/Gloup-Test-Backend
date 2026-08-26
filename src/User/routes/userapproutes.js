@@ -37,7 +37,7 @@ approutes.post("/getallstores", getallstores);
 approutes.post("/addfavourites", UserAuthenticate, addfavourites);
 approutes.post("/getfavourites", UserAuthenticate, getfavourites);
 approutes.post('/deletefavourites', UserAuthenticate, deletefavourites);
-approutes.post("/getstorebyid", getstorebyid); // Webauth
+approutes.post("/getstorebyid", OptionalUserAuthenticate, getstorebyid); // Webauth
 approutes.post("/getslotbydate", getslotsbydate);
 approutes.post("/addtocart", UserAuthenticate, addtocart);
 approutes.post("/createorder", UserAuthenticate, createorder);
@@ -97,7 +97,7 @@ approutes.post("/v2/store/nearby", OptionalUserAuthenticate, getnearbystoresv2);
 approutes.get("/v2/get-all-stores", OptionalUserAuthenticate, getAllSalons);
 approutes.get("/v2/salons/top", OptionalUserAuthenticate, getTopSalons);
 approutes.post("/v2/salons/map-markers-clustered", OptionalUserAuthenticate, getMapMarkersClustered);
-approutes.post("/v2/store/details", getstoredetailsv2);
+approutes.post("/v2/store/details", OptionalUserAuthenticate, getstoredetailsv2);
 approutes.post("/v2/services/top-categories", getTopCategoryServicesBySex);
 approutes.post("/v2/stores/by-category", getStoresByServiceCategory);
 // Favourites

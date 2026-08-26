@@ -17,6 +17,7 @@ import {
   findClosureReason,
   weekdayName,
 } from "../../utils/storeHolidays.js";
+import { resolveDiscountedAmount } from "../../utils/servicePricing.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -1668,14 +1669,19 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
       throw Error.SomethingWentWrong("Failed to check slot occupancy");
     }
   },
-  gettotal: async (data) => {
+  gettotal: async (data, bookingCount = null) => {
     try {
-      return await userDbController.Models.StoreServices.findOne({
+      const row = await userDbController.Models.StoreServices.findOne({
         where: {
           id: data
         },
-        attributes: ["amount", "discounted_amount"]
+        attributes: ["amount", "discounted_amount", "tier_discounts"]
       });
+      if (!row) return row;
+      return {
+        amount: row.amount,
+        discounted_amount: resolveDiscountedAmount(row, bookingCount),
+      };
     } catch (error) {
       throw Error.SomethingWentWrong();
     }
@@ -1694,7 +1700,7 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
   },
   createorder: async (data, id, transaction, razorpay_id, is_combo, total, final_total) => {
     try {
-      return await userDbController.Models.appointments.create({
+      const appointment = await userDbController.Models.appointments.create({
         store_id: data.store_id,
         booking_date: data.booking_date,
         amount: final_total,
@@ -1712,7 +1718,17 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         is_discounted: data?.is_discounted || false,
         gst: 5
 
-      }, { transaction: transaction })
+      }, { transaction: transaction });
+
+      // This function always books the appointment as immediately paid
+      // (payment_status: "sucssess" above), so it's always a real paid
+      // booking for tier-discount counting purposes.
+      await userDbController.Models.User.increment(
+        "paid_booking_count",
+        { by: 1, where: { id }, transaction }
+      );
+
+      return appointment;
     } catch (error) {
       throw Error.InternalError();
     }
@@ -2173,7 +2189,7 @@ WHERE S.status = 'active'
       throw Error.InternalError("could not verify invite code")
     }
   },
-  updatebooking: async (id, payment_id, razorpaysignature) => {
+  updatebooking: async (id, payment_id, razorpaysignature, userId = null) => {
     try {
       const [rowsAffected] = await userDbController.Models.appointments.update({
         payment_status: "success",
@@ -2189,6 +2205,17 @@ WHERE S.status = 'active'
         }
       })
       console.log(rowsAffected);
+
+      // Only the caller that actually flipped the row (webhook vs. client
+      // /paymentsucssess can race on the same order) counts it — the
+      // WHERE guard above ensures rowsAffected is 1 for exactly one of them.
+      if (rowsAffected > 0 && userId) {
+        await userDbController.Models.User.increment(
+          "paid_booking_count",
+          { by: 1, where: { id: userId } }
+        );
+      }
+
       return rowsAffected;
     } catch (error) {
       throw Error.SomethingWentWrong();
@@ -3278,6 +3305,7 @@ END AS distance
           S.store_id,
           S.amount,
           S.discounted_amount,
+          S.tier_discounts,
           S.duration,
           S.status,
           S.priority,
@@ -3931,7 +3959,7 @@ END AS distance
       }
       return await userDbController.Models.StoreServices.findAll({
         where,
-        attributes: ["id", "service_name", "amount", "discounted_amount", "duration", "service_category", "store_id"]
+        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id"]
       });
     } catch (error) {
       console.error("getStoreServices ERROR:", error);

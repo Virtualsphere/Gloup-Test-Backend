@@ -2429,6 +2429,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
 
         service_category: Number(data.category),
         service_for: data.service_for,
+        tier_discounts: data.tier_discounts ?? null,
       });
 
       console.log("store: ", store);
@@ -2574,7 +2575,8 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         status: data.status,
         service_category: data.category,
         priority: data.priority,
-        service_for: data.service_for
+        service_for: data.service_for,
+        tier_discounts: data.tier_discounts ?? null,
       }, {
         where: { id: data.id }
       });
@@ -3610,6 +3612,10 @@ verifypartnerdetails: async (data) => {
 
     console.log("🚀 blockAndUnblockSlot error:", error);
 
+    if (error && error.type && error.code) {
+      throw error;
+    }
+
     throw Error.SomethingWentWrong("Failed to update time slot status");
   }
   },
@@ -3931,6 +3937,14 @@ verifypartnerdetails: async (data) => {
     try {
       const invoiceDate = resolveInvoiceDate(data?.date);
 
+      let statusFilter = null;
+      if (data?.status != null && String(data.status).trim() !== "") {
+        statusFilter = String(data.status).trim();
+        if (!["completed", "pending"].includes(statusFilter)) {
+          throw Error.BadRequest("status must be completed or pending");
+        }
+      }
+
       const rows = await adminDbController.connection.query(
         `
         SELECT
@@ -3938,12 +3952,20 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
-          COUNT(DISTINCT a.id) AS booking_count
+          d.whatsapp_number AS partner_whatsapp,
+          COUNT(DISTINCT a.id) AS booking_count,
+          ip.id AS payout_id,
+          ip.amount AS payout_amount,
+          ip.marked_by AS payout_marked_by,
+          ip.paid_at AS payout_paid_at
         FROM appointments a
         INNER JOIN Store d ON a.store_id = d.id
+        LEFT JOIN InvoicePayouts ip ON ip.store_id = d.id AND ip.invoice_date = :invoiceDate
         WHERE DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        GROUP BY d.id, d.name, d.phone, d.email
+        GROUP BY d.id, d.name, d.phone, d.email, d.whatsapp_number, ip.id, ip.amount, ip.marked_by, ip.paid_at
+        ${statusFilter === "completed" ? "HAVING ip.id IS NOT NULL" : ""}
+        ${statusFilter === "pending" ? "HAVING ip.id IS NULL" : ""}
         ORDER BY d.name ASC
         `,
         {
@@ -3966,7 +3988,12 @@ verifypartnerdetails: async (data) => {
           partner_name: row.partner_name,
           partner_phone: row.partner_phone,
           partner_email: row.partner_email,
+          partner_whatsapp: row.partner_whatsapp,
           booking_count: Number(row.booking_count || 0),
+          payout_status: row.payout_id ? "completed" : "pending",
+          payout_amount: row.payout_id ? Number(row.payout_amount || 0) : null,
+          payout_marked_by: row.payout_marked_by ?? null,
+          payout_paid_at: row.payout_paid_at ?? null,
         })),
       };
     } catch (error) {
@@ -3994,6 +4021,7 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
+          d.whatsapp_number AS partner_whatsapp,
           f.addressLine1, f.addressLine2, f.area, f.city, f.district, f.state, f.zipcode
         FROM Store d
         LEFT JOIN PartnerAddress f ON d.address_id = f.id
@@ -4018,10 +4046,10 @@ verifypartnerdetails: async (data) => {
           a.created_at AS order_time,
           a.status,
           a.payment_status,
+          ai.service_amount AS charged_amount,
           ss.id AS service_id,
           ss.service_name,
           ss.amount AS service_amount,
-          ss.discounted_amount AS service_discounted_amount,
           ss.important AS service_important,
           cb.id AS combo_id,
           cb.combo AS combo_name,
@@ -4045,30 +4073,35 @@ verifypartnerdetails: async (data) => {
       );
 
       let total = 0;
+      let totalDiscount = 0;
       const items = itemRows
         .map((row) => {
           let serviceName;
-          let amount;
+          let baseAmount;
           let important = false;
 
           if (row.service_id) {
             serviceName = row.service_name;
             important = !!row.service_important;
-            const baseAmount = Number(row.service_amount) || 0;
-            const discountedAmount = Number(row.service_discounted_amount) || 0;
-            amount = important
-              ? baseAmount
-              : discountedAmount > 0
-                ? discountedAmount
-                : baseAmount;
+            baseAmount = Number(row.service_amount) || 0;
           } else if (row.combo_id) {
             serviceName = row.combo_name;
-            amount = Number(row.combo_amount) || 0;
+            baseAmount = Number(row.combo_amount) || 0;
           } else {
             return null;
           }
 
+          // The amount actually billed for this booking — already reflects
+          // whichever flat/tiered discount applied at the time it was
+          // booked (see appointment_items.service_amount / resolveDiscountedAmount).
+          // We do NOT recompute this from the service's current pricing,
+          // since that would ignore tiers and drift if prices changed since.
+          // Important services are always shown at full price, no discount.
+          const amount = important ? baseAmount : (Number(row.charged_amount) || 0);
+          const discountApplied = Math.max(0, Number((baseAmount - amount).toFixed(2)));
+
           total += amount;
+          totalDiscount += discountApplied;
 
           return {
             appointment_id: row.appointment_id,
@@ -4080,6 +4113,8 @@ verifypartnerdetails: async (data) => {
             payment_status: row.payment_status,
             service_name: serviceName,
             important,
+            base_amount: Number(baseAmount.toFixed(2)),
+            discount_applied: discountApplied,
             amount: Number(amount.toFixed(2)),
           };
         })
@@ -4087,11 +4122,26 @@ verifypartnerdetails: async (data) => {
 
       const store = storeRows[0];
 
+      const payoutRows = await adminDbController.connection.query(
+        `
+        SELECT id, amount, marked_by, paid_at
+        FROM InvoicePayouts
+        WHERE store_id = :partnerId AND invoice_date = :invoiceDate
+        LIMIT 1
+        `,
+        {
+          replacements: { partnerId: data.partner_id, invoiceDate },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      const payout = payoutRows[0];
+
       return {
         partner: {
           id: store.partner_id,
           name: store.partner_name,
           phone: store.partner_phone,
+          whatsapp_number: store.partner_whatsapp,
           email: store.partner_email,
           address: [store.addressLine1, store.addressLine2, store.area, store.city, store.district]
             .filter(Boolean)
@@ -4103,11 +4153,96 @@ verifypartnerdetails: async (data) => {
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),
+        total_discount: Number(totalDiscount.toFixed(2)),
+        payout_status: payout ? "completed" : "pending",
+        payout_amount: payout ? Number(payout.amount || 0) : null,
+        payout_marked_by: payout?.marked_by ?? null,
+        payout_paid_at: payout?.paid_at ?? null,
       };
     } catch (error) {
       if (error.status) throw error;
       console.log("🚀 ~ getInvoiceDetailsForPartner error:", error);
       throw Error.SomethingWentWrong("Failed to fetch invoice details");
+    }
+  },
+
+  // Mark a partner's daily invoice as paid out. Idempotent upsert keyed on
+  // (store_id, invoice_date); snapshots the current invoice total as the
+  // paid amount for audit purposes.
+  markInvoicePayout: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const invoiceDate = resolveInvoiceDate(data?.date);
+
+      const invoice = await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+
+      if (!invoice.total_bookings) {
+        throw Error.BadRequest("No bookings found for this partner on this date");
+      }
+
+      await adminDbController.connection.query(
+        `
+        INSERT INTO InvoicePayouts (store_id, invoice_date, amount, marked_by, paid_at)
+        VALUES (:partnerId, :invoiceDate, :amount, :markedBy, NOW())
+        ON DUPLICATE KEY UPDATE
+          amount = VALUES(amount),
+          marked_by = VALUES(marked_by),
+          paid_at = NOW()
+        `,
+        {
+          replacements: {
+            partnerId: data.partner_id,
+            invoiceDate,
+            amount: invoice.total_amount,
+            markedBy: data.marked_by ?? null,
+          },
+          type: Sequelize.QueryTypes.INSERT,
+        }
+      );
+
+      return await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ markInvoicePayout error:", error);
+      throw Error.SomethingWentWrong("Failed to mark invoice as paid");
+    }
+  },
+
+  // Revert a payout (admin mis-click). Deleting a non-existent row is a
+  // no-op, so this is safe to call idempotently.
+  undoInvoicePayout: async (data) => {
+    try {
+      if (!data.partner_id) {
+        throw Error.BadRequest("partner_id is required");
+      }
+
+      const invoiceDate = resolveInvoiceDate(data?.date);
+
+      await adminDbController.connection.query(
+        `DELETE FROM InvoicePayouts WHERE store_id = :partnerId AND invoice_date = :invoiceDate`,
+        {
+          replacements: { partnerId: data.partner_id, invoiceDate },
+          type: Sequelize.QueryTypes.DELETE,
+        }
+      );
+
+      return await adminDbController.app.getInvoiceDetailsForPartner({
+        partner_id: data.partner_id,
+        date: invoiceDate,
+      });
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ undoInvoicePayout error:", error);
+      throw Error.SomethingWentWrong("Failed to undo invoice payout");
     }
   },
 
@@ -4223,10 +4358,10 @@ verifypartnerdetails: async (data) => {
           a.created_at AS order_time,
           a.status,
           a.payment_status,
+          ai.service_amount AS charged_amount,
           ss.id AS service_id,
           ss.service_name,
           ss.amount AS service_amount,
-          ss.discounted_amount AS service_discounted_amount,
           ss.important AS service_important,
           cb.id AS combo_id,
           cb.combo AS combo_name,
@@ -4251,30 +4386,33 @@ verifypartnerdetails: async (data) => {
       );
 
       let total = 0;
+      let totalDiscount = 0;
       const items = itemRows
         .map((row) => {
           let serviceName;
-          let amount;
+          let baseAmount;
           let important = false;
 
           if (row.service_id) {
             serviceName = row.service_name;
             important = !!row.service_important;
-            const baseAmount = Number(row.service_amount) || 0;
-            const discountedAmount = Number(row.service_discounted_amount) || 0;
-            amount = important
-              ? baseAmount
-              : discountedAmount > 0
-                ? discountedAmount
-                : baseAmount;
+            baseAmount = Number(row.service_amount) || 0;
           } else if (row.combo_id) {
             serviceName = row.combo_name;
-            amount = Number(row.combo_amount) || 0;
+            baseAmount = Number(row.combo_amount) || 0;
           } else {
             return null;
           }
 
+          // Actual billed amount for this booking (already reflects
+          // whatever flat/tiered discount applied at booking time) —
+          // not recomputed from the service's current pricing.
+          // Important services are always shown at full price, no discount.
+          const amount = important ? baseAmount : (Number(row.charged_amount) || 0);
+          const discountApplied = Math.max(0, Number((baseAmount - amount).toFixed(2)));
+
           total += amount;
+          totalDiscount += discountApplied;
 
           return {
             appointment_id: row.appointment_id,
@@ -4286,6 +4424,8 @@ verifypartnerdetails: async (data) => {
             payment_status: row.payment_status,
             service_name: serviceName,
             important,
+            base_amount: Number(baseAmount.toFixed(2)),
+            discount_applied: discountApplied,
             amount: Number(amount.toFixed(2)),
           };
         })
@@ -4311,6 +4451,7 @@ verifypartnerdetails: async (data) => {
         items,
         total_bookings: items.length,
         total_amount: Number(total.toFixed(2)),
+        total_discount: Number(totalDiscount.toFixed(2)),
       };
     } catch (error) {
       if (error.status) throw error;

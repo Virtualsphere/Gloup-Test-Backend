@@ -1525,6 +1525,44 @@ export const getInvoiceDetailsForPartner = async (req, res) => {
         });
 };
 
+export const markInvoicePayout = async (req, res) => {
+    Adminappmiddleware.app.markInvoicePayout(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const undoInvoicePayout = async (req, res) => {
+    Adminappmiddleware.app.undoInvoicePayout(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
 export const downloadInvoicePDF = async (req, res) => {
     try {
         const pdfBuffer = await Adminappmiddleware.app.downloadInvoicePDF(req);

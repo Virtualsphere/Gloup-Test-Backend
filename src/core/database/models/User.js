@@ -57,6 +57,11 @@ User.init({
     allowNull: true,
     defaultValue: 0.00,
   },
+  paid_booking_count: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+  },
   profilePic: {
     type: DataTypes.STRING,
     allowNull: true,

@@ -444,4 +444,4 @@ export async function sendMarketingBroadcast({ recipients, serviceName, offerPri
   };
 }
 
-export { sendWhatsAppTemplate, getBookingWhatsAppPayload, formatIndianMobileNumber };
+export { sendWhatsAppTemplate, getBookingWhatsAppPayload, formatIndianMobileNumber, textComponent };
