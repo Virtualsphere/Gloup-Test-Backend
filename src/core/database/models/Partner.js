@@ -347,6 +347,10 @@ StoreServices.init({
     type: DataTypes.BIGINT,
     allowNull: true,
   },
+  fake_price: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+  },
   important: {
     type: DataTypes.BOOLEAN,
     allowNull: false,
