@@ -1728,6 +1728,13 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         { by: 1, where: { id }, transaction }
       );
 
+      // Same paid-booking event also counts toward the partner's lifetime
+      // total, used for the free-15-bookings subscription threshold.
+      await userDbController.Models.Store.increment(
+        "total_booking_count",
+        { by: 1, where: { id: data.store_id }, transaction }
+      );
+
       return appointment;
     } catch (error) {
       throw Error.InternalError();
@@ -2189,7 +2196,7 @@ WHERE S.status = 'active'
       throw Error.InternalError("could not verify invite code")
     }
   },
-  updatebooking: async (id, payment_id, razorpaysignature, userId = null) => {
+  updatebooking: async (id, payment_id, razorpaysignature, userId = null, storeId = null) => {
     try {
       const [rowsAffected] = await userDbController.Models.appointments.update({
         payment_status: "success",
@@ -2213,6 +2220,12 @@ WHERE S.status = 'active'
         await userDbController.Models.User.increment(
           "paid_booking_count",
           { by: 1, where: { id: userId } }
+        );
+      }
+      if (rowsAffected > 0 && storeId) {
+        await userDbController.Models.Store.increment(
+          "total_booking_count",
+          { by: 1, where: { id: storeId } }
         );
       }
 

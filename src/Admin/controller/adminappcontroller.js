@@ -1563,6 +1563,120 @@ export const undoInvoicePayout = async (req, res) => {
         });
 };
 
+export const getPartnersNeedingManualSubscription = async (req, res) => {
+    Adminappmiddleware.app.getPartnersNeedingManualSubscription(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const getAllManualPartnerSubscriptions = async (req, res) => {
+    Adminappmiddleware.app.getAllManualPartnerSubscriptions(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const assignManualPartnerSubscription = async (req, res) => {
+    Adminappmiddleware.app.assignManualPartnerSubscription(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const updateManualPartnerSubscription = async (req, res) => {
+    Adminappmiddleware.app.updateManualPartnerSubscription(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const deactivateManualPartnerSubscription = async (req, res) => {
+    Adminappmiddleware.app.deactivateManualPartnerSubscription(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const resetAllUserPaidBookingCounts = async (req, res) => {
+    Adminappmiddleware.app.resetAllUserPaidBookingCounts(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
 export const downloadInvoicePDF = async (req, res) => {
     try {
         const pdfBuffer = await Adminappmiddleware.app.downloadInvoicePDF(req);

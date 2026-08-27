@@ -1705,7 +1705,7 @@ userappmiddleware.user = {
                 return "payment sucssessfull";
             }
 
-            const response = await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature, user.id);
+            const response = await userDbController.app.updatebooking(razorpay_order_id, razorpay_payment_id, razorpay_signature, user.id, getbooking.store_id);
             console.log("🚀 ~ response:", response)
 
             if (!response) {

@@ -158,6 +158,11 @@ Store.init({
     type: DataTypes.TEXT,
     allowNull: true
   },
+  total_booking_count: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    defaultValue: 0,
+  },
 }, {
   sequelize: connection,
   timestamps: true,

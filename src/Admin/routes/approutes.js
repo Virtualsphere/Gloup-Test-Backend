@@ -80,6 +80,12 @@ import {
   getInvoiceDetailsForPartner,
   markInvoicePayout,
   undoInvoicePayout,
+  getPartnersNeedingManualSubscription,
+  getAllManualPartnerSubscriptions,
+  assignManualPartnerSubscription,
+  updateManualPartnerSubscription,
+  deactivateManualPartnerSubscription,
+  resetAllUserPaidBookingCounts,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
   getMonthlyInvoiceDetailsForPartner,
@@ -248,6 +254,12 @@ approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday)
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
 approutes.post("/markinvoicepayout", verifyadmin, markInvoicePayout);
 approutes.post("/undoinvoicepayout", verifyadmin, undoInvoicePayout);
+approutes.post("/getpartnersneedingmanualsubscription", verifyadmin, getPartnersNeedingManualSubscription);
+approutes.post("/getallmanualpartnersubscriptions", verifyadmin, getAllManualPartnerSubscriptions);
+approutes.post("/assignmanualpartnersubscription", verifyadmin, assignManualPartnerSubscription);
+approutes.post("/updatemanualpartnersubscription", verifyadmin, updateManualPartnerSubscription);
+approutes.post("/deactivatemanualpartnersubscription", verifyadmin, deactivateManualPartnerSubscription);
+approutes.post("/resetalluserpaidbookingcounts", verifyadmin, resetAllUserPaidBookingCounts);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);
 approutes.post("/getmonthlyinvoicedetails", verifyadmin, getMonthlyInvoiceDetailsForPartner);

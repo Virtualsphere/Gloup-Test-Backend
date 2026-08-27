@@ -146,7 +146,8 @@ async function handlePaymentCaptured(payload) {
             razorpayOrderId,
             razorpayPaymentId,
             null,
-            appointment.user_id
+            appointment.user_id,
+            appointment.store_id
         );
 
         if (!rowsUpdated) {
