@@ -7,6 +7,7 @@ import { upload, categoryupload, bannerupload, bannerimage, profileimage, imageS
 import {
   addbanner,
   sendMarketingWhatsapp,
+  sendVideoMarketingWhatsapp,
   getPartnerPaymentStatus,
   bookingSSE,
   addcategory,
@@ -116,6 +117,7 @@ import {
 import { getservicecategory } from "../../Partner/controller/partnerappcontroller.js";
 import { S3upload } from "../../core/utils/s3/s3Upload.js";
 import { marketingUpload } from "../../core/utils/marketingUpload.js";
+import { marketingVideoUpload } from "../../core/utils/marketingVideoUpload.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 
 
@@ -206,6 +208,15 @@ approutes.post(
         { name: 'image', maxCount: 1 },
     ]),
     sendMarketingWhatsapp
+);
+approutes.post(
+    '/sendvideomarketingwhatsapp',
+    verifyadmin,
+    marketingVideoUpload.fields([
+        { name: 'excel', maxCount: 1 },
+        { name: 'video', maxCount: 1 },
+    ]),
+    sendVideoMarketingWhatsapp
 );
 
 //reviews 

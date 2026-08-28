@@ -25,6 +25,7 @@ import {
 } from "../../core/utils/pushNotificationService.js";
 import {
     sendMarketingBroadcast,
+    sendVideoMarketingBroadcast,
     sendBookingCancelledWhatsApp,
     sendBookingRefundWhatsApp,
 } from "../../core/utils/whatsappNotification.js"
@@ -803,6 +804,46 @@ Adminappmiddleware.app = {
             if (error.status) throw error;
             console.error("sendMarketingWhatsapp error:", error);
             throw Error.SomethingWentWrong(error.message || "Failed to send marketing broadcast");
+        }
+    },
+
+    sendVideoMarketingWhatsapp: async ({ body, files }) => {
+        try {
+            const excelFile = files?.excel?.[0];
+            const videoFile = files?.video?.[0];
+
+            if (!excelFile) {
+                throw Error.BadRequest("Excel file (field name 'excel') is required");
+            }
+            if (!videoFile) {
+                throw Error.BadRequest("Video file (field name 'video') is required");
+            }
+
+            const uploaded = await uploadToS3(videoFile, "marketing-videos");
+            if (!uploaded || !uploaded.url) {
+                throw new Error("Video upload failed");
+            }
+            const videoUrl = uploaded.url;
+
+            const recipients = parseUsersFromExcel(excelFile.buffer);
+
+            if (!recipients.length) {
+                throw Error.BadRequest("No valid rows (with a phone number) found in the excel sheet");
+            }
+
+            const result = await sendVideoMarketingBroadcast({
+                recipients,
+                videoUrl,
+            });
+
+            return {
+                message: "Video marketing broadcast processed",
+                ...result,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("sendVideoMarketingWhatsapp error:", error);
+            throw Error.SomethingWentWrong(error.message || "Failed to send video marketing broadcast");
         }
     },
 

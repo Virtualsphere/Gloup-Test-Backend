@@ -444,4 +444,115 @@ export async function sendMarketingBroadcast({ recipients, serviceName, offerPri
   };
 }
 
+/* =======================================================================
+   VIDEO MARKETING BROADCAST (gloup_video_marketing template)
+   ---------------------------------------------------------------------
+   Same recipient sheet + batching approach as sendMarketingBroadcast, but
+   sends a video-only template (header_1 is a video attachment, no body
+   text params at all) to a filtered recipient list.
+   ======================================================================= */
+
+/**
+ * @param {Object} params
+ * @param {{phone: string, name: string|null, gender: string}[]} params.recipients
+ * @param {string} params.videoUrl - publicly accessible video URL for header_1
+ * @returns {Promise<object>} summary of the send
+ */
+export async function sendVideoMarketingBroadcast({ recipients, videoUrl }) {
+  if (!process.env.AUTHKEY) {
+    console.error("[WhatsApp] AUTHKEY not configured, skipping video marketing send");
+    return {
+      skipped: true,
+      reason: "AUTHKEY not configured",
+      total_recipients_in_sheet: recipients.length,
+      valid_numbers: 0,
+      invalid_numbers: recipients.length,
+      batches_sent: 0,
+      batches_failed: 0,
+    };
+  }
+
+  const validNumbers = [];
+  const invalidNumbers = [];
+
+  recipients.forEach((r) => {
+    const formatted = formatIndianMobileNumber(r.phone);
+    if (formatted) {
+      validNumbers.push(formatted);
+    } else {
+      invalidNumbers.push(r.phone);
+    }
+  });
+
+  // De-dupe in case the sheet has repeated numbers
+  const uniqueNumbers = [...new Set(validNumbers)];
+
+  const components = {
+    header_1: {
+      type: "video",
+      value: videoUrl,
+    },
+  };
+
+  const batches = [];
+  for (let i = 0; i < uniqueNumbers.length; i += MARKETING_BATCH_SIZE) {
+    batches.push(uniqueNumbers.slice(i, i + MARKETING_BATCH_SIZE));
+  }
+
+  let batchesSent = 0;
+  let batchesFailed = 0;
+  const errors = [];
+
+  for (const batch of batches) {
+    const payload = {
+      integrated_number: INTEGRATED_NUMBER,
+      content_type: "template",
+      payload: {
+        messaging_product: "whatsapp",
+        type: "template",
+        template: {
+          name: "gloup_video_marketing",
+          language: {
+            code: "en",
+            policy: "deterministic",
+          },
+          namespace: null,
+          to_and_components: [
+            {
+              to: batch,
+              components,
+            },
+          ],
+        },
+      },
+    };
+
+    try {
+      const response = await axios.post(MSG91_BASE_URL, payload, {
+        headers: {
+          "Content-Type": "application/json",
+          authkey: process.env.AUTHKEY,
+        },
+      });
+      batchesSent++;
+      console.log(`[WhatsApp Video Marketing] Sent batch of ${batch.length} numbers`, response.data);
+    } catch (error) {
+      batchesFailed++;
+      const errData = error?.response?.data || error.message;
+      errors.push({ batch_size: batch.length, error: errData });
+      console.error("[WhatsApp Video Marketing] Batch failed:", errData);
+    }
+  }
+
+  return {
+    total_recipients_in_sheet: recipients.length,
+    valid_numbers: uniqueNumbers.length,
+    invalid_numbers: invalidNumbers.length,
+    invalid_numbers_sample: invalidNumbers.slice(0, 10),
+    batches_sent: batchesSent,
+    batches_failed: batchesFailed,
+    errors,
+  };
+}
+
 export { sendWhatsAppTemplate, getBookingWhatsAppPayload, formatIndianMobileNumber, textComponent };
