@@ -2422,6 +2422,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         store_id: Number(data.store_id),
         amount: Number(data.amount),
         discounted_amount: Number(data.discounted_amount),
+        fake_price: data.fake_price != null && data.fake_price !== "" ? Number(data.fake_price) : null,
         duration: data.duration,
         status: data.status,
 
@@ -2572,6 +2573,7 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         store_id: data.store_id,
         amount: data.amount,
         discounted_amount: data.discounted_amount,
+        fake_price: data.fake_price != null && data.fake_price !== "" ? Number(data.fake_price) : null,
         duration: data.duration,
         status: data.status,
         service_category: data.category,
