@@ -1253,6 +1253,25 @@ export const updateServiceImportant = async(req, res) => {
         });
 }
 
+export const updateServiceAmount = async(req, res) => {
+    Adminappmiddleware.app.updateServiceAmount(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
 export const getPartnerPaymentStatus = async(req, res) => {
     Adminappmiddleware.app.getPartnerPaymentStatus(req)
         .then((data) => {

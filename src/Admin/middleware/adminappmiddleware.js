@@ -1583,6 +1583,16 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to update service importance");
         }
     },
+    updateServiceAmount: async ({ body }) => {
+        try {
+            const result = await adminDbController.app.updateServiceAmount(body);
+            return result;
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ updateServiceAmount:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to update service amount");
+        }
+    },
     getservicecategorylist: async ({ body }) => {
         try {
             const categoryList = await adminDbController.app.getServiceCategoryList(body);
