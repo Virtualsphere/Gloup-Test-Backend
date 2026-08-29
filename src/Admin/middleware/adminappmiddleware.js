@@ -1677,6 +1677,24 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to update user");
         }
     },
+    getGenderProbabilityUsers: async () => {
+        try {
+            return await adminDbController.app.getUsersGenderProbability();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getGenderProbabilityUsers:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to compute gender probability");
+        }
+    },
+    updateUserGender: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateUserGender(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ updateUserGender:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to update user gender");
+        }
+    },
     getalluserbooking: async ({ body, user }) => {
         try {
             let data = []
