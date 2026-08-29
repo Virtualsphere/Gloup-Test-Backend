@@ -1346,8 +1346,9 @@ userappmiddleware.user = {
 
             // Server is source of truth for tax/fees — do not trust client gst/platform_fee as rupees.
             const GST_RATE = 0.05;
+            const PLATFORM_FEE = 3;
             const gstAmount = Math.round(finalTotal * GST_RATE * 100) / 100;
-            const platformFeeAmount = 0;
+            const platformFeeAmount = PLATFORM_FEE;
             const totalWithTaxes = Math.round((finalTotal + gstAmount + platformFeeAmount) * 100) / 100;
 
             let razorpayOrderId = null;

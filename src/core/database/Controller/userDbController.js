@@ -2341,8 +2341,10 @@ WHERE S.status = 'active'
 
   getPendingReviews: async (userId) => {
     try {
+      // Completed visits with no review yet. Client persists "Not Now" per appointment
+      // so the home prompt does not repeat after dismiss.
       const sql = `
-        SELECT DISTINCT a.store_id, a.id as appointment_id, a.booking_date,
+        SELECT a.store_id, a.id as appointment_id, a.booking_date,
                s.name as store_name, s.images as store_images
         FROM appointments a
         JOIN Store s ON a.store_id = s.id
@@ -2350,8 +2352,8 @@ WHERE S.status = 'active'
         WHERE a.user_id = :userId
           AND a.status = 'completed'
           AND r.id IS NULL
-        ORDER BY a.booking_date DESC
-        LIMIT 50
+        ORDER BY COALESCE(a.updated_at, a.booking_date) DESC
+        LIMIT 10
       `;
       const results = await connection.query(sql, {
         replacements: { userId },
