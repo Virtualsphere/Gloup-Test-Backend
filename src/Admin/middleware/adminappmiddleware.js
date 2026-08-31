@@ -38,6 +38,8 @@ import {
 import { admin } from "../../core/database/models/Admin.js";
 import Razorpay from "razorpay";
 import { uploadToS3, S3upload } from "../../core/utils/s3/s3Upload.js";
+import { deriveStoreTypeFromServiceNames } from "../../core/utils/storeGenderFilter.js";
+import redisClient from "../../core/database/redisClient.js";
 
 dotenv.config();
 
@@ -47,6 +49,34 @@ const razorpay = new Razorpay({
     key_secret: process.env.RZ_PAY_KEY
 });
 
+/** Resolve Store.store_type from ServicesProvidedFor IDs (admin gender UI). */
+async function resolveStoreTypeFromServicesProvidedFor(ids = []) {
+    if (!Array.isArray(ids) || ids.length === 0) return null;
+    const rows = await partnerDbController.Models.ServicesProvidedFor.findAll({
+        where: { id: ids },
+        attributes: ["id", "name"],
+        raw: true,
+    });
+    return deriveStoreTypeFromServiceNames(rows.map((r) => r.name));
+}
+
+/** Bust nearby/salon list caches so gender changes show immediately. */
+async function invalidateSalonListCaches() {
+    try {
+        if (!redisClient?.isOpen && !redisClient?.isReady) return;
+        const patterns = ["nearby_v4_*", "salons_v6_*"];
+        for (const pattern of patterns) {
+            for await (const key of redisClient.scanIterator({
+                MATCH: pattern,
+                COUNT: 100,
+            })) {
+                await redisClient.del(key);
+            }
+        }
+    } catch (err) {
+        console.log("invalidateSalonListCaches:", err?.message || err);
+    }
+}
 
 export class Adminappmiddleware { }
 
@@ -1432,12 +1462,22 @@ Adminappmiddleware.app = {
                 const isPremium =
                 body.isPremium === "true" || body.isPremium === true;
 
+            let store_type = body.store_type || undefined;
+            if (servicesProvidedFor.length > 0) {
+                const derived = await resolveStoreTypeFromServicesProvidedFor(
+                    servicesProvidedFor
+                );
+                // Prefer derived from Services Provided For so create stays consistent with edit.
+                if (derived) store_type = derived;
+            }
+
             const createpartner = await adminDbController.app.createpartner({
                 ...body,
                 logo,
                 servicesProvidedFor,
                 languages,
-                isPremium
+                isPremium,
+                store_type,
             }, images, docs);
             if (!createpartner) {
                 throw Error.NotFound("Creation Failed");
@@ -1449,7 +1489,7 @@ Adminappmiddleware.app = {
              if (error.message === "Partner already exists with matching data") {
                 throw error;
                 }
-                else{
+            else{
                     throw Error.SomethingWentWrong("Failed to create partner");
                 }
         }
@@ -1478,17 +1518,30 @@ Adminappmiddleware.app = {
                 const isPremium =
                 body.isPremium === "true" || body.isPremium === true;
 
+            // User app gender filter/display uses Store.store_type, not services_provided_for.
+            // Admin edit only sends Services Provided For — keep store_type in sync.
+            let store_type = body.store_type || undefined;
+            if (servicesProvidedFor.length > 0) {
+                const derived = await resolveStoreTypeFromServicesProvidedFor(
+                    servicesProvidedFor
+                );
+                if (derived) store_type = derived;
+            }
+
             const updatepartner = await adminDbController.app.editpartner({
                 ...body,
                 logo,
                 servicesProvidedFor,
                 languages,
-                isPremium
+                isPremium,
+                store_type,
             }, images, docs);
             
             if (!updatepartner) {
                 throw Error.NotFound("No Partner Found");
             }
+
+            await invalidateSalonListCaches();
 
             return "Partner Updated Successfully";
         } catch (error) {

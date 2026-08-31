@@ -1613,6 +1613,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             S.account_number , 
             S.ifsc_code ,
             S.status ,
+            S.store_type ,
             S.wallet_remaining  as Wallet, 
             A.addressLine1, 
             A.addressLine2,
