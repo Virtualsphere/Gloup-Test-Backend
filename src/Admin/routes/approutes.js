@@ -8,6 +8,7 @@ import {
   addbanner,
   sendMarketingWhatsapp,
   sendVideoMarketingWhatsapp,
+  sendMarketingSMS,
   getPartnerPaymentStatus,
   bookingSSE,
   addcategory,
@@ -223,6 +224,12 @@ approutes.post(
         { name: 'video', maxCount: 1 },
     ]),
     sendVideoMarketingWhatsapp
+);
+approutes.post(
+    '/sendmarketingsms',
+    verifyadmin,
+    marketingUpload.fields([{ name: 'excel', maxCount: 1 }]),
+    sendMarketingSMS
 );
 
 //reviews 

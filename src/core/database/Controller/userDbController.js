@@ -4000,7 +4000,7 @@ END AS distance
       }
       return await userDbController.Models.StoreServices.findAll({
         where,
-        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id"]
+        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id", "fake_price"]
       });
     } catch (error) {
       console.error("getStoreServices ERROR:", error);

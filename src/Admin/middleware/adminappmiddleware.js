@@ -879,6 +879,44 @@ Adminappmiddleware.app = {
         }
     },
 
+    // Two fixed, DLT-approved SMS templates — content is registered with
+    // MSG91/DLT and must never be edited here, only the recipient sheet
+    // and which of the two templates (partner vs user) changes.
+    sendMarketingSMS: async ({ body, files }) => {
+        try {
+            const PARTNER_SMS_TEMPLATE_ID = "6a92d076c536940c01035502";
+            const USER_SMS_TEMPLATE_ID = "6a92c074ff9d6606370da395";
+
+            const excelFile = files?.excel?.[0];
+            if (!excelFile) {
+                throw Error.BadRequest("Excel file (field name 'excel') is required");
+            }
+
+            const recipientType = (body.recipient_type || "").toString().trim().toLowerCase();
+            if (!["partner", "user"].includes(recipientType)) {
+                throw Error.BadRequest("recipient_type must be 'partner' or 'user'");
+            }
+            const templateId = recipientType === "partner" ? PARTNER_SMS_TEMPLATE_ID : USER_SMS_TEMPLATE_ID;
+
+            const recipients = parseUsersFromExcel(excelFile.buffer);
+            if (!recipients.length) {
+                throw Error.BadRequest("No valid rows (with a phone number) found in the excel sheet");
+            }
+
+            const result = await messagingFunction.sendMarketingSMS({ recipients, templateId });
+
+            return {
+                message: "Marketing SMS broadcast processed",
+                recipient_type: recipientType,
+                ...result,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("sendMarketingSMS error:", error);
+            throw Error.SomethingWentWrong(error.message || "Failed to send marketing SMS");
+        }
+    },
+
     getnotificationbyid: async ({ body, user }) => {
         try {
             const notification = await adminDbController.app.getnotificationbyid(body);
