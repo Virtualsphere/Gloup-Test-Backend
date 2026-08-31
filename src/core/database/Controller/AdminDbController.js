@@ -2940,10 +2940,9 @@ editpartner: async (data, images, docs) => {
     }
 
     // ---------- STORE UPDATE ----------
-    const st = await adminDbController.Models.Store.update(
-      {
+    // Do not pass store_type: undefined — that can wipe the column and break user-app gender.
+    const storeUpdate = {
         name: data.name,
-        store_type: data.store_type,
         website: data.website,
         team_size: data.team_size,
         email: data.email,
@@ -2963,7 +2962,13 @@ editpartner: async (data, images, docs) => {
         services_provided_for: data.servicesProvidedFor,
         languages: data.languages,
         is_premium: data.isPremium,
-      },
+    };
+    if (data.store_type != null && String(data.store_type).trim() !== "") {
+      storeUpdate.store_type = String(data.store_type).trim();
+    }
+
+    const st = await adminDbController.Models.Store.update(
+      storeUpdate,
       {
         where: { id: data.id },
         transaction
