@@ -99,6 +99,7 @@ Adminappmiddleware.app = {
         try {
             const year = new Date().getFullYear();
             const gettotalusers = await adminDbController.app.gettotalusers(body);
+            const getfirstbookingusers = await adminDbController.app.getfirstbookingusers(body);
             const gettotalpartner = await adminDbController.app.gettotalpartner(body);
 
             const gettotalsales = await adminDbController.app.getotalsales(body);
@@ -149,6 +150,7 @@ Adminappmiddleware.app = {
 
             const result = {
                 total_users: gettotalusers,
+                first_booking_users: getfirstbookingusers,
                 total_partners: gettotalpartner,
                 total_sales: gettotalsales,
                 average_order_value: avearageordervalue,
@@ -1675,6 +1677,24 @@ Adminappmiddleware.app = {
 
         } catch (error) {
             throw Error.SomethingWentWrong("Failed to update user");
+        }
+    },
+    getGenderProbabilityUsers: async () => {
+        try {
+            return await adminDbController.app.getUsersGenderProbability();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getGenderProbabilityUsers:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to compute gender probability");
+        }
+    },
+    updateUserGender: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateUserGender(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ updateUserGender:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to update user gender");
         }
     },
     getalluserbooking: async ({ body, user }) => {

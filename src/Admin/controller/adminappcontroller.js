@@ -1502,6 +1502,44 @@ export const updateuser = async(req, res) => {
         });
 }
 
+export const getGenderProbabilityUsers = async(req, res) => {
+    Adminappmiddleware.app.getGenderProbabilityUsers(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const updateUserGender = async(req, res) => {
+    Adminappmiddleware.app.updateUserGender(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
 
 export const downloadBookingPDF = async (req, res) => {
   try {

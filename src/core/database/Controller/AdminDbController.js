@@ -474,6 +474,18 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch total users");
     }
   },
+  getfirstbookingusers: async () => {
+    try {
+      return await adminDbController.Models.User.count({
+        where: {
+          status: "active",
+          loyalty_status: "first_booking"
+        }
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch first-booking users");
+    }
+  },
   getactivebookingstoday: async () => {
     try {
       const today = new Date();
@@ -576,7 +588,8 @@ adminDbController.app = {
     try {
       return await adminDbController.Models.Store.count({
         where: {
-          status: "active"
+          status: "active",
+          completion_status: "completed"
         }
       });
     } catch (error) {
@@ -3310,6 +3323,117 @@ updateRefundBookingStatus: async ({ body, user }) => {
       throw Error.SomethingWentWrong("Failed to update user");
     }
   },
+  // Users with no gender on file, ranked by how confidently their booking
+  // history (gendered services booked + gendered salons visited) suggests
+  // one. Only "real" bookings count (completed + actually paid), and only
+  // users with at least one gendered signal are returned — no signal means
+  // nothing to infer, so they're excluded rather than shown at a
+  // meaningless 50/50.
+  getUsersGenderProbability: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT
+          u.id AS user_id,
+          u.firstname,
+          u.lastname,
+          u.email,
+          u.phone,
+          SUM(CASE WHEN ss.service_for = 'male' THEN 1 ELSE 0 END) AS male_service_count,
+          SUM(CASE WHEN ss.service_for = 'female' THEN 1 ELSE 0 END) AS female_service_count,
+          SUM(CASE WHEN (
+            LOWER(TRIM(st.store_type)) NOT IN ('unisex', 'unisex salon')
+            AND (
+              LOWER(TRIM(st.store_type)) REGEXP '^male( only)?$'
+              OR (
+                LOWER(TRIM(st.store_type)) REGEXP 'men|gents|mens'
+                AND LOWER(TRIM(st.store_type)) NOT REGEXP 'women|female|ladies'
+              )
+            )
+          ) THEN 1 ELSE 0 END) AS male_salon_count,
+          SUM(CASE WHEN (
+            LOWER(TRIM(st.store_type)) NOT IN ('unisex', 'unisex salon')
+            AND (
+              LOWER(TRIM(st.store_type)) REGEXP '^female( only)?$'
+              OR LOWER(TRIM(st.store_type)) REGEXP 'women|ladies|womens|woman'
+              OR (
+                (LOWER(TRIM(st.store_type)) LIKE '%beauty parlour%' OR LOWER(TRIM(st.store_type)) LIKE '%beauty parlor%')
+                AND LOWER(TRIM(st.store_type)) NOT REGEXP 'men|gents|male'
+              )
+            )
+          ) THEN 1 ELSE 0 END) AS female_salon_count
+        FROM User u
+        INNER JOIN appointments a
+          ON a.user_id = u.id
+          AND a.status = 'completed'
+          AND a.payment_status IN ('success', 'sucssess')
+        LEFT JOIN appointment_items ai ON ai.appointment_id = a.id
+        LEFT JOIN StoreServices ss ON ss.id = ai.service_id
+        LEFT JOIN Store st ON st.id = a.store_id
+        WHERE (u.gender IS NULL OR u.gender = '')
+        GROUP BY u.id, u.firstname, u.lastname, u.email, u.phone
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const results = rows
+        .map((row) => {
+          const maleScore = Number(row.male_service_count || 0) + Number(row.male_salon_count || 0);
+          const femaleScore = Number(row.female_service_count || 0) + Number(row.female_salon_count || 0);
+          const totalSignal = maleScore + femaleScore;
+
+          if (totalSignal === 0) return null;
+
+          const probabilityMale = Math.round((maleScore / totalSignal) * 100);
+
+          return {
+            user_id: row.user_id,
+            firstname: row.firstname,
+            lastname: row.lastname,
+            email: row.email,
+            phone: row.phone,
+            male_service_count: Number(row.male_service_count || 0),
+            female_service_count: Number(row.female_service_count || 0),
+            male_salon_count: Number(row.male_salon_count || 0),
+            female_salon_count: Number(row.female_salon_count || 0),
+            male_score: maleScore,
+            female_score: femaleScore,
+            probability_male: probabilityMale,
+            probability_female: 100 - probabilityMale,
+            suggested_gender:
+              maleScore === femaleScore ? null : maleScore > femaleScore ? "male" : "female",
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Math.abs(b.probability_male - 50) - Math.abs(a.probability_male - 50));
+
+      return results;
+    } catch (error) {
+      console.log("🚀 ~ getUsersGenderProbability error:", error);
+      throw Error.SomethingWentWrong("Failed to compute gender probability");
+    }
+  },
+  updateUserGender: async (data) => {
+    try {
+      if (!data.id) {
+        throw Error.BadRequest("User ID is required");
+      }
+      if (!["male", "female"].includes(data.gender)) {
+        throw Error.BadRequest("gender must be male or female");
+      }
+
+      await adminDbController.Models.User.update(
+        { gender: data.gender },
+        { where: { id: data.id } }
+      );
+
+      return { id: data.id, gender: data.gender };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ updateUserGender error:", error);
+      throw Error.SomethingWentWrong("Failed to update user gender");
+    }
+  },
   // getallpartner: async (data) => {
   //   try {
   //     const stores = await adminDbController.Models.Store.findAll({
@@ -3478,7 +3602,7 @@ verifypartnerdetails: async (data) => {
                     id: id,
                     status: "active"
                   },
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id','date_of_birth','age','gender']
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id','date_of_birth','age','gender','loyalty_status']
       });
       return res;
     } catch (error) {
@@ -4538,8 +4662,10 @@ verifypartnerdetails: async (data) => {
   // migration that originally backfilled this column, which stays as-is.
   resetAllUserPaidBookingCounts: async () => {
     try {
+      // loyalty_status is derived from paid_booking_count, so it's reset
+      // alongside it here to avoid the two columns drifting out of sync.
       const [affectedCount] = await adminDbController.Models.User.update(
-        { paid_booking_count: 0 },
+        { paid_booking_count: 0, loyalty_status: "new_user" },
         { where: {} }
       );
       return { reset_count: affectedCount };
