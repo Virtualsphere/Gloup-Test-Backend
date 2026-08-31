@@ -99,6 +99,7 @@ Adminappmiddleware.app = {
         try {
             const year = new Date().getFullYear();
             const gettotalusers = await adminDbController.app.gettotalusers(body);
+            const getfirstbookingusers = await adminDbController.app.getfirstbookingusers(body);
             const gettotalpartner = await adminDbController.app.gettotalpartner(body);
 
             const gettotalsales = await adminDbController.app.getotalsales(body);
@@ -149,6 +150,7 @@ Adminappmiddleware.app = {
 
             const result = {
                 total_users: gettotalusers,
+                first_booking_users: getfirstbookingusers,
                 total_partners: gettotalpartner,
                 total_sales: gettotalsales,
                 average_order_value: avearageordervalue,

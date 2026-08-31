@@ -62,6 +62,11 @@ User.init({
     allowNull: false,
     defaultValue: 0,
   },
+  loyalty_status: {
+    type: DataTypes.ENUM('new_user', 'first_booking', 'repeat', 'loyal', 'vip'),
+    allowNull: false,
+    defaultValue: 'new_user',
+  },
   profilePic: {
     type: DataTypes.STRING,
     allowNull: true,

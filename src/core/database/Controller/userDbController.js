@@ -34,6 +34,30 @@ const SLOT_OCCUPANCY_SQL = `
 `;
 const SLOT_OCCUPANCY_SQL_ALIASED = SLOT_OCCUPANCY_SQL.replace(/\bstatus\b/g, 'a.status').replace(/\bpayment_status\b/g, 'a.payment_status').replace(/\bcreated_at\b/g, 'a.created_at');
 
+// Recomputes User.loyalty_status from the row's current paid_booking_count
+// (single atomic UPDATE, no separate read) — call right after that counter
+// is incremented. Tiers: 0 -> new_user, 1 -> first_booking, 2-4 -> repeat,
+// 5-9 -> loyal, 10+ -> vip.
+async function syncUserLoyaltyStatus(userId, transaction) {
+  await connection.query(
+    `
+    UPDATE \`User\` SET \`loyalty_status\` = CASE
+      WHEN \`paid_booking_count\` <= 0 THEN 'new_user'
+      WHEN \`paid_booking_count\` = 1 THEN 'first_booking'
+      WHEN \`paid_booking_count\` <= 4 THEN 'repeat'
+      WHEN \`paid_booking_count\` <= 9 THEN 'loyal'
+      ELSE 'vip'
+    END
+    WHERE \`id\` = :userId
+    `,
+    {
+      replacements: { userId },
+      type: Sequelize.QueryTypes.UPDATE,
+      transaction,
+    }
+  );
+}
+
 const formatDuration = (duration) => {
   if (!duration) return null;
 
@@ -1727,6 +1751,7 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         "paid_booking_count",
         { by: 1, where: { id }, transaction }
       );
+      await syncUserLoyaltyStatus(id, transaction);
 
       // Same paid-booking event also counts toward the partner's lifetime
       // total, used for the free-15-bookings subscription threshold.
@@ -2221,6 +2246,7 @@ WHERE S.status = 'active'
           "paid_booking_count",
           { by: 1, where: { id: userId } }
         );
+        await syncUserLoyaltyStatus(userId);
       }
       if (rowsAffected > 0 && storeId) {
         await userDbController.Models.Store.increment(

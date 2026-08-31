@@ -474,6 +474,18 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch total users");
     }
   },
+  getfirstbookingusers: async () => {
+    try {
+      return await adminDbController.Models.User.count({
+        where: {
+          status: "active",
+          loyalty_status: "first_booking"
+        }
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch first-booking users");
+    }
+  },
   getactivebookingstoday: async () => {
     try {
       const today = new Date();
@@ -576,7 +588,8 @@ adminDbController.app = {
     try {
       return await adminDbController.Models.Store.count({
         where: {
-          status: "active"
+          status: "active",
+          completion_status: "completed"
         }
       });
     } catch (error) {
@@ -3589,7 +3602,7 @@ verifypartnerdetails: async (data) => {
                     id: id,
                     status: "active"
                   },
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id','date_of_birth','age','gender']
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id','date_of_birth','age','gender','loyalty_status']
       });
       return res;
     } catch (error) {
@@ -4649,8 +4662,10 @@ verifypartnerdetails: async (data) => {
   // migration that originally backfilled this column, which stays as-is.
   resetAllUserPaidBookingCounts: async () => {
     try {
+      // loyalty_status is derived from paid_booking_count, so it's reset
+      // alongside it here to avoid the two columns drifting out of sync.
       const [affectedCount] = await adminDbController.Models.User.update(
-        { paid_booking_count: 0 },
+        { paid_booking_count: 0, loyalty_status: "new_user" },
         { where: {} }
       );
       return { reset_count: affectedCount };
