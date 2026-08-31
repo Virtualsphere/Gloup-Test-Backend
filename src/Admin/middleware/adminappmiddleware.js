@@ -106,6 +106,14 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch notifications");
         }
     },
+    getLoyaltyStatusCounts: async () => {
+        try {
+            return await adminDbController.app.getLoyaltyStatusCounts();
+        } catch (error) {
+            if (error?.code) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch loyalty status counts");
+        }
+    },
     updatecoupons: async ({ body, user }) => {
         try {
 
@@ -272,6 +280,60 @@ Adminappmiddleware.app = {
         try {
 
             const { notification_type, sent_to, title, description, store_id } = body;
+            const LOYALTY_TIERS = [
+                "new_user",
+                "first_booking",
+                "repeat",
+                "loyal",
+                "vip",
+            ];
+
+            const parseLoyaltyStatuses = (raw) => {
+                if (raw == null || raw === "") return [];
+                let values = raw;
+                if (typeof raw === "string") {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        values = Array.isArray(parsed) ? parsed : raw.split(",");
+                    } catch {
+                        values = raw.split(",");
+                    }
+                }
+                if (!Array.isArray(values)) values = [values];
+                const normalized = [
+                    ...new Set(
+                        values
+                            .map((v) => String(v).trim().toLowerCase())
+                            .filter(Boolean)
+                    ),
+                ];
+                const invalid = normalized.filter((v) => !LOYALTY_TIERS.includes(v));
+                if (invalid.length) {
+                    throw Error.BadRequest(
+                        `Invalid loyalty_status: ${invalid.join(", ")}. Allowed: ${LOYALTY_TIERS.join(", ")}`
+                    );
+                }
+                return normalized;
+            };
+
+            const loyaltyStatuses = parseLoyaltyStatuses(
+                body.loyalty_status ?? body.loyalty_statuses
+            );
+            const loyaltyStatusStored =
+                loyaltyStatuses.length > 0 ? loyaltyStatuses.join(",") : null;
+
+            if (loyaltyStatuses.length > 0) {
+                if (notification_type !== "general") {
+                    throw Error.BadRequest(
+                        "loyalty_status filter is only supported for general notifications"
+                    );
+                }
+                if (sent_to && sent_to !== "user" && sent_to !== "all") {
+                    throw Error.BadRequest(
+                        "loyalty_status filter can only target users (sent_to: user)"
+                    );
+                }
+            }
 
             // Prefer uploaded file; fall back to image URL from body
             let imageUrl =
@@ -310,7 +372,7 @@ Adminappmiddleware.app = {
                 if (!tokenObjects.length) return null;
                 return sendPushNotification({
                     dedupeKey: `admin:${notificationId}`,
-                    rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}`,
+                    rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}:${loyaltyStatusStored || "any"}`,
                     recipients: tokenObjects,
                     title,
                     body: description,
@@ -319,16 +381,29 @@ Adminappmiddleware.app = {
                     persistLogs: true,
                     notificationOnly: true,
                     debugTraceId: traceId,
-                    debugContext: `admin_broadcast:${sent_to}`,
+                    debugContext: `admin_broadcast:${sent_to}${loyaltyStatusStored ? `:loyalty:${loyaltyStatusStored}` : ""}`,
                 });
             };
             /* ------------------------------------------
                Fetch Users & Partners Once
             -------------------------------------------*/
+            const effectiveSentTo =
+                loyaltyStatuses.length > 0 ? "user" : sent_to;
+
             const [users, partners] = await Promise.all([
-                adminDbController.app.getallusersdeviceId(),
-                adminDbController.app.getallpartnerdeviceId()
+                loyaltyStatuses.length > 0
+                    ? adminDbController.app.getUsersByLoyaltyStatus(loyaltyStatuses)
+                    : adminDbController.app.getallusersdeviceId(),
+                loyaltyStatuses.length > 0
+                    ? Promise.resolve([])
+                    : adminDbController.app.getallpartnerdeviceId(),
             ]);
+
+            if (loyaltyStatuses.length > 0 && (!users || users.length === 0)) {
+                throw Error.NotFound(
+                    `No active users found for loyalty_status: ${loyaltyStatusStored}`
+                );
+            }
 
             let tokenArray = [];
             let userLogs = [];
@@ -345,7 +420,8 @@ Adminappmiddleware.app = {
                 const adminNotification = await adminDbController.app.addnotificationlogsadmin({
                     store_id,
                     notification_type,
-                    sent_to,
+                    sent_to: effectiveSentTo,
+                    loyalty_status: loyaltyStatusStored,
                     title,
                     description,
                     date: new Date()
@@ -356,7 +432,8 @@ Adminappmiddleware.app = {
 
                 logPushDebug(pushTraceId, "broadcast_start", {
                     notificationId,
-                    sent_to,
+                    sent_to: effectiveSentTo,
+                    loyalty_status: loyaltyStatusStored,
                     notification_type,
                     title: title?.slice(0, 80),
                     activeUsersQueried: users.length,
@@ -366,7 +443,7 @@ Adminappmiddleware.app = {
                 const userTokenEntries = [];
                 const partnerTokenEntries = [];
 
-                if (sent_to === "all" || sent_to === "user") {
+                if (effectiveSentTo === "all" || effectiveSentTo === "user") {
                     users.forEach(userItem => {
                         const token = getLatestFcmToken(userItem.device_id);
                         if (token) {
@@ -390,7 +467,7 @@ Adminappmiddleware.app = {
                     });
                 }
 
-                if (sent_to === "all" || sent_to === "store") {
+                if (effectiveSentTo === "all" || effectiveSentTo === "store") {
                     partners.forEach(partnerItem => {
                         const token = getLatestFcmToken(partnerItem.deviceId);
                         if (token) {
@@ -464,7 +541,16 @@ Adminappmiddleware.app = {
                 if (partnerLogs.length)
                     await userDbController.app.addnotificationlogspartner_1(partnerLogs);
 
-                return "Notification Sent Successfully";
+                return {
+                    message: "Notification Sent Successfully",
+                    notification_id: notificationId,
+                    loyalty_status: loyaltyStatusStored,
+                    recipients: {
+                        users: userLogs.length,
+                        partners: partnerLogs.length,
+                        push_tokens: tokenArray.length,
+                    },
+                };
             }
 
             /* ======================================================
@@ -532,7 +618,12 @@ Adminappmiddleware.app = {
             return "Invalid Notification Type";
 
         } catch (error) {
-            throw Error.SomethingWentWrong("Wrong Notification Type");
+            // Re-throw typed ApplicationErrors (BadRequest, NotFound, etc.)
+            if (error?.code) {
+                throw error;
+            }
+            console.error("addnotification error:", error);
+            throw Error.SomethingWentWrong(error?.message || "Wrong Notification Type");
         }
     },
 

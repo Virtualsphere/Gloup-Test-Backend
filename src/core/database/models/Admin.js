@@ -278,6 +278,13 @@ Adminnotificationlogs.init({
     type: DataTypes.ENUM('all', 'store', 'user'),
     allowNull: true,
   },
+  // Comma-separated User.loyalty_status values when audience was filtered
+  // e.g. "loyal,vip". Null = broadcast without loyalty filter.
+  loyalty_status: {
+    type: DataTypes.STRING(100),
+    allowNull: true,
+    defaultValue: null,
+  },
   date: {
     type: DataTypes.DATE,
     allowNull: true,

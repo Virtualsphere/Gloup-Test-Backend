@@ -259,7 +259,7 @@ adminDbController.app = {
   getallusers: async (body) => {
     try {
       return await adminDbController.Models.User.findAll({
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status'],
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count'],
         order: [['id', 'DESC']]
       });
     } catch (error) {
@@ -834,6 +834,7 @@ adminDbController.app = {
         store_id: data?.store_id || null,
         notification_type: data?.notification_type || null,
         sent_to: data?.sent_to || null,
+        loyalty_status: data?.loyalty_status || null,
         date: new Date(),
         title: data?.title || null,
         description: data?.description || null,
@@ -999,25 +1000,81 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     return false;
   }
 },
-  getallusersdeviceId: async () => {
+  getallusersdeviceId: async (loyaltyStatuses) => {
     try {
+      const where = {
+        status: "active",
+        device_id: {
+          [Op.ne]: null
+        }
+      };
+
+      if (Array.isArray(loyaltyStatuses) && loyaltyStatuses.length > 0) {
+        where.loyalty_status = { [Op.in]: loyaltyStatuses };
+      }
+
       const res = await adminDbController.Models.User.findAll({
-        where: {
-          status: "active",
-          device_id: {
-            [Op.ne]: null
-          }
-        },
+        where,
         attributes: [
           ['device_id', 'device_id'],
           ['id', 'user_id'],
-          ['profilePic', 'profilePic']
+          ['profilePic', 'profilePic'],
+          ['loyalty_status', 'loyalty_status'],
         ]
       })
       return res;
 
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch users device ID");
+    }
+  },
+  /**
+   * Active users for loyalty-targeted broadcasts.
+   * Includes users without FCM tokens so in-app logs are still created.
+   */
+  getUsersByLoyaltyStatus: async (loyaltyStatuses) => {
+    try {
+      const where = { status: "active" };
+      if (Array.isArray(loyaltyStatuses) && loyaltyStatuses.length > 0) {
+        where.loyalty_status = { [Op.in]: loyaltyStatuses };
+      }
+      return await adminDbController.Models.User.findAll({
+        where,
+        attributes: [
+          ["device_id", "device_id"],
+          ["id", "user_id"],
+          ["profilePic", "profilePic"],
+          ["loyalty_status", "loyalty_status"],
+        ],
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch users by loyalty status");
+    }
+  },
+  getLoyaltyStatusCounts: async () => {
+    try {
+      const rows = await adminDbController.Models.User.findAll({
+        attributes: [
+          "loyalty_status",
+          [Sequelize.fn("COUNT", Sequelize.col("id")), "count"],
+        ],
+        where: { status: "active" },
+        group: ["loyalty_status"],
+        raw: true,
+      });
+      const tiers = ["new_user", "first_booking", "repeat", "loyal", "vip"];
+      const byStatus = Object.fromEntries(tiers.map((t) => [t, 0]));
+      for (const row of rows) {
+        if (row.loyalty_status in byStatus) {
+          byStatus[row.loyalty_status] = Number(row.count) || 0;
+        }
+      }
+      return {
+        tiers: byStatus,
+        total: Object.values(byStatus).reduce((a, b) => a + b, 0),
+      };
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch loyalty status counts");
     }
   },
   getUserByIdForNotification: async (userId) => {

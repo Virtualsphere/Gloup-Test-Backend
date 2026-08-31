@@ -35,6 +35,7 @@ import {
   getallcategory,
   getallcoupons,
   getallnotification,
+  getLoyaltyStatusCounts,
   getallpartner,
   getallpartnerdetails,
   getallsubscription,
@@ -206,6 +207,7 @@ approutes.post("/deletecategory", verifyadmin, deletecategory);
 approutes.post('/addnotification', verifyadmin, S3upload.single('image'), addnotification);
 approutes.post('/send-targeted-notification', verifyadmin, sendTargetedNotification);
 approutes.post('/getalnotification', verifyadmin, getallnotification);
+approutes.post('/getloyaltystatuscounts', verifyadmin, getLoyaltyStatusCounts);
 approutes.post('/getnotificationbyid', verifyadmin, getnotificationbyid);
 approutes.post(
     '/sendmarketingwhatsapp',
