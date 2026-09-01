@@ -355,9 +355,24 @@ export const OPENAPI_SCHEMAS = {
     required: ["notification_type", "title", "description"],
     properties: {
       notification_type: { type: "string", enum: ["general", "subscription"], example: "general" },
-      sent_to: { type: "string", enum: ["all", "user", "store"], example: "all" },
-      title: { type: "string", example: "Announcement" },
-      description: { type: "string", example: "Message body" },
+      sent_to: { type: "string", enum: ["all", "user", "store"], example: "user" },
+      loyalty_status: {
+        oneOf: [
+          { type: "string", example: "loyal,vip" },
+          {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["new_user", "first_booking", "repeat", "loyal", "vip"],
+            },
+            example: ["loyal", "vip"],
+          },
+        ],
+        description:
+          "Optional. Filter customer audience by User.loyalty_status. When set, sent_to is forced to user. Tiers: new_user (0 bookings), first_booking (1), repeat (2-4), loyal (5-9), vip (10+).",
+      },
+      title: { type: "string", example: "VIP offer" },
+      description: { type: "string", example: "Exclusive discount for VIP customers" },
       store_id: { type: "integer", description: "Required for subscription type" },
     },
   },

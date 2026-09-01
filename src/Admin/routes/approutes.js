@@ -8,6 +8,7 @@ import {
   addbanner,
   sendMarketingWhatsapp,
   sendVideoMarketingWhatsapp,
+  sendMarketingSMS,
   getPartnerPaymentStatus,
   bookingSSE,
   addcategory,
@@ -34,6 +35,7 @@ import {
   getallcategory,
   getallcoupons,
   getallnotification,
+  getLoyaltyStatusCounts,
   getallpartner,
   getallpartnerdetails,
   getallsubscription,
@@ -205,6 +207,7 @@ approutes.post("/deletecategory", verifyadmin, deletecategory);
 approutes.post('/addnotification', verifyadmin, S3upload.single('image'), addnotification);
 approutes.post('/send-targeted-notification', verifyadmin, sendTargetedNotification);
 approutes.post('/getalnotification', verifyadmin, getallnotification);
+approutes.post('/getloyaltystatuscounts', verifyadmin, getLoyaltyStatusCounts);
 approutes.post('/getnotificationbyid', verifyadmin, getnotificationbyid);
 approutes.post(
     '/sendmarketingwhatsapp',
@@ -223,6 +226,12 @@ approutes.post(
         { name: 'video', maxCount: 1 },
     ]),
     sendVideoMarketingWhatsapp
+);
+approutes.post(
+    '/sendmarketingsms',
+    verifyadmin,
+    marketingUpload.fields([{ name: 'excel', maxCount: 1 }]),
+    sendMarketingSMS
 );
 
 //reviews 

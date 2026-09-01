@@ -66,6 +66,17 @@ function resolveInvoiceMonthRange(monthInput) {
   return { month: `${year}-${pad(month)}`, fromDate, toDate };
 }
 
+/** Last N calendar months as "YYYY-MM" strings, oldest first, ending this month. */
+function buildLastNMonths(n) {
+  const months = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  return months;
+}
+
 
 
 export class adminDbController { }
@@ -258,8 +269,14 @@ adminDbController.auth = {
 adminDbController.app = {
   getallusers: async (body) => {
     try {
+      const where = {};
+      if (body?.min_bookings != null && body.min_bookings !== "") {
+        where.paid_booking_count = { [Op.gte]: Number(body.min_bookings) };
+      }
+
       return await adminDbController.Models.User.findAll({
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status'],
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'loyalty_status', 'paid_booking_count'],
+        where,
         order: [['id', 'DESC']]
       });
     } catch (error) {
@@ -484,6 +501,89 @@ adminDbController.app = {
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch first-booking users");
+    }
+  },
+  // Cumulative funnel: each stage is a strict subset of the one above it,
+  // derived from the same paid_booking_count thresholds that drive
+  // loyalty_status (0=new_user, 1=first_booking, 2-4=repeat, 5-9=loyal, 10+=vip).
+  getCustomerFunnel: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN loyalty_status != 'new_user' THEN 1 ELSE 0 END) AS made_booking,
+          SUM(CASE WHEN loyalty_status IN ('repeat','loyal','vip') THEN 1 ELSE 0 END) AS repeat_users,
+          SUM(CASE WHEN loyalty_status IN ('loyal','vip') THEN 1 ELSE 0 END) AS loyal_users,
+          SUM(CASE WHEN loyalty_status = 'vip' THEN 1 ELSE 0 END) AS vip_users,
+          AVG(CASE WHEN paid_booking_count > 0 THEN paid_booking_count END) AS avg_bookings_per_user
+        FROM \`User\`
+        WHERE status = 'active'
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const row = rows[0] || {};
+      const total = Number(row.total || 0);
+      const pct = (n) => (total > 0 ? Number(((n / total) * 100).toFixed(1)) : 0);
+
+      const stageDefs = [
+        { key: "total_users", label: "Total Users", min_bookings: 0, count: total },
+        { key: "made_booking", label: "Made a Booking", min_bookings: 1, count: Number(row.made_booking || 0) },
+        { key: "repeat_users", label: "Repeat Users", min_bookings: 2, count: Number(row.repeat_users || 0) },
+        { key: "loyal_users", label: "Loyal Customers", min_bookings: 5, count: Number(row.loyal_users || 0) },
+        { key: "vip_users", label: "VIP Customers", min_bookings: 10, count: Number(row.vip_users || 0) },
+      ].map((s) => ({ ...s, percentage: pct(s.count) }));
+
+      return {
+        stages: stageDefs,
+        avg_bookings_per_user: row.avg_bookings_per_user != null ? Number(Number(row.avg_bookings_per_user).toFixed(1)) : 0,
+      };
+    } catch (error) {
+      console.log("🚀 ~ getCustomerFunnel error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer funnel");
+    }
+  },
+  getAvgDaysBetweenVisits: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT AVG(gap_days) AS avg_days_between_visits FROM (
+          SELECT
+            user_id,
+            DATEDIFF(booking_date, LAG(booking_date) OVER (PARTITION BY user_id ORDER BY booking_date)) AS gap_days
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE gap_days > 0
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const value = rows[0]?.avg_days_between_visits;
+      return value != null ? Number(Number(value).toFixed(1)) : 0;
+    } catch (error) {
+      console.log("🚀 ~ getAvgDaysBetweenVisits error:", error);
+      throw Error.SomethingWentWrong("Failed to compute average days between visits");
+    }
+  },
+  getCustomerLifetimeValue: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT AVG(user_total) AS avg_clv FROM (
+          SELECT user_id, SUM(amount) AS user_total
+          FROM appointments
+          WHERE status = 'completed'
+          GROUP BY user_id
+        ) t
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const value = rows[0]?.avg_clv;
+      return value != null ? Number(Number(value).toFixed(2)) : 0;
+    } catch (error) {
+      console.log("🚀 ~ getCustomerLifetimeValue error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer lifetime value");
     }
   },
   getactivebookingstoday: async () => {
@@ -834,6 +934,7 @@ adminDbController.app = {
         store_id: data?.store_id || null,
         notification_type: data?.notification_type || null,
         sent_to: data?.sent_to || null,
+        loyalty_status: data?.loyalty_status || null,
         date: new Date(),
         title: data?.title || null,
         description: data?.description || null,
@@ -999,25 +1100,211 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     return false;
   }
 },
-  getallusersdeviceId: async () => {
+  getallusersdeviceId: async (loyaltyStatuses) => {
     try {
+      const where = {
+        status: "active",
+        device_id: {
+          [Op.ne]: null
+        }
+      };
+
+      if (Array.isArray(loyaltyStatuses) && loyaltyStatuses.length > 0) {
+        where.loyalty_status = { [Op.in]: loyaltyStatuses };
+      }
+
       const res = await adminDbController.Models.User.findAll({
-        where: {
-          status: "active",
-          device_id: {
-            [Op.ne]: null
-          }
-        },
+        where,
         attributes: [
           ['device_id', 'device_id'],
           ['id', 'user_id'],
-          ['profilePic', 'profilePic']
+          ['profilePic', 'profilePic'],
+          ['loyalty_status', 'loyalty_status'],
         ]
       })
       return res;
 
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch users device ID");
+    }
+  },
+  /**
+   * Active users for loyalty-targeted broadcasts.
+   * Includes users without FCM tokens so in-app logs are still created.
+   */
+  getUsersByLoyaltyStatus: async (loyaltyStatuses) => {
+    try {
+      const where = { status: "active" };
+      if (Array.isArray(loyaltyStatuses) && loyaltyStatuses.length > 0) {
+        where.loyalty_status = { [Op.in]: loyaltyStatuses };
+      }
+      return await adminDbController.Models.User.findAll({
+        where,
+        attributes: [
+          ["device_id", "device_id"],
+          ["id", "user_id"],
+          ["profilePic", "profilePic"],
+          ["loyalty_status", "loyalty_status"],
+        ],
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch users by loyalty status");
+    }
+  },
+  getLoyaltyStatusCounts: async () => {
+    try {
+      const rows = await adminDbController.Models.User.findAll({
+        attributes: [
+          "loyalty_status",
+          [Sequelize.fn("COUNT", Sequelize.col("id")), "count"],
+        ],
+        where: { status: "active" },
+        group: ["loyalty_status"],
+        raw: true,
+      });
+      const tiers = ["new_user", "first_booking", "repeat", "loyal", "vip"];
+      const byStatus = Object.fromEntries(tiers.map((t) => [t, 0]));
+      for (const row of rows) {
+        if (row.loyalty_status in byStatus) {
+          byStatus[row.loyalty_status] = Number(row.count) || 0;
+        }
+      }
+      return {
+        tiers: byStatus,
+        total: Object.values(byStatus).reduce((a, b) => a + b, 0),
+      };
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch loyalty status counts");
+    }
+  },
+  // Dashboard "Customer Segments" donut — reuses getLoyaltyStatusCounts,
+  // folds new_user+first_booking into one "New User" bucket (mockup only
+  // has 5 labeled slots; a single-booking customer hasn't repeated yet),
+  // and adds an "Inactive" bucket from User.status (separate from
+  // loyalty_status) so every account is counted exactly once.
+  getCustomerSegments: async () => {
+    try {
+      const { tiers, total: activeTotal } = await adminDbController.app.getLoyaltyStatusCounts();
+      const inactiveCount = await adminDbController.Models.User.count({
+        where: { status: "inactive" },
+      });
+
+      const segmentDefs = [
+        { key: "new_user", label: "New User", count: tiers.new_user + tiers.first_booking, color: "#10B981" },
+        { key: "repeat_user", label: "Repeat User", count: tiers.repeat, color: "#3B82F6" },
+        { key: "loyal_user", label: "Loyal User", count: tiers.loyal, color: "#F59E0B" },
+        { key: "vip_user", label: "VIP User", count: tiers.vip, color: "#EF4444" },
+        { key: "inactive", label: "Inactive", count: inactiveCount, color: "#9CA3AF" },
+      ];
+
+      const grandTotal = activeTotal + inactiveCount;
+      const segments = segmentDefs.map((s) => ({
+        ...s,
+        percentage: grandTotal > 0 ? Number(((s.count / grandTotal) * 100).toFixed(1)) : 0,
+      }));
+
+      return { segments, total: grandTotal };
+    } catch (error) {
+      console.log("🚀 ~ getCustomerSegments error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer segments");
+    }
+  },
+  // % of each month's bookers who had already booked before (repeat rate),
+  // last 6 months, zero-filled. Uses ROW_NUMBER() per user ordered by
+  // booking_date to determine which bookings are a user's 2nd-or-later.
+  getRepeatBookingRateByMonth: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT month, SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS repeat_count, COUNT(*) AS total_count
+        FROM (
+          SELECT
+            user_id,
+            DATE_FORMAT(booking_date, '%Y-%m-01') AS month,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')
+        GROUP BY month
+        ORDER BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const byMonth = new Map(
+        rows.map((r) => [
+          r.month.slice(0, 7),
+          r.total_count > 0 ? Number(((r.repeat_count / r.total_count) * 100).toFixed(1)) : 0,
+        ])
+      );
+
+      return buildLastNMonths(6).map((month) => ({
+        month,
+        repeat_rate: byMonth.get(month) || 0,
+      }));
+    } catch (error) {
+      console.log("🚀 ~ getRepeatBookingRateByMonth error:", error);
+      throw Error.SomethingWentWrong("Failed to compute repeat booking rate by month");
+    }
+  },
+  // 6-month trend series backing the dashboard's sparkline stat cards.
+  getDashboardTrends: async () => {
+    try {
+      const monthFloor = `DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')`;
+
+      // User has no signup-date column at all (timestamps: false on the
+      // model) — there is genuinely no way to compute "new signups per
+      // month". Using distinct active bookers per month instead (real data,
+      // from appointments.booking_date) rather than fabricating a trend.
+      const usersRows = await adminDbController.connection.query(
+        `
+        SELECT DATE_FORMAT(booking_date, '%Y-%m') AS month, COUNT(DISTINCT user_id) AS value
+        FROM appointments
+        WHERE status = 'completed' AND booking_date >= ${monthFloor}
+        GROUP BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const bookingRows = await adminDbController.connection.query(
+        `
+        SELECT
+          month,
+          SUM(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS first_time_value,
+          SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS repeat_value,
+          COUNT(*) AS bookings_value
+        FROM (
+          SELECT
+            user_id,
+            DATE_FORMAT(booking_date, '%Y-%m') AS month,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m')
+        GROUP BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const usersByMonth = new Map(usersRows.map((r) => [r.month, Number(r.value) || 0]));
+      const firstTimeByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.first_time_value) || 0]));
+      const repeatByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.repeat_value) || 0]));
+      const bookingsByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.bookings_value) || 0]));
+
+      const months = buildLastNMonths(6);
+      const seriesFrom = (map) => months.map((month) => ({ month, value: map.get(month) || 0 }));
+
+      return {
+        users_by_month: seriesFrom(usersByMonth),
+        first_time_by_month: seriesFrom(firstTimeByMonth),
+        repeat_by_month: seriesFrom(repeatByMonth),
+        bookings_by_month: seriesFrom(bookingsByMonth),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getDashboardTrends error:", error);
+      throw Error.SomethingWentWrong("Failed to compute dashboard trends");
     }
   },
   getUserByIdForNotification: async (userId) => {

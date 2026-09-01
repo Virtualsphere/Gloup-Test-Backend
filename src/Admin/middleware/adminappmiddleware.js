@@ -106,6 +106,14 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to fetch notifications");
         }
     },
+    getLoyaltyStatusCounts: async () => {
+        try {
+            return await adminDbController.app.getLoyaltyStatusCounts();
+        } catch (error) {
+            if (error?.code) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch loyalty status counts");
+        }
+    },
     updatecoupons: async ({ body, user }) => {
         try {
 
@@ -154,6 +162,13 @@ Adminappmiddleware.app = {
 
             const cancelledrefundedorders = await adminDbController.app.getcancelledrefundedorders(body);
 
+            const customerFunnel = await adminDbController.app.getCustomerFunnel(body);
+            const avgDaysBetweenVisits = await adminDbController.app.getAvgDaysBetweenVisits(body);
+            const avgClv = await adminDbController.app.getCustomerLifetimeValue(body);
+            const customerSegments = await adminDbController.app.getCustomerSegments(body);
+            const repeatBookingRateByMonth = await adminDbController.app.getRepeatBookingRateByMonth(body);
+            const dashboardTrends = await adminDbController.app.getDashboardTrends(body);
+
             const monthlyRevenueResult = await adminDbController.app.getmonthlysales(year);
             //console.log("🚀 ~ getdashboard:async ~ monthlyRevenueResult:", monthlyRevenueResult)
 
@@ -190,7 +205,18 @@ Adminappmiddleware.app = {
                 total_sales_count: totalsalescount,
                 totalgendersales: getgendersales,
                 active_bookings_today: activebookingstoday,
-                cancelled_refunded_orders: cancelledrefundedorders
+                cancelled_refunded_orders: cancelledrefundedorders,
+                top_salon: topsalloons?.[0] || null,
+                customer_funnel: {
+                    stages: customerFunnel.stages,
+                    avg_bookings_per_user: customerFunnel.avg_bookings_per_user,
+                    avg_days_between_visits: avgDaysBetweenVisits,
+                    avg_order_value: avearageordervalue,
+                    avg_clv: avgClv,
+                },
+                customer_segments: customerSegments,
+                repeat_booking_rate_by_month: repeatBookingRateByMonth,
+                dashboard_trends: dashboardTrends,
             }
 
             return result;
@@ -272,6 +298,60 @@ Adminappmiddleware.app = {
         try {
 
             const { notification_type, sent_to, title, description, store_id } = body;
+            const LOYALTY_TIERS = [
+                "new_user",
+                "first_booking",
+                "repeat",
+                "loyal",
+                "vip",
+            ];
+
+            const parseLoyaltyStatuses = (raw) => {
+                if (raw == null || raw === "") return [];
+                let values = raw;
+                if (typeof raw === "string") {
+                    try {
+                        const parsed = JSON.parse(raw);
+                        values = Array.isArray(parsed) ? parsed : raw.split(",");
+                    } catch {
+                        values = raw.split(",");
+                    }
+                }
+                if (!Array.isArray(values)) values = [values];
+                const normalized = [
+                    ...new Set(
+                        values
+                            .map((v) => String(v).trim().toLowerCase())
+                            .filter(Boolean)
+                    ),
+                ];
+                const invalid = normalized.filter((v) => !LOYALTY_TIERS.includes(v));
+                if (invalid.length) {
+                    throw Error.BadRequest(
+                        `Invalid loyalty_status: ${invalid.join(", ")}. Allowed: ${LOYALTY_TIERS.join(", ")}`
+                    );
+                }
+                return normalized;
+            };
+
+            const loyaltyStatuses = parseLoyaltyStatuses(
+                body.loyalty_status ?? body.loyalty_statuses
+            );
+            const loyaltyStatusStored =
+                loyaltyStatuses.length > 0 ? loyaltyStatuses.join(",") : null;
+
+            if (loyaltyStatuses.length > 0) {
+                if (notification_type !== "general") {
+                    throw Error.BadRequest(
+                        "loyalty_status filter is only supported for general notifications"
+                    );
+                }
+                if (sent_to && sent_to !== "user" && sent_to !== "all") {
+                    throw Error.BadRequest(
+                        "loyalty_status filter can only target users (sent_to: user)"
+                    );
+                }
+            }
 
             // Prefer uploaded file; fall back to image URL from body
             let imageUrl =
@@ -310,7 +390,7 @@ Adminappmiddleware.app = {
                 if (!tokenObjects.length) return null;
                 return sendPushNotification({
                     dedupeKey: `admin:${notificationId}`,
-                    rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}`,
+                    rapidDedupeKey: `admin:rapid:broadcast:${hashNotificationContent(title, description)}:${sent_to || "all"}:${loyaltyStatusStored || "any"}`,
                     recipients: tokenObjects,
                     title,
                     body: description,
@@ -319,16 +399,29 @@ Adminappmiddleware.app = {
                     persistLogs: true,
                     notificationOnly: true,
                     debugTraceId: traceId,
-                    debugContext: `admin_broadcast:${sent_to}`,
+                    debugContext: `admin_broadcast:${sent_to}${loyaltyStatusStored ? `:loyalty:${loyaltyStatusStored}` : ""}`,
                 });
             };
             /* ------------------------------------------
                Fetch Users & Partners Once
             -------------------------------------------*/
+            const effectiveSentTo =
+                loyaltyStatuses.length > 0 ? "user" : sent_to;
+
             const [users, partners] = await Promise.all([
-                adminDbController.app.getallusersdeviceId(),
-                adminDbController.app.getallpartnerdeviceId()
+                loyaltyStatuses.length > 0
+                    ? adminDbController.app.getUsersByLoyaltyStatus(loyaltyStatuses)
+                    : adminDbController.app.getallusersdeviceId(),
+                loyaltyStatuses.length > 0
+                    ? Promise.resolve([])
+                    : adminDbController.app.getallpartnerdeviceId(),
             ]);
+
+            if (loyaltyStatuses.length > 0 && (!users || users.length === 0)) {
+                throw Error.NotFound(
+                    `No active users found for loyalty_status: ${loyaltyStatusStored}`
+                );
+            }
 
             let tokenArray = [];
             let userLogs = [];
@@ -345,7 +438,8 @@ Adminappmiddleware.app = {
                 const adminNotification = await adminDbController.app.addnotificationlogsadmin({
                     store_id,
                     notification_type,
-                    sent_to,
+                    sent_to: effectiveSentTo,
+                    loyalty_status: loyaltyStatusStored,
                     title,
                     description,
                     date: new Date()
@@ -356,7 +450,8 @@ Adminappmiddleware.app = {
 
                 logPushDebug(pushTraceId, "broadcast_start", {
                     notificationId,
-                    sent_to,
+                    sent_to: effectiveSentTo,
+                    loyalty_status: loyaltyStatusStored,
                     notification_type,
                     title: title?.slice(0, 80),
                     activeUsersQueried: users.length,
@@ -366,7 +461,7 @@ Adminappmiddleware.app = {
                 const userTokenEntries = [];
                 const partnerTokenEntries = [];
 
-                if (sent_to === "all" || sent_to === "user") {
+                if (effectiveSentTo === "all" || effectiveSentTo === "user") {
                     users.forEach(userItem => {
                         const token = getLatestFcmToken(userItem.device_id);
                         if (token) {
@@ -390,7 +485,7 @@ Adminappmiddleware.app = {
                     });
                 }
 
-                if (sent_to === "all" || sent_to === "store") {
+                if (effectiveSentTo === "all" || effectiveSentTo === "store") {
                     partners.forEach(partnerItem => {
                         const token = getLatestFcmToken(partnerItem.deviceId);
                         if (token) {
@@ -464,7 +559,16 @@ Adminappmiddleware.app = {
                 if (partnerLogs.length)
                     await userDbController.app.addnotificationlogspartner_1(partnerLogs);
 
-                return "Notification Sent Successfully";
+                return {
+                    message: "Notification Sent Successfully",
+                    notification_id: notificationId,
+                    loyalty_status: loyaltyStatusStored,
+                    recipients: {
+                        users: userLogs.length,
+                        partners: partnerLogs.length,
+                        push_tokens: tokenArray.length,
+                    },
+                };
             }
 
             /* ======================================================
@@ -532,7 +636,12 @@ Adminappmiddleware.app = {
             return "Invalid Notification Type";
 
         } catch (error) {
-            throw Error.SomethingWentWrong("Wrong Notification Type");
+            // Re-throw typed ApplicationErrors (BadRequest, NotFound, etc.)
+            if (error?.code) {
+                throw error;
+            }
+            console.error("addnotification error:", error);
+            throw Error.SomethingWentWrong(error?.message || "Wrong Notification Type");
         }
     },
 
@@ -876,6 +985,44 @@ Adminappmiddleware.app = {
             if (error.status) throw error;
             console.error("sendVideoMarketingWhatsapp error:", error);
             throw Error.SomethingWentWrong(error.message || "Failed to send video marketing broadcast");
+        }
+    },
+
+    // Two fixed, DLT-approved SMS templates — content is registered with
+    // MSG91/DLT and must never be edited here, only the recipient sheet
+    // and which of the two templates (partner vs user) changes.
+    sendMarketingSMS: async ({ body, files }) => {
+        try {
+            const PARTNER_SMS_TEMPLATE_ID = "6a92d076c536940c01035502";
+            const USER_SMS_TEMPLATE_ID = "6a92c074ff9d6606370da395";
+
+            const excelFile = files?.excel?.[0];
+            if (!excelFile) {
+                throw Error.BadRequest("Excel file (field name 'excel') is required");
+            }
+
+            const recipientType = (body.recipient_type || "").toString().trim().toLowerCase();
+            if (!["partner", "user"].includes(recipientType)) {
+                throw Error.BadRequest("recipient_type must be 'partner' or 'user'");
+            }
+            const templateId = recipientType === "partner" ? PARTNER_SMS_TEMPLATE_ID : USER_SMS_TEMPLATE_ID;
+
+            const recipients = parseUsersFromExcel(excelFile.buffer);
+            if (!recipients.length) {
+                throw Error.BadRequest("No valid rows (with a phone number) found in the excel sheet");
+            }
+
+            const result = await messagingFunction.sendMarketingSMS({ recipients, templateId });
+
+            return {
+                message: "Marketing SMS broadcast processed",
+                recipient_type: recipientType,
+                ...result,
+            };
+        } catch (error) {
+            if (error.status) throw error;
+            console.error("sendMarketingSMS error:", error);
+            throw Error.SomethingWentWrong(error.message || "Failed to send marketing SMS");
         }
     },
 
