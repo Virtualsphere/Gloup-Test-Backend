@@ -66,6 +66,17 @@ function resolveInvoiceMonthRange(monthInput) {
   return { month: `${year}-${pad(month)}`, fromDate, toDate };
 }
 
+/** Last N calendar months as "YYYY-MM" strings, oldest first, ending this month. */
+function buildLastNMonths(n) {
+  const months = [];
+  const now = new Date();
+  for (let i = n - 1; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  }
+  return months;
+}
+
 
 
 export class adminDbController { }
@@ -1164,6 +1175,132 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       };
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch loyalty status counts");
+    }
+  },
+  // Dashboard "Customer Segments" donut — reuses getLoyaltyStatusCounts,
+  // folds new_user+first_booking into one "New User" bucket (mockup only
+  // has 5 labeled slots; a single-booking customer hasn't repeated yet),
+  // and adds an "Inactive" bucket from User.status (separate from
+  // loyalty_status) so every account is counted exactly once.
+  getCustomerSegments: async () => {
+    try {
+      const { tiers, total: activeTotal } = await adminDbController.app.getLoyaltyStatusCounts();
+      const inactiveCount = await adminDbController.Models.User.count({
+        where: { status: "inactive" },
+      });
+
+      const segmentDefs = [
+        { key: "new_user", label: "New User", count: tiers.new_user + tiers.first_booking, color: "#10B981" },
+        { key: "repeat_user", label: "Repeat User", count: tiers.repeat, color: "#3B82F6" },
+        { key: "loyal_user", label: "Loyal User", count: tiers.loyal, color: "#F59E0B" },
+        { key: "vip_user", label: "VIP User", count: tiers.vip, color: "#EF4444" },
+        { key: "inactive", label: "Inactive", count: inactiveCount, color: "#9CA3AF" },
+      ];
+
+      const grandTotal = activeTotal + inactiveCount;
+      const segments = segmentDefs.map((s) => ({
+        ...s,
+        percentage: grandTotal > 0 ? Number(((s.count / grandTotal) * 100).toFixed(1)) : 0,
+      }));
+
+      return { segments, total: grandTotal };
+    } catch (error) {
+      console.log("🚀 ~ getCustomerSegments error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer segments");
+    }
+  },
+  // % of each month's bookers who had already booked before (repeat rate),
+  // last 6 months, zero-filled. Uses ROW_NUMBER() per user ordered by
+  // booking_date to determine which bookings are a user's 2nd-or-later.
+  getRepeatBookingRateByMonth: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT month, SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS repeat_count, COUNT(*) AS total_count
+        FROM (
+          SELECT
+            user_id,
+            DATE_FORMAT(booking_date, '%Y-%m-01') AS month,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')
+        GROUP BY month
+        ORDER BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const byMonth = new Map(
+        rows.map((r) => [
+          r.month.slice(0, 7),
+          r.total_count > 0 ? Number(((r.repeat_count / r.total_count) * 100).toFixed(1)) : 0,
+        ])
+      );
+
+      return buildLastNMonths(6).map((month) => ({
+        month,
+        repeat_rate: byMonth.get(month) || 0,
+      }));
+    } catch (error) {
+      console.log("🚀 ~ getRepeatBookingRateByMonth error:", error);
+      throw Error.SomethingWentWrong("Failed to compute repeat booking rate by month");
+    }
+  },
+  // 6-month trend series backing the dashboard's sparkline stat cards.
+  getDashboardTrends: async () => {
+    try {
+      const monthFloor = `DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')`;
+
+      const usersRows = await adminDbController.connection.query(
+        `
+        SELECT DATE_FORMAT(createdAt, '%Y-%m') AS month, COUNT(*) AS value
+        FROM \`User\`
+        WHERE createdAt >= ${monthFloor}
+        GROUP BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const bookingRows = await adminDbController.connection.query(
+        `
+        SELECT
+          month,
+          SUM(CASE WHEN rn = 1 THEN 1 ELSE 0 END) AS first_time_value,
+          SUM(CASE WHEN rn > 1 THEN 1 ELSE 0 END) AS repeat_value,
+          COUNT(*) AS bookings_value
+        FROM (
+          SELECT
+            user_id,
+            DATE_FORMAT(booking_date, '%Y-%m') AS month,
+            ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m')
+        GROUP BY month
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const usersByMonth = new Map(usersRows.map((r) => [r.month, Number(r.value) || 0]));
+      const firstTimeByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.first_time_value) || 0]));
+      const repeatByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.repeat_value) || 0]));
+      const bookingsByMonth = new Map(bookingRows.map((r) => [r.month, Number(r.bookings_value) || 0]));
+
+      const months = buildLastNMonths(6);
+      const seriesFrom = (map) => months.map((month) => ({ month, value: map.get(month) || 0 }));
+
+      return {
+        users_by_month: seriesFrom(usersByMonth),
+        first_time_by_month: seriesFrom(firstTimeByMonth),
+        repeat_by_month: seriesFrom(repeatByMonth),
+        bookings_by_month: seriesFrom(bookingsByMonth),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getDashboardTrends error:", error);
+      throw Error.SomethingWentWrong("Failed to compute dashboard trends");
     }
   },
   getUserByIdForNotification: async (userId) => {

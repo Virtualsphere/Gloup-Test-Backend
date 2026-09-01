@@ -165,6 +165,9 @@ Adminappmiddleware.app = {
             const customerFunnel = await adminDbController.app.getCustomerFunnel(body);
             const avgDaysBetweenVisits = await adminDbController.app.getAvgDaysBetweenVisits(body);
             const avgClv = await adminDbController.app.getCustomerLifetimeValue(body);
+            const customerSegments = await adminDbController.app.getCustomerSegments(body);
+            const repeatBookingRateByMonth = await adminDbController.app.getRepeatBookingRateByMonth(body);
+            const dashboardTrends = await adminDbController.app.getDashboardTrends(body);
 
             const monthlyRevenueResult = await adminDbController.app.getmonthlysales(year);
             //console.log("🚀 ~ getdashboard:async ~ monthlyRevenueResult:", monthlyRevenueResult)
@@ -203,13 +206,17 @@ Adminappmiddleware.app = {
                 totalgendersales: getgendersales,
                 active_bookings_today: activebookingstoday,
                 cancelled_refunded_orders: cancelledrefundedorders,
+                top_salon: topsalloons?.[0] || null,
                 customer_funnel: {
                     stages: customerFunnel.stages,
                     avg_bookings_per_user: customerFunnel.avg_bookings_per_user,
                     avg_days_between_visits: avgDaysBetweenVisits,
                     avg_order_value: avearageordervalue,
                     avg_clv: avgClv,
-                }
+                },
+                customer_segments: customerSegments,
+                repeat_booking_rate_by_month: repeatBookingRateByMonth,
+                dashboard_trends: dashboardTrends,
             }
 
             return result;
