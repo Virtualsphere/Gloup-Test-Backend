@@ -258,8 +258,14 @@ adminDbController.auth = {
 adminDbController.app = {
   getallusers: async (body) => {
     try {
+      const where = {};
+      if (body?.min_bookings != null && body.min_bookings !== "") {
+        where.paid_booking_count = { [Op.gte]: Number(body.min_bookings) };
+      }
+
       return await adminDbController.Models.User.findAll({
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count'],
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'loyalty_status', 'paid_booking_count'],
+        where,
         order: [['id', 'DESC']]
       });
     } catch (error) {
@@ -484,6 +490,89 @@ adminDbController.app = {
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch first-booking users");
+    }
+  },
+  // Cumulative funnel: each stage is a strict subset of the one above it,
+  // derived from the same paid_booking_count thresholds that drive
+  // loyalty_status (0=new_user, 1=first_booking, 2-4=repeat, 5-9=loyal, 10+=vip).
+  getCustomerFunnel: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN loyalty_status != 'new_user' THEN 1 ELSE 0 END) AS made_booking,
+          SUM(CASE WHEN loyalty_status IN ('repeat','loyal','vip') THEN 1 ELSE 0 END) AS repeat_users,
+          SUM(CASE WHEN loyalty_status IN ('loyal','vip') THEN 1 ELSE 0 END) AS loyal_users,
+          SUM(CASE WHEN loyalty_status = 'vip' THEN 1 ELSE 0 END) AS vip_users,
+          AVG(CASE WHEN paid_booking_count > 0 THEN paid_booking_count END) AS avg_bookings_per_user
+        FROM \`User\`
+        WHERE status = 'active'
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+
+      const row = rows[0] || {};
+      const total = Number(row.total || 0);
+      const pct = (n) => (total > 0 ? Number(((n / total) * 100).toFixed(1)) : 0);
+
+      const stageDefs = [
+        { key: "total_users", label: "Total Users", min_bookings: 0, count: total },
+        { key: "made_booking", label: "Made a Booking", min_bookings: 1, count: Number(row.made_booking || 0) },
+        { key: "repeat_users", label: "Repeat Users", min_bookings: 2, count: Number(row.repeat_users || 0) },
+        { key: "loyal_users", label: "Loyal Customers", min_bookings: 5, count: Number(row.loyal_users || 0) },
+        { key: "vip_users", label: "VIP Customers", min_bookings: 10, count: Number(row.vip_users || 0) },
+      ].map((s) => ({ ...s, percentage: pct(s.count) }));
+
+      return {
+        stages: stageDefs,
+        avg_bookings_per_user: row.avg_bookings_per_user != null ? Number(Number(row.avg_bookings_per_user).toFixed(1)) : 0,
+      };
+    } catch (error) {
+      console.log("🚀 ~ getCustomerFunnel error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer funnel");
+    }
+  },
+  getAvgDaysBetweenVisits: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT AVG(gap_days) AS avg_days_between_visits FROM (
+          SELECT
+            user_id,
+            DATEDIFF(booking_date, LAG(booking_date) OVER (PARTITION BY user_id ORDER BY booking_date)) AS gap_days
+          FROM appointments
+          WHERE status = 'completed'
+        ) t
+        WHERE gap_days > 0
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const value = rows[0]?.avg_days_between_visits;
+      return value != null ? Number(Number(value).toFixed(1)) : 0;
+    } catch (error) {
+      console.log("🚀 ~ getAvgDaysBetweenVisits error:", error);
+      throw Error.SomethingWentWrong("Failed to compute average days between visits");
+    }
+  },
+  getCustomerLifetimeValue: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT AVG(user_total) AS avg_clv FROM (
+          SELECT user_id, SUM(amount) AS user_total
+          FROM appointments
+          WHERE status = 'completed'
+          GROUP BY user_id
+        ) t
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const value = rows[0]?.avg_clv;
+      return value != null ? Number(Number(value).toFixed(2)) : 0;
+    } catch (error) {
+      console.log("🚀 ~ getCustomerLifetimeValue error:", error);
+      throw Error.SomethingWentWrong("Failed to compute customer lifetime value");
     }
   },
   getactivebookingstoday: async () => {

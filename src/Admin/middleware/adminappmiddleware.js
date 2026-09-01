@@ -162,6 +162,10 @@ Adminappmiddleware.app = {
 
             const cancelledrefundedorders = await adminDbController.app.getcancelledrefundedorders(body);
 
+            const customerFunnel = await adminDbController.app.getCustomerFunnel(body);
+            const avgDaysBetweenVisits = await adminDbController.app.getAvgDaysBetweenVisits(body);
+            const avgClv = await adminDbController.app.getCustomerLifetimeValue(body);
+
             const monthlyRevenueResult = await adminDbController.app.getmonthlysales(year);
             //console.log("🚀 ~ getdashboard:async ~ monthlyRevenueResult:", monthlyRevenueResult)
 
@@ -198,7 +202,14 @@ Adminappmiddleware.app = {
                 total_sales_count: totalsalescount,
                 totalgendersales: getgendersales,
                 active_bookings_today: activebookingstoday,
-                cancelled_refunded_orders: cancelledrefundedorders
+                cancelled_refunded_orders: cancelledrefundedorders,
+                customer_funnel: {
+                    stages: customerFunnel.stages,
+                    avg_bookings_per_user: customerFunnel.avg_bookings_per_user,
+                    avg_days_between_visits: avgDaysBetweenVisits,
+                    avg_order_value: avearageordervalue,
+                    avg_clv: avgClv,
+                }
             }
 
             return result;
