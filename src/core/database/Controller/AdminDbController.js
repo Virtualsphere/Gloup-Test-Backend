@@ -1255,9 +1255,9 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
 
       const usersRows = await adminDbController.connection.query(
         `
-        SELECT DATE_FORMAT(createdAt, '%Y-%m') AS month, COUNT(*) AS value
+        SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, COUNT(*) AS value
         FROM \`User\`
-        WHERE createdAt >= ${monthFloor}
+        WHERE created_at >= ${monthFloor}
         GROUP BY month
         `,
         { type: Sequelize.QueryTypes.SELECT }
