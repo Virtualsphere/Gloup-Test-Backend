@@ -1253,11 +1253,15 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     try {
       const monthFloor = `DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')`;
 
+      // User has no signup-date column at all (timestamps: false on the
+      // model) — there is genuinely no way to compute "new signups per
+      // month". Using distinct active bookers per month instead (real data,
+      // from appointments.booking_date) rather than fabricating a trend.
       const usersRows = await adminDbController.connection.query(
         `
-        SELECT DATE_FORMAT(created_at, '%Y-%m') AS month, COUNT(*) AS value
-        FROM \`User\`
-        WHERE created_at >= ${monthFloor}
+        SELECT DATE_FORMAT(booking_date, '%Y-%m') AS month, COUNT(DISTINCT user_id) AS value
+        FROM appointments
+        WHERE status = 'completed' AND booking_date >= ${monthFloor}
         GROUP BY month
         `,
         { type: Sequelize.QueryTypes.SELECT }
