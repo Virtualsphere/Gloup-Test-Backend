@@ -31,9 +31,11 @@ import {
   updateServiceAmount,
   getGenderProbabilityUsers,
   updateUserGender,
-  getCategoryDiscounts,
-  setCategoryDiscount,
-  clearCategoryDiscount,
+  getCategoryDiscountOverview,
+  getCategoryDiscountHistory,
+  addCategoryDiscount,
+  endCategoryDiscountNow,
+  cancelScheduledCategoryDiscount,
   getAdvancedSearch,
   getallcategory,
   getallcoupons,
@@ -168,9 +170,11 @@ approutes.post('/updateserviceimportant', verifyadmin, updateServiceImportant);
 approutes.post('/updateserviceamount', verifyadmin, updateServiceAmount);
 approutes.post('/getgenderprobabilityusers', verifyadmin, getGenderProbabilityUsers);
 approutes.post('/updateusergender', verifyadmin, updateUserGender);
-approutes.post('/getcategorydiscounts', verifyadmin, getCategoryDiscounts);
-approutes.post('/setcategorydiscount', verifyadmin, setCategoryDiscount);
-approutes.post('/clearcategorydiscount', verifyadmin, clearCategoryDiscount);
+approutes.post('/getcategorydiscountoverview', verifyadmin, getCategoryDiscountOverview);
+approutes.post('/getcategorydiscounthistory', verifyadmin, getCategoryDiscountHistory);
+approutes.post('/addcategorydiscount', verifyadmin, addCategoryDiscount);
+approutes.post('/endcategorydiscountnow', verifyadmin, endCategoryDiscountNow);
+approutes.post('/cancelscheduledcategorydiscount', verifyadmin, cancelScheduledCategoryDiscount);
 approutes.post('/getservicecategorylist', verifyadmin, getservicecategorylist);
 approutes.post('/updateservicecategoryimage', verifyadmin, S3upload.single('image'), updateservicecategoryimage);
 approutes.post("/getservices", verifyadmin, getservices);

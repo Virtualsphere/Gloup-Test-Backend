@@ -1,5 +1,5 @@
 import * as Models from "../database/models/index.js";
-const { Servicecategory } = Models;
+const { CategoryDiscounts } = Models;
 import sequelize from "sequelize";
 const { Op } = sequelize;
 
@@ -46,19 +46,21 @@ export function resolveDiscountedAmount(service, bookingCount, categoryDiscountP
 }
 
 /**
- * Every service category currently inside its admin-set discount window
- * (discount_starts_at <= now <= discount_ends_at), as a Map<category_id, percent>.
+ * Every service category currently inside an active CategoryDiscounts
+ * window (starts_at <= now <= ends_at), as a Map<category_id, percent>.
+ * Overlapping windows are rejected at save time (see addCategoryDiscount in
+ * AdminDbController.js), so at most one row per category can match here.
  * Call once per request and look up per service — cheap, small table.
  */
 export async function getActiveCategoryDiscountsMap() {
-  const rows = await Servicecategory.findAll({
+  const now = new Date();
+  const rows = await CategoryDiscounts.findAll({
     where: {
-      discount_percent: { [Op.not]: null },
-      discount_starts_at: { [Op.lte]: new Date() },
-      discount_ends_at: { [Op.gte]: new Date() },
+      starts_at: { [Op.lte]: now },
+      ends_at: { [Op.gte]: now },
     },
-    attributes: ["id", "discount_percent"],
+    attributes: ["category_id", "discount_percent"],
     raw: true,
   });
-  return new Map(rows.map((r) => [r.id, Number(r.discount_percent)]));
+  return new Map(rows.map((r) => [r.category_id, Number(r.discount_percent)]));
 }

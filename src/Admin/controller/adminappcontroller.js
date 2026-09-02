@@ -1578,8 +1578,8 @@ export const updateUserGender = async(req, res) => {
         });
 }
 
-export const getCategoryDiscounts = async(req, res) => {
-    Adminappmiddleware.app.getCategoryDiscounts(req)
+export const getCategoryDiscountOverview = async(req, res) => {
+    Adminappmiddleware.app.getCategoryDiscountOverview(req)
         .then((data) => {
             const response = ApplicationResult.forCreated();
             var statuscode = 0;
@@ -1597,8 +1597,8 @@ export const getCategoryDiscounts = async(req, res) => {
         });
 }
 
-export const setCategoryDiscount = async(req, res) => {
-    Adminappmiddleware.app.setCategoryDiscount(req)
+export const getCategoryDiscountHistory = async(req, res) => {
+    Adminappmiddleware.app.getCategoryDiscountHistory(req)
         .then((data) => {
             const response = ApplicationResult.forCreated();
             var statuscode = 0;
@@ -1616,8 +1616,46 @@ export const setCategoryDiscount = async(req, res) => {
         });
 }
 
-export const clearCategoryDiscount = async(req, res) => {
-    Adminappmiddleware.app.clearCategoryDiscount(req)
+export const addCategoryDiscount = async(req, res) => {
+    Adminappmiddleware.app.addCategoryDiscount(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const endCategoryDiscountNow = async(req, res) => {
+    Adminappmiddleware.app.endCategoryDiscountNow(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const cancelScheduledCategoryDiscount = async(req, res) => {
+    Adminappmiddleware.app.cancelScheduledCategoryDiscount(req)
         .then((data) => {
             const response = ApplicationResult.forCreated();
             var statuscode = 0;

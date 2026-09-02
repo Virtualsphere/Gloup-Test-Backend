@@ -2949,31 +2949,74 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
 },
   // Time-limited, category-wide discount that overrides tier/default pricing
   // while active — see servicePricing.js getActiveCategoryDiscountsMap for
-  // the checkout-side logic that actually applies this.
-  getCategoryDiscounts: async () => {
+  // the checkout-side logic that actually applies this. Stored as one row
+  // per campaign in CategoryDiscounts, so "current"/"upcoming"/"history"
+  // are all just different views of the same rows.
+  getCategoryDiscountOverview: async () => {
     try {
       const categories = await adminDbController.Models.Servicecategory.findAll({
-        attributes: ["id", "name", "status", "discount_percent", "discount_starts_at", "discount_ends_at"],
+        attributes: ["id", "name", "status"],
         order: [["name", "ASC"]],
         raw: true,
       });
 
+      const allDiscounts = await adminDbController.Models.CategoryDiscounts.findAll({
+        attributes: ["id", "category_id", "discount_percent", "starts_at", "ends_at"],
+        raw: true,
+      });
+
       const now = new Date();
-      return categories.map((c) => ({
-        ...c,
-        is_active:
-          c.discount_percent != null &&
-          c.discount_starts_at != null &&
-          c.discount_ends_at != null &&
-          new Date(c.discount_starts_at) <= now &&
-          new Date(c.discount_ends_at) >= now,
-      }));
+      return categories.map((cat) => {
+        const rows = allDiscounts.filter((d) => d.category_id === cat.id);
+        const active =
+          rows.find((d) => new Date(d.starts_at) <= now && new Date(d.ends_at) >= now) || null;
+        const upcoming_count = rows.filter((d) => new Date(d.starts_at) > now).length;
+        const past_count = rows.filter(
+          (d) => new Date(d.ends_at) < now && d.id !== active?.id
+        ).length;
+
+        return {
+          ...cat,
+          is_active: !!active,
+          active_discount: active,
+          upcoming_count,
+          past_count,
+        };
+      });
     } catch (error) {
-      console.log("🚀 ~ getCategoryDiscounts error:", error);
-      throw Error.SomethingWentWrong("Failed to fetch category discounts");
+      console.log("🚀 ~ getCategoryDiscountOverview error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch category discount overview");
     }
   },
-  setCategoryDiscount: async (data) => {
+  getCategoryDiscountHistory: async (data) => {
+    try {
+      if (!data.category_id) {
+        throw Error.BadRequest("category_id is required");
+      }
+
+      const rows = await adminDbController.Models.CategoryDiscounts.findAll({
+        where: { category_id: data.category_id },
+        order: [["starts_at", "DESC"]],
+        raw: true,
+      });
+
+      const now = new Date();
+      return rows.map((r) => ({
+        ...r,
+        state:
+          new Date(r.starts_at) <= now && new Date(r.ends_at) >= now
+            ? "active"
+            : new Date(r.starts_at) > now
+              ? "upcoming"
+              : "expired",
+      }));
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getCategoryDiscountHistory error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch category discount history");
+    }
+  },
+  addCategoryDiscount: async (data) => {
     try {
       if (!data.category_id) {
         throw Error.BadRequest("category_id is required");
@@ -3000,47 +3043,90 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
         throw Error.BadRequest("ends_at must be after starts_at");
       }
 
-      await adminDbController.Models.Servicecategory.update(
-        {
-          discount_percent: percent,
-          discount_starts_at: startsAt,
-          discount_ends_at: endsAt,
+      // Overlap check: reject if any existing window for this category
+      // intersects the requested one (back-to-back windows are allowed).
+      const conflicts = await adminDbController.Models.CategoryDiscounts.findAll({
+        where: {
+          category_id: data.category_id,
+          starts_at: { [Op.lt]: endsAt },
+          ends_at: { [Op.gt]: startsAt },
         },
-        { where: { id: data.category_id } }
-      );
+        raw: true,
+      });
+      if (conflicts.length > 0) {
+        const conflict = conflicts[0];
+        throw Error.BadRequest(
+          `Conflicts with an existing ${Number(conflict.discount_percent)}% discount running ` +
+          `${new Date(conflict.starts_at).toLocaleString()} to ${new Date(conflict.ends_at).toLocaleString()}`
+        );
+      }
 
-      return {
+      const created = await adminDbController.Models.CategoryDiscounts.create({
         category_id: data.category_id,
         discount_percent: percent,
-        discount_starts_at: startsAt,
-        discount_ends_at: endsAt,
-      };
+        starts_at: startsAt,
+        ends_at: endsAt,
+        created_by: data.created_by ?? null,
+        created_at: new Date(),
+      });
+
+      return created.get({ plain: true });
     } catch (error) {
       if (error.status) throw error;
-      console.log("🚀 ~ setCategoryDiscount error:", error);
-      throw Error.SomethingWentWrong("Failed to set category discount");
+      console.log("🚀 ~ addCategoryDiscount error:", error);
+      throw Error.SomethingWentWrong("Failed to add category discount");
     }
   },
-  clearCategoryDiscount: async (data) => {
+  endCategoryDiscountNow: async (data) => {
     try {
       if (!data.category_id) {
         throw Error.BadRequest("category_id is required");
       }
 
-      await adminDbController.Models.Servicecategory.update(
+      const now = new Date();
+      const [affected] = await adminDbController.Models.CategoryDiscounts.update(
+        { ends_at: now },
         {
-          discount_percent: null,
-          discount_starts_at: null,
-          discount_ends_at: null,
-        },
-        { where: { id: data.category_id } }
+          where: {
+            category_id: data.category_id,
+            starts_at: { [Op.lte]: now },
+            ends_at: { [Op.gte]: now },
+          },
+        }
       );
+      if (affected === 0) {
+        throw Error.NotFound("No active discount found for this category");
+      }
 
-      return { category_id: data.category_id };
+      return { category_id: data.category_id, ended_at: now };
     } catch (error) {
       if (error.status) throw error;
-      console.log("🚀 ~ clearCategoryDiscount error:", error);
-      throw Error.SomethingWentWrong("Failed to clear category discount");
+      console.log("🚀 ~ endCategoryDiscountNow error:", error);
+      throw Error.SomethingWentWrong("Failed to end category discount");
+    }
+  },
+  cancelScheduledCategoryDiscount: async (data) => {
+    try {
+      if (!data.id) {
+        throw Error.BadRequest("id is required");
+      }
+
+      const row = await adminDbController.Models.CategoryDiscounts.findByPk(data.id);
+      if (!row) {
+        throw Error.NotFound("Discount not found");
+      }
+      if (new Date(row.starts_at) <= new Date()) {
+        throw Error.BadRequest(
+          "Only a not-yet-started discount can be cancelled — use 'end now' for one that's currently running"
+        );
+      }
+
+      await row.destroy();
+      return { id: data.id };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ cancelScheduledCategoryDiscount error:", error);
+      throw Error.SomethingWentWrong("Failed to cancel scheduled category discount");
     }
   },
   createpartner: async (data, images, docs) => {

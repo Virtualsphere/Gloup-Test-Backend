@@ -1897,31 +1897,52 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to update user gender");
         }
     },
-    getCategoryDiscounts: async () => {
+    getCategoryDiscountOverview: async () => {
         try {
-            return await adminDbController.app.getCategoryDiscounts();
+            return await adminDbController.app.getCategoryDiscountOverview();
         } catch (error) {
             if (error.status) throw error;
-            console.log("🚀 ~ getCategoryDiscounts:async ~ error:", error);
-            throw Error.SomethingWentWrong("Failed to fetch category discounts");
+            console.log("🚀 ~ getCategoryDiscountOverview:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch category discount overview");
         }
     },
-    setCategoryDiscount: async ({ body }) => {
+    getCategoryDiscountHistory: async ({ body }) => {
         try {
-            return await adminDbController.app.setCategoryDiscount(body || {});
+            return await adminDbController.app.getCategoryDiscountHistory(body || {});
         } catch (error) {
             if (error.status) throw error;
-            console.log("🚀 ~ setCategoryDiscount:async ~ error:", error);
-            throw Error.SomethingWentWrong("Failed to set category discount");
+            console.log("🚀 ~ getCategoryDiscountHistory:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch category discount history");
         }
     },
-    clearCategoryDiscount: async ({ body }) => {
+    addCategoryDiscount: async ({ body, user }) => {
         try {
-            return await adminDbController.app.clearCategoryDiscount(body || {});
+            return await adminDbController.app.addCategoryDiscount({
+                ...(body || {}),
+                created_by: user?.id ?? null,
+            });
         } catch (error) {
             if (error.status) throw error;
-            console.log("🚀 ~ clearCategoryDiscount:async ~ error:", error);
-            throw Error.SomethingWentWrong("Failed to clear category discount");
+            console.log("🚀 ~ addCategoryDiscount:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to add category discount");
+        }
+    },
+    endCategoryDiscountNow: async ({ body }) => {
+        try {
+            return await adminDbController.app.endCategoryDiscountNow(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ endCategoryDiscountNow:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to end category discount");
+        }
+    },
+    cancelScheduledCategoryDiscount: async ({ body }) => {
+        try {
+            return await adminDbController.app.cancelScheduledCategoryDiscount(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ cancelScheduledCategoryDiscount:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to cancel scheduled category discount");
         }
     },
     getalluserbooking: async ({ body, user }) => {
