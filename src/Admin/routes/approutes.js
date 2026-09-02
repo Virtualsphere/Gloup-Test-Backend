@@ -31,6 +31,9 @@ import {
   updateServiceAmount,
   getGenderProbabilityUsers,
   updateUserGender,
+  getCategoryDiscounts,
+  setCategoryDiscount,
+  clearCategoryDiscount,
   getAdvancedSearch,
   getallcategory,
   getallcoupons,
@@ -165,6 +168,9 @@ approutes.post('/updateserviceimportant', verifyadmin, updateServiceImportant);
 approutes.post('/updateserviceamount', verifyadmin, updateServiceAmount);
 approutes.post('/getgenderprobabilityusers', verifyadmin, getGenderProbabilityUsers);
 approutes.post('/updateusergender', verifyadmin, updateUserGender);
+approutes.post('/getcategorydiscounts', verifyadmin, getCategoryDiscounts);
+approutes.post('/setcategorydiscount', verifyadmin, setCategoryDiscount);
+approutes.post('/clearcategorydiscount', verifyadmin, clearCategoryDiscount);
 approutes.post('/getservicecategorylist', verifyadmin, getservicecategorylist);
 approutes.post('/updateservicecategoryimage', verifyadmin, S3upload.single('image'), updateservicecategoryimage);
 approutes.post("/getservices", verifyadmin, getservices);

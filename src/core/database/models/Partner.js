@@ -769,7 +769,19 @@ Servicecategory.init({
   imageKey: {
     type: DataTypes.STRING,
     allowNull: true,
-  }
+  },
+  discount_percent: {
+    type: DataTypes.DECIMAL(5, 2),
+    allowNull: true,
+  },
+  discount_starts_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  discount_ends_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   sequelize: connection,
   freezeTableName: true,

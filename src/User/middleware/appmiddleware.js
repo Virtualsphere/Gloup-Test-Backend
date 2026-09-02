@@ -16,7 +16,7 @@ import axios from "axios";
 import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
-import { resolveDiscountedAmount } from "../../core/utils/servicePricing.js";
+import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../core/utils/servicePricing.js";
 
 
 const admin = require('firebase-admin');
@@ -711,8 +711,13 @@ userappmiddleware.user = {
             const getservices = await userDbController.app.getservices(body);
             const bookingCountForPricing = user?.paid_booking_count ?? null;
             if (Array.isArray(getservices)) {
+                const categoryDiscounts = await getActiveCategoryDiscountsMap();
                 getservices.forEach((item) => {
-                    item.discounted_amount = resolveDiscountedAmount(item, bookingCountForPricing);
+                    item.discounted_amount = resolveDiscountedAmount(
+                        item,
+                        bookingCountForPricing,
+                        categoryDiscounts.get(item.service_category)
+                    );
                 });
             }
             const getallproffesionals = await userDbController.app.getallprofessionals(body);
@@ -1249,11 +1254,16 @@ userappmiddleware.user = {
             // Resolve each service's tier-appropriate discount once, up front,
             // so the subtotal calc below and the item-amount calc further down
             // both see the same already-resolved discounted_amount.
+            const categoryDiscountsV2 = await getActiveCategoryDiscountsMap();
             const resolvedDbServices = dbServices.map(s => {
                 const plain = s.get ? s.get({ plain: true }) : s;
                 return {
                     ...plain,
-                    discounted_amount: resolveDiscountedAmount(plain, user.paid_booking_count),
+                    discounted_amount: resolveDiscountedAmount(
+                        plain,
+                        user.paid_booking_count,
+                        categoryDiscountsV2.get(plain.service_category)
+                    ),
                 };
             });
 
@@ -2755,10 +2765,15 @@ userappmiddleware.user = {
             console.log("Raw languages from DB:", languages);
 
             const bookingCountForPricing = user?.paid_booking_count ?? null;
+            const categoryDiscountsListing = await getActiveCategoryDiscountsMap();
             const pricedServices = Array.isArray(services)
                 ? services.map((s) => ({
                     ...s,
-                    discounted_amount: resolveDiscountedAmount(s, bookingCountForPricing),
+                    discounted_amount: resolveDiscountedAmount(
+                        s,
+                        bookingCountForPricing,
+                        categoryDiscountsListing.get(s.service_category)
+                    ),
                 }))
                 : services;
 

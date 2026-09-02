@@ -2947,6 +2947,102 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
     throw new Error("Failed to fetch service categories");
   }
 },
+  // Time-limited, category-wide discount that overrides tier/default pricing
+  // while active — see servicePricing.js getActiveCategoryDiscountsMap for
+  // the checkout-side logic that actually applies this.
+  getCategoryDiscounts: async () => {
+    try {
+      const categories = await adminDbController.Models.Servicecategory.findAll({
+        attributes: ["id", "name", "status", "discount_percent", "discount_starts_at", "discount_ends_at"],
+        order: [["name", "ASC"]],
+        raw: true,
+      });
+
+      const now = new Date();
+      return categories.map((c) => ({
+        ...c,
+        is_active:
+          c.discount_percent != null &&
+          c.discount_starts_at != null &&
+          c.discount_ends_at != null &&
+          new Date(c.discount_starts_at) <= now &&
+          new Date(c.discount_ends_at) >= now,
+      }));
+    } catch (error) {
+      console.log("🚀 ~ getCategoryDiscounts error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch category discounts");
+    }
+  },
+  setCategoryDiscount: async (data) => {
+    try {
+      if (!data.category_id) {
+        throw Error.BadRequest("category_id is required");
+      }
+      const percent = Number(data.discount_percent);
+      if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+        throw Error.BadRequest("discount_percent must be between 1 and 100");
+      }
+      if (!data.ends_at) {
+        throw Error.BadRequest("ends_at is required");
+      }
+
+      const category = await adminDbController.Models.Servicecategory.findByPk(data.category_id);
+      if (!category) {
+        throw Error.NotFound("Category not found");
+      }
+
+      const startsAt = data.starts_at ? new Date(data.starts_at) : new Date();
+      const endsAt = new Date(data.ends_at);
+      if (isNaN(endsAt.getTime()) || (data.starts_at && isNaN(startsAt.getTime()))) {
+        throw Error.BadRequest("Invalid date/time");
+      }
+      if (endsAt <= startsAt) {
+        throw Error.BadRequest("ends_at must be after starts_at");
+      }
+
+      await adminDbController.Models.Servicecategory.update(
+        {
+          discount_percent: percent,
+          discount_starts_at: startsAt,
+          discount_ends_at: endsAt,
+        },
+        { where: { id: data.category_id } }
+      );
+
+      return {
+        category_id: data.category_id,
+        discount_percent: percent,
+        discount_starts_at: startsAt,
+        discount_ends_at: endsAt,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ setCategoryDiscount error:", error);
+      throw Error.SomethingWentWrong("Failed to set category discount");
+    }
+  },
+  clearCategoryDiscount: async (data) => {
+    try {
+      if (!data.category_id) {
+        throw Error.BadRequest("category_id is required");
+      }
+
+      await adminDbController.Models.Servicecategory.update(
+        {
+          discount_percent: null,
+          discount_starts_at: null,
+          discount_ends_at: null,
+        },
+        { where: { id: data.category_id } }
+      );
+
+      return { category_id: data.category_id };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ clearCategoryDiscount error:", error);
+      throw Error.SomethingWentWrong("Failed to clear category discount");
+    }
+  },
   createpartner: async (data, images, docs) => {
     const transaction = await adminDbController.connection.transaction();
 

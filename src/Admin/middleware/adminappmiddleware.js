@@ -1897,6 +1897,33 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to update user gender");
         }
     },
+    getCategoryDiscounts: async () => {
+        try {
+            return await adminDbController.app.getCategoryDiscounts();
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ getCategoryDiscounts:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to fetch category discounts");
+        }
+    },
+    setCategoryDiscount: async ({ body }) => {
+        try {
+            return await adminDbController.app.setCategoryDiscount(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ setCategoryDiscount:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to set category discount");
+        }
+    },
+    clearCategoryDiscount: async ({ body }) => {
+        try {
+            return await adminDbController.app.clearCategoryDiscount(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            console.log("🚀 ~ clearCategoryDiscount:async ~ error:", error);
+            throw Error.SomethingWentWrong("Failed to clear category discount");
+        }
+    },
     getalluserbooking: async ({ body, user }) => {
         try {
             let data = []
