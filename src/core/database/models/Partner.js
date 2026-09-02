@@ -769,7 +769,46 @@ Servicecategory.init({
   imageKey: {
     type: DataTypes.STRING,
     allowNull: true,
-  }
+  },
+}, {
+  sequelize: connection,
+  freezeTableName: true,
+  timestamps: false,
+})
+
+class CategoryDiscounts extends Model { }
+
+CategoryDiscounts.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true,
+    allowNull: false,
+  },
+  category_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+  },
+  discount_percent: {
+    type: DataTypes.DECIMAL(5, 2),
+    allowNull: false,
+  },
+  starts_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+  ends_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+  created_by: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   sequelize: connection,
   freezeTableName: true,
@@ -1465,4 +1504,4 @@ PartnerSubscriptionsPayments.belongsTo(PartnerSubscriptions, {
 
 
 
-export { Store, StoreSession, PartnerAddress, StoreServices, WorkingHours, Slots, SlotBlockedDates, StoreHolidays, StoreWeeklyHolidays, Aminities, StoreAminities, Combo, Combinations, Stylist, Servicecategory, review_delete_requests, OwnerProfile, PartnerNotificationLogs, CategoryTable, HireStudent, Languages, StoreLanguages, ServicesProvidedFor, PartnerSubscriptionPlans, PartnerSubscriptionPlanfeatures, PartnerSubscriptionPlanfeatureMapping, PartnerSubscriptions, PartnerSubscriptionsPayments, Enquiry };
+export { Store, StoreSession, PartnerAddress, StoreServices, WorkingHours, Slots, SlotBlockedDates, StoreHolidays, StoreWeeklyHolidays, Aminities, StoreAminities, Combo, Combinations, Stylist, Servicecategory, CategoryDiscounts, review_delete_requests, OwnerProfile, PartnerNotificationLogs, CategoryTable, HireStudent, Languages, StoreLanguages, ServicesProvidedFor, PartnerSubscriptionPlans, PartnerSubscriptionPlanfeatures, PartnerSubscriptionPlanfeatureMapping, PartnerSubscriptions, PartnerSubscriptionsPayments, Enquiry };

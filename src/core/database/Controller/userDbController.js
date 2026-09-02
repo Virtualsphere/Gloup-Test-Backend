@@ -17,7 +17,7 @@ import {
   findClosureReason,
   weekdayName,
 } from "../../utils/storeHolidays.js";
-import { resolveDiscountedAmount } from "../../utils/servicePricing.js";
+import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../utils/servicePricing.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -1699,12 +1699,13 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         where: {
           id: data
         },
-        attributes: ["amount", "discounted_amount", "tier_discounts"]
+        attributes: ["amount", "discounted_amount", "tier_discounts", "service_category"]
       });
       if (!row) return row;
+      const categoryDiscounts = await getActiveCategoryDiscountsMap();
       return {
         amount: row.amount,
-        discounted_amount: resolveDiscountedAmount(row, bookingCount),
+        discounted_amount: resolveDiscountedAmount(row, bookingCount, categoryDiscounts.get(row.service_category)),
       };
     } catch (error) {
       throw Error.SomethingWentWrong();

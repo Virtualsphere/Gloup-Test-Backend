@@ -1,3 +1,8 @@
+import * as Models from "../database/models/index.js";
+const { CategoryDiscounts } = Models;
+import sequelize from "sequelize";
+const { Op } = sequelize;
+
 /**
  * Resolves which discount amount applies to a service for a given customer,
  * based on how many prior PAID bookings they have (global, across every
@@ -8,8 +13,16 @@
  * the 2nd booking, etc. Once bookingCount reaches/exceeds tier_discounts.length,
  * or the customer is anonymous (bookingCount == null), this falls back to the
  * service's flat `discounted_amount` — the "default" discount.
+ *
+ * categoryDiscountPercent (optional 3rd param) takes absolute priority over
+ * both of the above when present — see getActiveCategoryDiscountsMap below.
  */
-export function resolveDiscountedAmount(service, bookingCount) {
+export function resolveDiscountedAmount(service, bookingCount, categoryDiscountPercent) {
+  if (categoryDiscountPercent != null && categoryDiscountPercent > 0) {
+    const base = Number(service?.amount) || 0;
+    return Number((base * (1 - categoryDiscountPercent / 100)).toFixed(2));
+  }
+
   let tiers = service?.tier_discounts;
   // Sequelize model reads (findOne/findAll) auto-parse JSON columns, but raw
   // SQL (connection.query) returns them as a JSON string — normalize both.
@@ -30,4 +43,24 @@ export function resolveDiscountedAmount(service, bookingCount) {
   }
 
   return service?.discounted_amount ?? null;
+}
+
+/**
+ * Every service category currently inside an active CategoryDiscounts
+ * window (starts_at <= now <= ends_at), as a Map<category_id, percent>.
+ * Overlapping windows are rejected at save time (see addCategoryDiscount in
+ * AdminDbController.js), so at most one row per category can match here.
+ * Call once per request and look up per service — cheap, small table.
+ */
+export async function getActiveCategoryDiscountsMap() {
+  const now = new Date();
+  const rows = await CategoryDiscounts.findAll({
+    where: {
+      starts_at: { [Op.lte]: now },
+      ends_at: { [Op.gte]: now },
+    },
+    attributes: ["category_id", "discount_percent"],
+    raw: true,
+  });
+  return new Map(rows.map((r) => [r.category_id, Number(r.discount_percent)]));
 }
