@@ -43,6 +43,6 @@ export const marketingVideoUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter,
   limits: {
-    fileSize: 16 * 1024 * 1024,
+    fileSize: 60 * 1024 * 1024,
   },
 });
