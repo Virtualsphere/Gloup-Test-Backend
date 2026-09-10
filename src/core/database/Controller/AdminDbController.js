@@ -1462,17 +1462,57 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to delete banner");
     }
   },
+  // Rejecting a refund request also cancels the booking — but the "booking
+  // cancelled" WhatsApp message is deferred 10 minutes (cancel_notify_at)
+  // instead of sent here, giving an admin a window to fix a mis-click.
+  // See CronHelper.scheduleCancelledBookingNotify, which re-checks the row
+  // is still 'rejected' before actually sending.
   updaterequest: async (data) => {
     try {
-      return await adminDbController.Models.refund_requests.update({
-        status: data.status,
-      }, {
+      const updates = { status: data.status };
+      if (data.status === "rejected") {
+        updates.cancel_notify_at = Sequelize.literal("DATE_ADD(NOW(), INTERVAL 10 MINUTE)");
+      }
+      return await adminDbController.Models.refund_requests.update(updates, {
         where: {
           id: data.id
         }
       })
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to update request");
+    }
+  },
+
+  // Rejected requests whose 10-minute delay has elapsed and haven't been
+  // notified yet. Requiring status = 'rejected' here is what makes an
+  // "undo" (anything that moves the row off 'rejected' in the meantime)
+  // silently cancel the pending send — there's nothing left to match.
+  getDueCancelBookingNotifications: async () => {
+    try {
+      return await adminDbController.connection.query(
+        `
+        SELECT id, appointment_id
+        FROM refund_requests
+        WHERE status = 'rejected'
+          AND cancel_notify_at IS NOT NULL
+          AND cancel_notify_at <= NOW()
+          AND cancel_notified_at IS NULL
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch due cancel-booking notifications");
+    }
+  },
+
+  markCancelNotificationSent: async (id) => {
+    try {
+      return await adminDbController.Models.refund_requests.update(
+        { cancel_notified_at: Sequelize.literal("NOW()") },
+        { where: { id } }
+      );
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to mark cancel notification sent");
     }
   },
   getbanners: async (body) => {

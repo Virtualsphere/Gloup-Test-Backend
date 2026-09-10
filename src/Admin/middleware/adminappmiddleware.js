@@ -26,7 +26,6 @@ import {
 import {
     sendMarketingBroadcast,
     sendVideoMarketingBroadcast,
-    sendBookingCancelledWhatsApp,
     sendBookingRefundWhatsApp,
 } from "../../core/utils/whatsappNotification.js"
 import {
@@ -1073,9 +1072,11 @@ Adminappmiddleware.app = {
                 return "Refunded amount successfully";
             } else {
 
+                // updaterequest() sets cancel_notify_at 10 minutes out; the
+                // "booking cancelled" WhatsApp is sent later by
+                // CronHelper.scheduleCancelledBookingNotify, not here — see
+                // that function for why (admin undo window).
                 const updaterequest = await adminDbController.app.updaterequest(body);
-
-                await sendBookingCancelledWhatsApp(getappoinment.id);
 
                 return "Refund Request Updated Successfully";
 

@@ -12,6 +12,7 @@ import { sendPushNotification } from "../../core/utils/pushNotificationService.j
 import { adminDbController } from "../../core/database/Controller/AdminDbController.js";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
 import { sendInvoiceViaWhatsApp } from "../../core/utils/invoiceWhatsapp.js";
+import { sendBookingCancelledWhatsApp } from "../../core/utils/whatsappNotification.js";
 import generateInvoicePDF from "../../core/utils/generateInvoicePDF.js";
 import cron from 'node-cron';
 
@@ -85,6 +86,7 @@ export class CronHelper {
         this.scheduleSubscriptionUpdates();
         this.schedulePendingAppointmentExpiry();
         this.scheduleDailyPartnerInvoices();
+        this.scheduleCancelledBookingNotify();
 
         // Add other cron jobs here
     }
@@ -157,6 +159,35 @@ export class CronHelper {
                 }
             } catch (error) {
                 console.error("Error in pending appointment expiry cron:", error);
+            }
+        }, {
+            timezone: 'Asia/Kolkata'
+        });
+    }
+
+    // A rejected refund request cancels the booking, but the customer-facing
+    // "booking cancelled" WhatsApp (gloup_booking_cancel) is held back 10
+    // minutes (refund_requests.cancel_notify_at, set in updaterequest()) so
+    // an admin has time to correct a mis-click. Re-querying status = 'rejected'
+    // here means anything that moves the row off 'rejected' in that window
+    // silently cancels the pending send — no separate "undo" plumbing needed.
+    static scheduleCancelledBookingNotify() {
+        cron.schedule('*/2 * * * *', async () => {
+            try {
+                const due = await adminDbController.app.getDueCancelBookingNotifications();
+                for (const row of due) {
+                    try {
+                        await sendBookingCancelledWhatsApp(row.appointment_id);
+                        await adminDbController.app.markCancelNotificationSent(row.id);
+                    } catch (rowError) {
+                        console.error(
+                            `[Cron] Failed to send cancel-booking WhatsApp for refund request ${row.id}:`,
+                            rowError
+                        );
+                    }
+                }
+            } catch (error) {
+                console.error("Error in cancelled-booking notify cron:", error);
             }
         }, {
             timezone: 'Asia/Kolkata'
