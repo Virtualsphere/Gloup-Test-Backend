@@ -568,6 +568,17 @@ refund_requests.init({
     type: DataTypes.DATE,
     allowNull: true,
   },
+  // When a rejected request's "booking cancelled" WhatsApp message is due to
+  // send (set to NOW() + 10 min at rejection time) — see updaterequest() in
+  // AdminDbController.js and CronHelper.scheduleCancelledBookingNotify().
+  cancel_notify_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  cancel_notified_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
 }, {
   sequelize: connection,
   timestamps: false,

@@ -38,11 +38,12 @@ const fileFilter = (req, file, cb) => {
 };
 
 // WhatsApp's own media limit for video messages is 16MB — sized to match,
-// since anything larger would just be rejected by MSG91/WhatsApp anyway.
+// since anything larger is silently rejected by WhatsApp at delivery time
+// even though the upload itself would succeed.
 export const marketingVideoUpload = multer({
   storage: multer.memoryStorage(),
   fileFilter,
   limits: {
-    fileSize: 60 * 1024 * 1024,
+    fileSize: 16 * 1024 * 1024,
   },
 });
