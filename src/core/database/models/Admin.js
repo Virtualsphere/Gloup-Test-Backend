@@ -453,4 +453,29 @@ ErrorLogs.init({
   timestamps: false,
 });
 
-export { SettlementLogs, StoreWallet, StoreSubscription, Banner, category, SubscriptionPlans, Location, admin, adminSession, Adminnotificationlogs, Coupons, SentNotificationDevices, FailedNotificationTokens, ErrorLogs };
+// Single-row (id=1) table of admin-editable settings. Currently just the
+// dashboard's revenue/sales cutoff date — see getdashboard() in
+// AdminDbController.js and the migration that seeds this row.
+class AdminSettings extends Model { }
+
+AdminSettings.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    allowNull: false,
+  },
+  dashboard_data_start_date: {
+    type: DataTypes.DATEONLY,
+    allowNull: true,
+  },
+  updated_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+}, {
+  sequelize: connection,
+  timestamps: false,
+  freezeTableName: true,
+});
+
+export { SettlementLogs, StoreWallet, StoreSubscription, Banner, category, SubscriptionPlans, Location, admin, adminSession, Adminnotificationlogs, Coupons, SentNotificationDevices, FailedNotificationTokens, ErrorLogs, AdminSettings };

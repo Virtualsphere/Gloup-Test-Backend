@@ -135,21 +135,30 @@ Adminappmiddleware.app = {
     getdashboard: async ({ body, user }) => {
         try {
             const year = new Date().getFullYear();
+
+            // Client's "go live" cutoff — revenue/sales-count/partner-count/
+            // etc. only count activity on/after this date (null = all-time).
+            // NOT applied to gettotalusers/getfirstbookingusers/
+            // getCustomerFunnel/getCustomerSegments, which reflect lifetime
+            // user status and have no signup date to filter on.
+            const dashboardSettings = await adminDbController.app.getDashboardSettings();
+            const dataStartDate = dashboardSettings?.dashboard_data_start_date || null;
+
             const gettotalusers = await adminDbController.app.gettotalusers(body);
             const getfirstbookingusers = await adminDbController.app.getfirstbookingusers(body);
-            const gettotalpartner = await adminDbController.app.gettotalpartner(body);
+            const gettotalpartner = await adminDbController.app.gettotalpartner({ ...body, dataStartDate });
 
-            const gettotalsales = await adminDbController.app.getotalsales(body);
+            const gettotalsales = await adminDbController.app.getotalsales({ ...body, dataStartDate });
 
-            const totalsalescount = await adminDbController.app.getotalsalescount(body);
+            const totalsalescount = await adminDbController.app.getotalsalescount({ ...body, dataStartDate });
 
-            const avearageordervalue = await adminDbController.app.getaverageordervalue(body);
+            const avearageordervalue = await adminDbController.app.getaverageordervalue({ ...body, dataStartDate });
 
-            const topsalloons = await adminDbController.app.gettopsaloons(body);
+            const topsalloons = await adminDbController.app.gettopsaloons({ ...body, dataStartDate });
 
-            const getsalesbycategory = await adminDbController.app.getsalesbycategory(body);
+            const getsalesbycategory = await adminDbController.app.getsalesbycategory({ ...body, dataStartDate });
 
-            const getgendersales = await adminDbController.app.getgendersales(body);
+            const getgendersales = await adminDbController.app.getgendersales({ ...body, dataStartDate });
             const salesbycategory = getsalesbycategory.map((item) => {
                 return {
                     category: item.category_name,
@@ -159,16 +168,16 @@ Adminappmiddleware.app = {
 
             const activebookingstoday = await adminDbController.app.getactivebookingstoday(body);
 
-            const cancelledrefundedorders = await adminDbController.app.getcancelledrefundedorders(body);
+            const cancelledrefundedorders = await adminDbController.app.getcancelledrefundedorders({ ...body, dataStartDate });
 
             const customerFunnel = await adminDbController.app.getCustomerFunnel(body);
-            const avgDaysBetweenVisits = await adminDbController.app.getAvgDaysBetweenVisits(body);
-            const avgClv = await adminDbController.app.getCustomerLifetimeValue(body);
+            const avgDaysBetweenVisits = await adminDbController.app.getAvgDaysBetweenVisits({ ...body, dataStartDate });
+            const avgClv = await adminDbController.app.getCustomerLifetimeValue({ ...body, dataStartDate });
             const customerSegments = await adminDbController.app.getCustomerSegments(body);
-            const repeatBookingRateByMonth = await adminDbController.app.getRepeatBookingRateByMonth(body);
-            const dashboardTrends = await adminDbController.app.getDashboardTrends(body);
+            const repeatBookingRateByMonth = await adminDbController.app.getRepeatBookingRateByMonth({ ...body, dataStartDate });
+            const dashboardTrends = await adminDbController.app.getDashboardTrends({ ...body, dataStartDate });
 
-            const monthlyRevenueResult = await adminDbController.app.getmonthlysales(year);
+            const monthlyRevenueResult = await adminDbController.app.getmonthlysales({ year, dataStartDate });
             //console.log("🚀 ~ getdashboard:async ~ monthlyRevenueResult:", monthlyRevenueResult)
 
             const revenueMap = new Map(
@@ -216,12 +225,22 @@ Adminappmiddleware.app = {
                 customer_segments: customerSegments,
                 repeat_booking_rate_by_month: repeatBookingRateByMonth,
                 dashboard_trends: dashboardTrends,
+                dashboard_data_start_date: dataStartDate,
             }
 
             return result;
         } catch (error) {
             //console.log("🚀 ~ getdashboard:async ~ error:", error)
             throw Error.SomethingWentWrong("Failed to fetch dashboard data");
+        }
+    },
+
+    updateDashboardDataStartDate: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateDashboardDataStartDate(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to update dashboard data start date");
         }
     },
 

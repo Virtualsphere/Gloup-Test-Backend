@@ -480,6 +480,35 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to add coupons");
     }
   },
+  // The client's "go live" date — appointment/store-driven dashboard
+  // metrics only count activity on/after this date (NULL = all-time).
+  // Deliberately NOT applied to user-status metrics (total users,
+  // first-booking users, funnel, segments) — see the migration comment.
+  getDashboardSettings: async () => {
+    try {
+      const row = await adminDbController.Models.AdminSettings.findOne({
+        where: { id: 1 },
+        raw: true,
+      });
+      return { dashboard_data_start_date: row?.dashboard_data_start_date || null };
+    } catch (error) {
+      console.log("🚀 ~ getDashboardSettings error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch dashboard settings");
+    }
+  },
+  updateDashboardDataStartDate: async (data) => {
+    try {
+      await adminDbController.Models.AdminSettings.upsert({
+        id: 1,
+        dashboard_data_start_date: data.dashboard_data_start_date || null,
+        updated_at: new Date(),
+      });
+      return { dashboard_data_start_date: data.dashboard_data_start_date || null };
+    } catch (error) {
+      console.log("🚀 ~ updateDashboardDataStartDate error:", error);
+      throw Error.SomethingWentWrong("Failed to update dashboard data start date");
+    }
+  },
   gettotalusers: async () => {
     try {
       return await adminDbController.Models.User.count({
@@ -544,7 +573,7 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to compute customer funnel");
     }
   },
-  getAvgDaysBetweenVisits: async () => {
+  getAvgDaysBetweenVisits: async ({ dataStartDate } = {}) => {
     try {
       const rows = await adminDbController.connection.query(
         `
@@ -554,10 +583,11 @@ adminDbController.app = {
             DATEDIFF(booking_date, LAG(booking_date) OVER (PARTITION BY user_id ORDER BY booking_date)) AS gap_days
           FROM appointments
           WHERE status = 'completed'
+            AND (:dataStartDate IS NULL OR booking_date >= :dataStartDate)
         ) t
         WHERE gap_days > 0
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { dataStartDate: dataStartDate || null }, type: Sequelize.QueryTypes.SELECT }
       );
       const value = rows[0]?.avg_days_between_visits;
       return value != null ? Number(Number(value).toFixed(1)) : 0;
@@ -566,7 +596,7 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to compute average days between visits");
     }
   },
-  getCustomerLifetimeValue: async () => {
+  getCustomerLifetimeValue: async ({ dataStartDate } = {}) => {
     try {
       const rows = await adminDbController.connection.query(
         `
@@ -574,10 +604,11 @@ adminDbController.app = {
           SELECT user_id, SUM(amount) AS user_total
           FROM appointments
           WHERE status = 'completed'
+            AND (:dataStartDate IS NULL OR booking_date >= :dataStartDate)
           GROUP BY user_id
         ) t
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { dataStartDate: dataStartDate || null }, type: Sequelize.QueryTypes.SELECT }
       );
       const value = rows[0]?.avg_clv;
       return value != null ? Number(Number(value).toFixed(2)) : 0;
@@ -606,29 +637,32 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch active bookings");
     }
   },
-  getcancelledrefundedorders: async () => {
+  getcancelledrefundedorders: async ({ dataStartDate } = {}) => {
     try {
       return await adminDbController.Models.appointments.count({
         where: {
           status: {
             [Op.in]: ["cancelled", "refunded"]
-          }
+          },
+          ...(dataStartDate ? { booking_date: { [Op.gte]: dataStartDate } } : {}),
         }
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch cancelled/refunded orders");
     }
   },
-  gettopsaloons: async () => {
+  gettopsaloons: async ({ dataStartDate } = {}) => {
     try {
       let sql = `SELECT S.id, S.name, S.email, S.phone, S.images, COUNT(A.id) AS total_appointments
                    FROM Store S
                    LEFT JOIN appointments A ON S.id = A.store_id AND A.status = 'completed' || 'booked'
+                     AND (:dataStartDate IS NULL OR A.booking_date >= :dataStartDate)
                    WHERE S.status = 'active'
                    GROUP BY S.id
                    ORDER BY total_appointments DESC
                    LIMIT 10`;
       return await adminDbController.connection.query(sql, {
+        replacements: { dataStartDate: dataStartDate || null },
         type: Sequelize.QueryTypes.SELECT,
       });
     } catch (error) {
@@ -645,16 +679,19 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch top category");
     }
   },
-  getaverageordervalue: async () => {
+  getaverageordervalue: async ({ dataStartDate } = {}) => {
     try {
+      const dateWhere = dataStartDate ? { booking_date: { [Op.gte]: dataStartDate } } : {};
       const totalSales = await adminDbController.Models.appointments.sum('amount', {
         where: {
-          status: "completed"
+          status: "completed",
+          ...dateWhere,
         }
       });
       const totalOrders = await adminDbController.Models.appointments.count({
         where: {
-          status: "completed"
+          status: "completed",
+          ...dateWhere,
         }
       });
       return totalOrders > 0 ? (totalSales / totalOrders).toFixed(2) : 0;
@@ -662,78 +699,90 @@ adminDbController.app = {
       throw Error.SomethingWentWrong("Failed to fetch average order value");
     }
   },
-  getotalsales: async () => {
+  getotalsales: async ({ dataStartDate } = {}) => {
     try {
       return await adminDbController.Models.appointments.sum('discounted_amount', {
         where: {
-          status: "completed"
+          status: "completed",
+          ...(dataStartDate ? { booking_date: { [Op.gte]: dataStartDate } } : {}),
         }
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch total sales");
     }
   },
-  getotalsalescount: async () => {
+  getotalsalescount: async ({ dataStartDate } = {}) => {
     try {
       return await adminDbController.Models.appointments.count({
         where: {
-          status: "completed"
+          status: "completed",
+          ...(dataStartDate ? { booking_date: { [Op.gte]: dataStartDate } } : {}),
         }
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch total sales count");
     }
   },
-  gettotalpartner: async () => {
+  gettotalpartner: async ({ dataStartDate } = {}) => {
     try {
       return await adminDbController.Models.Store.count({
         where: {
           status: "active",
-          completion_status: "completed"
+          completion_status: "completed",
+          ...(dataStartDate ? { createdAt: { [Op.gte]: dataStartDate } } : {}),
         }
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch total partners");
     }
   },
-  getsalesbycategory: async () => {
+  getsalesbycategory: async ({ dataStartDate } = {}) => {
     try {
-      let sql = `SELECT c.name as category_name, SUM(a.amount) as total_sales 
-              FROM category c 
-              LEFT JOIN Store s ON c.id = s.category_id 
-              LEFT JOIN appointments a ON s.id = a.store_id 
-              GROUP BY c.name 
+      let sql = `SELECT c.name as category_name, SUM(a.amount) as total_sales
+              FROM category c
+              LEFT JOIN Store s ON c.id = s.category_id
+              LEFT JOIN appointments a ON s.id = a.store_id
+                AND (:dataStartDate IS NULL OR a.booking_date >= :dataStartDate)
+              GROUP BY c.name
               ORDER BY total_sales`;
-      return await adminDbController.connection.query(sql, { type: Sequelize.QueryTypes.SELECT });
+      return await adminDbController.connection.query(sql, {
+        replacements: { dataStartDate: dataStartDate || null },
+        type: Sequelize.QueryTypes.SELECT,
+      });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch sales by category");
     }
   },
-  getgendersales: async () => {
+  getgendersales: async ({ dataStartDate } = {}) => {
     try {
-      let sql = `SELECT 
+      let sql = `SELECT
          SUM(CASE WHEN u.gender = 'Male' THEN 1 ELSE 0 END) as total_men_count,
          SUM(CASE WHEN u.gender = 'Male' THEN a.discounted_amount ELSE 0 END) as total_men_sales,
          SUM(CASE WHEN u.gender = 'Female' THEN 1 ELSE 0 END) as total_women_count,
          SUM(CASE WHEN u.gender = 'Female' THEN a.discounted_amount ELSE 0 END) as total_women_sales
-         FROM appointments a 
-         JOIN User u ON a.user_id = u.id 
-         WHERE a.status = 'completed'`;
-      return await adminDbController.connection.query(sql, { type: Sequelize.QueryTypes.SELECT });
+         FROM appointments a
+         JOIN User u ON a.user_id = u.id
+         WHERE a.status = 'completed'
+           AND (:dataStartDate IS NULL OR a.booking_date >= :dataStartDate)`;
+      return await adminDbController.connection.query(sql, {
+        replacements: { dataStartDate: dataStartDate || null },
+        type: Sequelize.QueryTypes.SELECT,
+      });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to get gender sales");
     }
   },
-  getmonthlysales: async (year) => {
+  getmonthlysales: async ({ year, dataStartDate } = {}) => {
     try {
       let sql = `SELECT DATE_FORMAT(a.booking_date, '%Y-%m') as month, SUM(a.discounted_amount) as total_sales
           FROM appointments a
-          WHERE a.status = 'completed' 
-          AND  YEAR(a.booking_date) = :year  
+          WHERE a.status = 'completed'
+          AND  YEAR(a.booking_date) = :year
+          AND (:dataStartDate IS NULL OR a.booking_date >= :dataStartDate)
           GROUP BY month
           ORDER BY month DESC`;
       return await adminDbController.connection.query(sql, {
-        replacements: { year: year },
+        replacements: { year: year, dataStartDate: dataStartDate || null },
         type: Sequelize.QueryTypes.SELECT,
       });
     } catch (error) {
@@ -1212,7 +1261,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
   // % of each month's bookers who had already booked before (repeat rate),
   // last 6 months, zero-filled. Uses ROW_NUMBER() per user ordered by
   // booking_date to determine which bookings are a user's 2nd-or-later.
-  getRepeatBookingRateByMonth: async () => {
+  getRepeatBookingRateByMonth: async ({ dataStartDate } = {}) => {
     try {
       const rows = await adminDbController.connection.query(
         `
@@ -1224,12 +1273,13 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
             ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
           FROM appointments
           WHERE status = 'completed'
+            AND (:dataStartDate IS NULL OR booking_date >= :dataStartDate)
         ) t
         WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')
         GROUP BY month
         ORDER BY month
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { dataStartDate: dataStartDate || null }, type: Sequelize.QueryTypes.SELECT }
       );
 
       const byMonth = new Map(
@@ -1249,7 +1299,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     }
   },
   // 6-month trend series backing the dashboard's sparkline stat cards.
-  getDashboardTrends: async () => {
+  getDashboardTrends: async ({ dataStartDate } = {}) => {
     try {
       const monthFloor = `DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m-01')`;
 
@@ -1262,9 +1312,10 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         SELECT DATE_FORMAT(booking_date, '%Y-%m') AS month, COUNT(DISTINCT user_id) AS value
         FROM appointments
         WHERE status = 'completed' AND booking_date >= ${monthFloor}
+          AND (:dataStartDate IS NULL OR booking_date >= :dataStartDate)
         GROUP BY month
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { dataStartDate: dataStartDate || null }, type: Sequelize.QueryTypes.SELECT }
       );
 
       const bookingRows = await adminDbController.connection.query(
@@ -1281,11 +1332,12 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
             ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY booking_date) AS rn
           FROM appointments
           WHERE status = 'completed'
+            AND (:dataStartDate IS NULL OR booking_date >= :dataStartDate)
         ) t
         WHERE month >= DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 6 MONTH), '%Y-%m')
         GROUP BY month
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { dataStartDate: dataStartDate || null }, type: Sequelize.QueryTypes.SELECT }
       );
 
       const usersByMonth = new Map(usersRows.map((r) => [r.month, Number(r.value) || 0]));
