@@ -218,6 +218,8 @@ function formatServices(services = []) {
         ? service.amount
         : null,
 
+      fakePrice: service.fake_price ?? null,
+
       discountPercentage: hasDiscount
         ? `${Math.round(
             ((service.amount - service.discounted_amount) /

@@ -3347,6 +3347,7 @@ END AS distance
           S.store_id,
           S.amount,
           S.discounted_amount,
+          S.fake_price,
           S.tier_discounts,
           S.duration,
           S.status,
