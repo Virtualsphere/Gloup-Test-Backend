@@ -52,6 +52,7 @@ import {
   getCategoryRevenue,
   getCustomers,
   getdashboard,
+  updateDashboardDataStartDate,
   getLiveStats,
   getFilteredStores,
   getFilterReport,
@@ -264,6 +265,7 @@ approutes.post('/getpayoutlogs', verifyadmin, getpayoutlogs);
 // approutes.post('/getall') 
 
 approutes.post('/getdashborad', verifyadmin, getdashboard);
+approutes.post('/updatedashboarddatastartdate', verifyadmin, updateDashboardDataStartDate);
 approutes.get('/livestats', verifyadmin, getLiveStats);
 // approutes.post('/getallcoupons',verifyadmin,getallcoupons);
 approutes.post("/addcoupons", verifyadmin, addcoupons);
