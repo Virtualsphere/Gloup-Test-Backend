@@ -935,6 +935,44 @@ export const getdashboard = async(req, res) => {
         });
 }
 
+export const getDashboardV2Metrics = async (req, res) => {
+    Adminappmiddleware.app.getDashboardV2Metrics(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getDashboardV2Alerts = async (req, res) => {
+    Adminappmiddleware.app.getDashboardV2Alerts(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
 export const updateDashboardDataStartDate = async (req, res) => {
     Adminappmiddleware.app.updateDashboardDataStartDate(req)
         .then((data) => {

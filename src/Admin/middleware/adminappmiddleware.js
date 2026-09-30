@@ -244,6 +244,24 @@ Adminappmiddleware.app = {
         }
     },
 
+    getDashboardV2Metrics: async ({ body }) => {
+        try {
+            return await adminDbController.app.getDashboardV2Metrics(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch dashboard metrics");
+        }
+    },
+
+    getDashboardV2Alerts: async ({ body }) => {
+        try {
+            return await adminDbController.app.getDashboardV2Alerts(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch dashboard alerts");
+        }
+    },
+
     getLiveStats: async () => {
         try {
             const presence = await import("../../core/utils/presenceService.js");

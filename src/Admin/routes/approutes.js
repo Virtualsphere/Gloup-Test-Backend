@@ -53,6 +53,8 @@ import {
   getCustomers,
   getdashboard,
   updateDashboardDataStartDate,
+  getDashboardV2Metrics,
+  getDashboardV2Alerts,
   getLiveStats,
   getFilteredStores,
   getFilterReport,
@@ -266,6 +268,8 @@ approutes.post('/getpayoutlogs', verifyadmin, getpayoutlogs);
 
 approutes.post('/getdashborad', verifyadmin, getdashboard);
 approutes.post('/updatedashboarddatastartdate', verifyadmin, updateDashboardDataStartDate);
+approutes.post('/getDashboardV2Metrics', verifyadmin, getDashboardV2Metrics); // Same metrics for each requested { key, from, to } range
+approutes.post('/getDashboardV2Alerts', verifyadmin, getDashboardV2Alerts); // Idle salons, overdue payouts, subscription dues, checkout drop-offs
 approutes.get('/livestats', verifyadmin, getLiveStats);
 // approutes.post('/getallcoupons',verifyadmin,getallcoupons);
 approutes.post("/addcoupons", verifyadmin, addcoupons);

@@ -21,6 +21,7 @@ import {
 } from "../../utils/excelParser.js";
 import { toIstDatePart } from "../../schema/formats.js";
 import { accrueDue, cycleFee } from "../../utils/partnerSubscriptionBilling.js";
+import { addDays, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -507,6 +508,298 @@ adminDbController.app = {
     } catch (error) {
       console.log("🚀 ~ updateDashboardDataStartDate error:", error);
       throw Error.SomethingWentWrong("Failed to update dashboard data start date");
+    }
+  },
+
+  // ── Dashboard V2 ────────────────────────────────────────────────────────
+  //
+  // Same metrics for every requested { key, from, to } range (see
+  // dashboardRanges.js), so the client can show any period it likes and
+  // compare it against any other. One query per metric group — the ranges
+  // are a derived table, not a loop.
+  //
+  // Definitions:
+  //   bookings        paid appointments (payment_status success/sucssess —
+  //                   same rule as Store.total_booking_count), by booking_date
+  //   cancellations   of those, the ones later cancelled or refunded
+  //   revenue         SUM(discounted_amount) of completed appointments —
+  //                   same basis as the V1 dashboard's total_sales
+  //   cac_spend       the discount Gloup funds per booking: StoreServices
+  //                   price minus what the customer was charged, 0 for
+  //                   "important" services — exactly the invoice's
+  //                   "Acquisition Cost" column (getInvoiceDetailsForPartner)
+  //   checkout_dropoffs  appointments whose payment failed/expired
+  //                   (payment_status 'failed'), by created_at
+  //   total_users / total_partners / active_subscriptions
+  //                   running totals as of the end of the range
+  //
+  // Appointment/store metrics honour dashboard_data_start_date; user and
+  // subscription metrics don't (same policy as getDashboard).
+  getDashboardV2Metrics: async (data = {}) => {
+    try {
+      const { dashboard_data_start_date: cutoff } =
+        await adminDbController.app.getDashboardSettings();
+      const resolved = resolveRanges(data.ranges, cutoff || null);
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { ...replacements, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+
+      const [bookingRows, cacRows, dropoffRows, userRows, partnerRows, subscriptionRows] =
+        await Promise.all([
+          run(`
+            SELECT r.k,
+              COUNT(a.id) AS bookings,
+              COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancellations,
+              COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS revenue
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.booking_date >= r.f AND a.booking_date < r.e
+              AND a.payment_status IN ('success', 'sucssess')
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              COUNT(DISTINCT a.id) AS cac_bookings,
+              COALESCE(SUM(
+                CASE
+                  WHEN ss.id IS NOT NULL THEN
+                    IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
+                  WHEN cb.id IS NOT NULL THEN
+                    GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
+                  ELSE 0
+                END
+              ), 0) AS cac_spend
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.booking_date >= r.f AND a.booking_date < r.e
+              AND a.payment_status IN ('success', 'sucssess')
+              AND a.status NOT IN ('cancelled', 'refunded')
+            LEFT JOIN appointment_items ai ON ai.appointment_id = a.id
+            LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+            LEFT JOIN Combo cb ON ai.combo_id = cb.id
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              COUNT(a.id) AS checkout_dropoffs,
+              COUNT(DISTINCT a.user_id) AS checkout_dropoff_users
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.created_at >= r.f AND a.created_at < r.e
+              AND a.payment_status = 'failed'
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM User u
+                WHERE u.status = 'active'
+                  AND (u.registered_at IS NULL OR u.registered_at < r.e)) AS total_users,
+              (SELECT COUNT(*) FROM User u
+                WHERE u.registered_at >= r.fr AND u.registered_at < r.e) AS new_users
+            FROM (${rangesSql}) r
+          `),
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM Store s
+                WHERE s.status = 'active' AND s.completion_status = 'completed'
+                  AND (:cutoff IS NULL OR s.createdAt >= :cutoff)
+                  AND s.createdAt < r.e) AS total_partners,
+              (SELECT COUNT(*) FROM Store s
+                WHERE s.status = 'active' AND s.completion_status = 'completed'
+                  AND s.createdAt >= r.f AND s.createdAt < r.e) AS new_partners
+            FROM (${rangesSql}) r
+          `, { cutoff: cutoff || null }),
+          // A subscription counts as active on day d if it had started by
+          // then and either is still active or was deactivated after d.
+          // Rows deactivated before deactivated_at existed have no date and
+          // are left out of history (see that migration).
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM PartnerManualSubscriptions pms
+                WHERE pms.activated_at <= r.d
+                  AND (pms.status = 'active' OR pms.deactivated_at > r.d)) AS active_subscriptions,
+              (SELECT COUNT(*) FROM PartnerManualSubscriptions pms
+                WHERE pms.activated_at >= DATE(r.fr) AND pms.activated_at <= r.d) AS new_subscriptions
+            FROM (${rangesSql}) r
+          `),
+        ]);
+
+      const byKey = (rows) => new Map(rows.map((row) => [row.k, row]));
+      const bookings = byKey(bookingRows);
+      const cac = byKey(cacRows);
+      const dropoffs = byKey(dropoffRows);
+      const users = byKey(userRows);
+      const partners = byKey(partnerRows);
+      const subscriptions = byKey(subscriptionRows);
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+
+      const result = {};
+      resolved.forEach((r) => {
+        const b = bookings.get(r.key) || {};
+        const c = cac.get(r.key) || {};
+        const d = dropoffs.get(r.key) || {};
+        const u = users.get(r.key) || {};
+        const p = partners.get(r.key) || {};
+        const s = subscriptions.get(r.key) || {};
+        // Appointment/store metrics for a range wholly before go-live are
+        // unknown, not zero.
+        const gated = (v) => (r.beforeDataStart ? null : v);
+        const cacBookings = num(c.cac_bookings);
+
+        result[r.key] = {
+          from: r.from,
+          to: r.to,
+          data_from: r.beforeDataStart ? null : r.dataFrom,
+          bookings: gated(num(b.bookings)),
+          cancellations: gated(num(b.cancellations)),
+          revenue: gated(money(b.revenue)),
+          cac_spend: gated(money(c.cac_spend)),
+          cac_bookings: gated(cacBookings),
+          cac_per_booking: gated(cacBookings ? money(num(c.cac_spend) / cacBookings) : null),
+          checkout_dropoffs: gated(num(d.checkout_dropoffs)),
+          checkout_dropoff_users: gated(num(d.checkout_dropoff_users)),
+          total_partners: gated(num(p.total_partners)),
+          new_partners: gated(num(p.new_partners)),
+          total_users: num(u.total_users),
+          new_users: num(u.new_users),
+          active_subscriptions: num(s.active_subscriptions),
+          new_subscriptions: num(s.new_subscriptions),
+        };
+      });
+
+      return { dashboard_data_start_date: cutoff || null, ranges: result };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getDashboardV2Metrics error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch dashboard metrics");
+    }
+  },
+
+  // Point-in-time alerts for the dashboard V2 "Alerts & Insights" card.
+  //   idle_salons        active salons (older than the window) with no paid
+  //                      booking created in the last `idle_days` days
+  //   overdue_payouts    past invoice days (store, date) with non-cancelled
+  //                      bookings but no InvoicePayouts row. Looks back
+  //                      `overdue_days`, never before the first payout ever
+  //                      recorded (days before the payout feature existed
+  //                      were never meant to be marked) or the go-live
+  //                      cutoff. Amount is the invoice gross, before any
+  //                      subscription deduction.
+  //   subscription_dues  what active manual subscriptions owe right now
+  //                      (same accrueDue maths as the invoice page)
+  //   checkout_dropoffs  failed/expired payments created today
+  getDashboardV2Alerts: async (data = {}) => {
+    try {
+      const idleDays = Math.min(Math.max(Number(data.idle_days) || 7, 1), 90);
+      const overdueDays = Math.min(Math.max(Number(data.overdue_days) || 30, 1), 365);
+      const today = toIstDatePart(new Date());
+      const idleFrom = addDays(today, -(idleDays - 1));
+
+      const { dashboard_data_start_date: cutoff } =
+        await adminDbController.app.getDashboardSettings();
+      const [firstPayout] = await adminDbController.connection.query(
+        `SELECT MIN(invoice_date) AS first_date FROM InvoicePayouts`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const firstPayoutDate = firstPayout?.first_date ? toIstDatePart(firstPayout.first_date) : null;
+      const overdueFrom = [addDays(today, -overdueDays), cutoff, firstPayoutDate]
+        .filter(Boolean)
+        .sort()
+        .pop();
+      const overdueTo = addDays(today, -1);
+
+      const [idleRows, overdueRows, subs, dropoffRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS idle_salons
+          FROM Store s
+          WHERE s.status = 'active' AND s.completion_status = 'completed'
+            AND s.createdAt < :idleFrom
+            AND NOT EXISTS (
+              SELECT 1 FROM appointments a
+              WHERE a.store_id = s.id
+                AND a.payment_status IN ('success', 'sucssess')
+                AND a.created_at >= :idleFrom
+            )
+          `,
+          { replacements: { idleFrom }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        // Invoice gross per (store, day) — same pricing rule as
+        // getInvoiceDetailsForPartner: important services at full price,
+        // everything else at what the customer was charged.
+        overdueFrom > overdueTo
+          ? Promise.resolve([])
+          : adminDbController.connection.query(
+            `
+            SELECT a.store_id, DATE(a.booking_date) AS invoice_date,
+              SUM(
+                CASE
+                  WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+                  WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+                  ELSE 0
+                END
+              ) AS amount
+            FROM appointments a
+            INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+            LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+            LEFT JOIN Combo cb ON ai.combo_id = cb.id
+            LEFT JOIN InvoicePayouts ip
+              ON ip.store_id = a.store_id AND ip.invoice_date = DATE(a.booking_date)
+            WHERE a.booking_date >= :overdueFrom AND a.booking_date < :today
+              AND a.status != 'cancelled'
+              AND ip.id IS NULL
+            GROUP BY a.store_id, DATE(a.booking_date)
+            `,
+            { replacements: { overdueFrom, today }, type: Sequelize.QueryTypes.SELECT }
+          ),
+        adminDbController.connection.query(
+          `
+          SELECT store_id, plan_amount, outstanding_due, next_due_date
+          FROM PartnerManualSubscriptions
+          WHERE status = 'active'
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS attempts, COUNT(DISTINCT user_id) AS users
+          FROM appointments
+          WHERE payment_status = 'failed' AND created_at >= :today
+          `,
+          { replacements: { today }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const overdueAmount = overdueRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      const dues = subs.map((sub) => accrueDue(sub, today).due).filter((due) => due > 0);
+
+      return {
+        date: today,
+        idle_salons: { count: Number(idleRows[0]?.idle_salons) || 0, days: idleDays },
+        overdue_payouts: {
+          invoices: overdueRows.length,
+          partners: new Set(overdueRows.map((row) => row.store_id)).size,
+          amount: Number(overdueAmount.toFixed(2)),
+          from_date: overdueFrom > overdueTo ? null : overdueFrom,
+          to_date: overdueTo,
+        },
+        subscription_dues: {
+          partners: dues.length,
+          amount: Number(dues.reduce((sum, due) => sum + due, 0).toFixed(2)),
+        },
+        checkout_dropoffs: {
+          attempts: Number(dropoffRows[0]?.attempts) || 0,
+          users: Number(dropoffRows[0]?.users) || 0,
+        },
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getDashboardV2Alerts error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch dashboard alerts");
     }
   },
   gettotalusers: async () => {
@@ -5146,14 +5439,15 @@ verifypartnerdetails: async (data) => {
 
       await adminDbController.connection.query(
         `
-        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at)
-        VALUES (:storeId, :planAmount, 'active', 0, :today, :today)
+        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at, deactivated_at)
+        VALUES (:storeId, :planAmount, 'active', 0, :today, :today, NULL)
         ON DUPLICATE KEY UPDATE
           plan_amount = VALUES(plan_amount),
           status = 'active',
           outstanding_due = 0,
           next_due_date = VALUES(next_due_date),
-          activated_at = VALUES(activated_at)
+          activated_at = VALUES(activated_at),
+          deactivated_at = NULL
         `,
         {
           replacements: { storeId: data.store_id, planAmount, today },
@@ -5204,10 +5498,15 @@ verifypartnerdetails: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
 
+      // deactivated_at is what lets the dashboard count this subscription
+      // as active for the months before today. Only stamped on the
+      // active -> inactive transition so a repeat click keeps the real date.
       await adminDbController.connection.query(
-        `UPDATE PartnerManualSubscriptions SET status = 'inactive' WHERE store_id = :storeId`,
+        `UPDATE PartnerManualSubscriptions
+         SET deactivated_at = IF(status = 'active', :today, deactivated_at), status = 'inactive'
+         WHERE store_id = :storeId`,
         {
-          replacements: { storeId: data.store_id },
+          replacements: { storeId: data.store_id, today: toIstDatePart(new Date()) },
           type: Sequelize.QueryTypes.UPDATE,
         }
       );
