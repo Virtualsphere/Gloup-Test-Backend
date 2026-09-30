@@ -20,7 +20,12 @@ import {
     normalizeCategoryKey,
 } from "../../utils/excelParser.js";
 import { toIstDatePart } from "../../schema/formats.js";
-import { accrueDue, cycleFee } from "../../utils/partnerSubscriptionBilling.js";
+import {
+  accrueDue,
+  cycleFee,
+  DEFAULT_FREE_BOOKING_LIMIT,
+  MAX_FREE_BOOKING_LIMIT,
+} from "../../utils/partnerSubscriptionBilling.js";
 import { addDays, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
@@ -508,6 +513,55 @@ adminDbController.app = {
     } catch (error) {
       console.log("🚀 ~ updateDashboardDataStartDate error:", error);
       throw Error.SomethingWentWrong("Failed to update dashboard data start date");
+    }
+  },
+
+  // Free paid bookings a partner gets before they need a manual
+  // subscription (AdminSettings.free_booking_limit). Raw SQL on purpose:
+  // the column is deliberately not on the AdminSettings model, so the
+  // model upsert in updateDashboardDataStartDate can never reset it.
+  getFreeBookingLimit: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `SELECT free_booking_limit FROM AdminSettings WHERE id = 1 LIMIT 1`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const limit = rows[0]?.free_booking_limit;
+      return {
+        free_booking_limit:
+          limit === null || limit === undefined ? DEFAULT_FREE_BOOKING_LIMIT : Number(limit),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getFreeBookingLimit error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch free booking limit");
+    }
+  },
+  updateFreeBookingLimit: async (data) => {
+    try {
+      const raw = data?.free_booking_limit;
+      const limit = Number(raw);
+      const numeric = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
+      if (!numeric || !Number.isInteger(limit)) {
+        throw Error.BadRequest("free_booking_limit must be a whole number");
+      }
+      if (limit < 0 || limit > MAX_FREE_BOOKING_LIMIT) {
+        throw Error.BadRequest(`free_booking_limit must be between 0 and ${MAX_FREE_BOOKING_LIMIT}`);
+      }
+
+      await adminDbController.connection.query(
+        `
+        INSERT INTO AdminSettings (id, free_booking_limit, updated_at)
+        VALUES (1, :limit, NOW())
+        ON DUPLICATE KEY UPDATE free_booking_limit = VALUES(free_booking_limit), updated_at = NOW()
+        `,
+        { replacements: { limit }, type: Sequelize.QueryTypes.INSERT }
+      );
+
+      return await adminDbController.app.getFreeBookingLimit();
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ updateFreeBookingLimit error:", error);
+      throw Error.SomethingWentWrong("Failed to update free booking limit");
     }
   },
 
@@ -5379,26 +5433,28 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // ── Partner Manual Subscriptions (free-15-bookings -> flat monthly fee) ──
+  // ── Partner Manual Subscriptions (free bookings -> flat monthly fee) ──
   // Entirely separate from the Razorpay-driven PartnerSubscriptions system.
 
-  // Partners past the free-15-bookings threshold with no active manual
-  // subscription yet — the "needs subscription" list on the admin page.
+  // Partners who have used up their free bookings (admin-set
+  // free_booking_limit, default 15) with no active manual subscription
+  // yet — the "needs subscription" list on the admin page.
   getPartnersNeedingManualSubscription: async () => {
     try {
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
       return await adminDbController.connection.query(
         `
         SELECT d.id AS partner_id, d.name AS partner_name, d.phone AS partner_phone,
                d.email AS partner_email, d.total_booking_count
         FROM Store d
-        WHERE d.total_booking_count >= 15
+        WHERE d.total_booking_count >= :limit
           AND NOT EXISTS (
             SELECT 1 FROM PartnerManualSubscriptions pms
             WHERE pms.store_id = d.id AND pms.status = 'active'
           )
         ORDER BY d.total_booking_count DESC
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
       );
     } catch (error) {
       console.log("🚀 ~ getPartnersNeedingManualSubscription error:", error);

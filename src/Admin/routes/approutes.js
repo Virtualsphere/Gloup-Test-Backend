@@ -53,6 +53,8 @@ import {
   getCustomers,
   getdashboard,
   updateDashboardDataStartDate,
+  getFreeBookingLimit,
+  updateFreeBookingLimit,
   getDashboardV2Metrics,
   getDashboardV2Alerts,
   getLiveStats,
@@ -296,6 +298,8 @@ approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday)
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
 approutes.post("/markinvoicepayout", verifyadmin, markInvoicePayout);
 approutes.post("/undoinvoicepayout", verifyadmin, undoInvoicePayout);
+approutes.post("/getfreebookinglimit", verifyadmin, getFreeBookingLimit); // Free paid bookings before a partner needs a manual subscription
+approutes.post("/updatefreebookinglimit", verifyadmin, updateFreeBookingLimit); // Body: { free_booking_limit } - whole number, 0 = no free bookings
 approutes.post("/getpartnersneedingmanualsubscription", verifyadmin, getPartnersNeedingManualSubscription);
 approutes.post("/getallmanualpartnersubscriptions", verifyadmin, getAllManualPartnerSubscriptions);
 approutes.post("/assignmanualpartnersubscription", verifyadmin, assignManualPartnerSubscription);

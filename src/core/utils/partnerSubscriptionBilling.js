@@ -1,7 +1,8 @@
 /**
  * Manual partner subscription billing — a flat monthly fee an admin assigns
- * to a partner (after their first 15 free bookings), deducted from their
- * daily invoice payout until fully recovered. Entirely separate from the
+ * to a partner once they've used their free bookings (AdminSettings.
+ * free_booking_limit, default 15), deducted from their daily invoice payout
+ * until fully recovered. Entirely separate from the
  * Razorpay-driven PartnerSubscriptions system.
  *
  * Billing is a fixed monthly schedule anchored to the original activation
@@ -13,6 +14,12 @@
 import { toIstDatePart } from "../schema/formats.js";
 
 const GST_RATE = 18; // fixed, matches "+18% GST" everywhere this is used
+
+// Free paid bookings before a partner needs a subscription. The live value
+// is AdminSettings.free_booking_limit (admin-editable); this is only the
+// fallback when that row/column doesn't exist yet.
+const DEFAULT_FREE_BOOKING_LIMIT = 15;
+const MAX_FREE_BOOKING_LIMIT = 100000;
 
 /**
  * Raw `connection.query()` results return MySQL DATE columns as native JS
@@ -63,4 +70,4 @@ function accrueDue(sub, todayStr) {
   return { due, nextDue };
 }
 
-export { GST_RATE, cycleFee, addOneMonth, accrueDue };
+export { GST_RATE, DEFAULT_FREE_BOOKING_LIMIT, MAX_FREE_BOOKING_LIMIT, cycleFee, addOneMonth, accrueDue };

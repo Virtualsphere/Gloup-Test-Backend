@@ -244,6 +244,24 @@ Adminappmiddleware.app = {
         }
     },
 
+    getFreeBookingLimit: async () => {
+        try {
+            return await adminDbController.app.getFreeBookingLimit();
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch free booking limit");
+        }
+    },
+
+    updateFreeBookingLimit: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateFreeBookingLimit(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to update free booking limit");
+        }
+    },
+
     getDashboardV2Metrics: async ({ body }) => {
         try {
             return await adminDbController.app.getDashboardV2Metrics(body || {});

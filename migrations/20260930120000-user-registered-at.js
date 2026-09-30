@@ -7,14 +7,14 @@
  * second created_at column would silently clobber appointments.created_at
  * in those result rows.
  *
- * Backfill for existing users uses the earliest evidence of the account
- * existing — first UserSession, first appointment or first OtpLogs row,
- * whichever is oldest (the same proxy getNewSignupsToday already uses).
- * Users with none of those stay NULL (signup date unknown).
+ * The column is added WITHOUT a default first so existing rows aren't all
+ * stamped with the migration time, then the default is switched on so
+ * every new row (Sequelize or raw INSERT) gets it automatically.
  *
- * The column is added WITHOUT a default first so existing rows don't all
- * get stamped with the migration time, then the default is switched on
- * so every new row (Sequelize or raw INSERT) gets it automatically.
+ * Existing users are backfilled by 20260930130000-user-registered-at-backfill.js.
+ * (The first version of this file backfilled here, only when the column was
+ * newly added — a failed first run left the column in place, so a retry
+ * would have skipped the backfill entirely. Kept separate so it always runs.)
  * Idempotent: safe to re-run.
  */
 
@@ -28,52 +28,18 @@ import {
 const TABLE = "User";
 const COLUMN = "registered_at";
 
-// Fill registered_at from `evidenceSql` (user_id, first_seen) wherever it
-// is earlier than what's already there (or nothing is there yet).
-const backfillFrom = async (queryInterface, evidenceSql) => {
-  await queryInterface.sequelize.query(`
-    UPDATE \`User\` u
-    INNER JOIN (${evidenceSql}) e ON e.user_id = u.id
-    SET u.\`registered_at\` = e.first_seen
-    WHERE e.first_seen IS NOT NULL
-      AND (u.\`registered_at\` IS NULL OR e.first_seen < u.\`registered_at\`)
-  `);
-};
-
 export async function up({ context: queryInterface }) {
   if (!(await tableExists(queryInterface, TABLE))) {
     console.log(`[migrate] skip: ${TABLE} table does not exist`);
     return;
   }
 
-  const added = await addColumnIfMissing(
+  await addColumnIfMissing(
     queryInterface,
     TABLE,
     COLUMN,
     "`registered_at` DATETIME NULL"
   );
-
-  if (added) {
-    if (await tableExists(queryInterface, "UserSession")) {
-      await backfillFrom(
-        queryInterface,
-        "SELECT user_id, MIN(created_at) AS first_seen FROM `UserSession` WHERE user_id IS NOT NULL GROUP BY user_id"
-      );
-    }
-    if (await tableExists(queryInterface, "appointments")) {
-      await backfillFrom(
-        queryInterface,
-        "SELECT user_id, MIN(created_at) AS first_seen FROM `appointments` WHERE user_id IS NOT NULL GROUP BY user_id"
-      );
-    }
-    if (await tableExists(queryInterface, "OtpLogs")) {
-      await backfillFrom(
-        queryInterface,
-        "SELECT user_id, MIN(created_at) AS first_seen FROM `OtpLogs` WHERE user_id IS NOT NULL GROUP BY user_id"
-      );
-    }
-    console.log(`[migrate] backfilled: ${TABLE}.${COLUMN}`);
-  }
 
   await queryInterface.sequelize.query(
     "ALTER TABLE `User` MODIFY COLUMN `registered_at` DATETIME NULL DEFAULT CURRENT_TIMESTAMP"
