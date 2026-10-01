@@ -377,8 +377,8 @@ function formatOpeningHours(slots = []) {
 function formatAmenities(amenities = []) {
   return amenities.map((a) => ({
     id: `ambient_${a.id}`,
-    icon: "info",
-    label: "Amenity",
+    icon: a.icon || "info",
+    label: a.name || "Amenity",
   }));
 }
 
