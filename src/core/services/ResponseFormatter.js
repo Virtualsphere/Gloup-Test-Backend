@@ -586,6 +586,7 @@ export function formatNearbyStores(stores = []) {
       logo: media.logo,
       images: media.images,
       rating: parseFloat(Number(store.rating || 0).toFixed(1)),
+      reviewCount: store.reviewCount || 0,
       distance:
         store.distance != null && store.distance !== ""
           ? parseFloat(Number(store.distance).toFixed(2))
