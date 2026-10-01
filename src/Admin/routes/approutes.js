@@ -53,6 +53,14 @@ import {
   getCustomers,
   getdashboard,
   updateDashboardDataStartDate,
+  getUsersListV2,
+  getUsersSummaryV2,
+  getUserProfileV2,
+  getUserActivityV2,
+  getUserOffersV2,
+  getBookingsListV2,
+  getTopSalonsByDateRange,
+  getBookingsSummaryV2,
   getFreeBookingLimit,
   updateFreeBookingLimit,
   getDashboardV2Metrics,
@@ -145,6 +153,11 @@ approutes.post("/downloadUsersExcel", verifyadmin, downloadUsersExcel);
 approutes.post("/addsubscription", verifyadmin, addsubscription);
 approutes.post("/updateuser", verifyadmin, updateuser);
 approutes.post("/getalluserdeatils", verifyadmin, getalluserbooking);
+approutes.post("/getUsersListV2", verifyadmin, getUsersListV2); // Paginated users: SQL search/filters, gender, city, join date, source, last active, last booking, booking count
+approutes.post("/getUsersSummaryV2", verifyadmin, getUsersSummaryV2); // Users KPIs: totals, gender, booked users, new per month, growth, top cities, latest activity
+approutes.post("/getUserProfileV2", verifyadmin, getUserProfileV2); // Body { id } - profile for any status + bookings with real status, amounts paid, savings
+approutes.post("/getUserActivityV2", verifyadmin, getUserActivityV2); // Body { id, limit } - merged timeline + push notification history
+approutes.post("/getUserOffersV2", verifyadmin, getUserOffersV2); // Body { id } - coupons redeemed + wallet transactions
 approutes.post("/getallpartner", verifyadmin, getallpartner);
 approutes.post("/getallpartnerdetails", verifyadmin, getallpartnerdetails);
 approutes.post("/getrefundrequets", verifyadmin, getrefundrequests);
@@ -282,6 +295,9 @@ approutes.post("/getBookings", verifyadmin, getBookings);
 approutes.post("/getBookingsDetails", verifyadmin, getBookingsDetails);
 approutes.post("/getBookingsDetailsByOrderDate", verifyadmin, getBookingsDetailsByOrderDate); // Same as getBookingsDetails but filtered by appointment/order date (booking_date)
 approutes.post("/getBookingsDetailsById", verifyadmin, getBookingsDetailsById);
+approutes.post("/getBookingsListV2", verifyadmin, getBookingsListV2); // V2 bookings list: phone, city, slot time, services/categories; SQL search + payment + category filters
+approutes.post("/getTopSalonsByDateRange", verifyadmin, getTopSalonsByDateRange); // Salons ranked by revenue (completed) for a date range
+approutes.post("/getBookingsSummaryV2", verifyadmin, getBookingsSummaryV2); // Revenue (invoice rule), avg order value, today's revenue, bookings by hour placed
 approutes.get("/bookings/sse", verifyadmin, bookingSSE);
 // TEMP — remove before production
 approutes.get("/bookings/sse/test", verifyadmin, (req, res) => {

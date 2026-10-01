@@ -19,14 +19,14 @@ import {
     formatDurationFromDecimal,
     normalizeCategoryKey,
 } from "../../utils/excelParser.js";
-import { toIstDatePart } from "../../schema/formats.js";
+import { buildAppointmentDateTime, toIstDatePart } from "../../schema/formats.js";
 import {
   accrueDue,
   cycleFee,
   DEFAULT_FREE_BOOKING_LIMIT,
   MAX_FREE_BOOKING_LIMIT,
 } from "../../utils/partnerSubscriptionBilling.js";
-import { addDays, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
+import { addDays, isValidDate, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -34,6 +34,96 @@ const ALLOWED_STATUS_TRANSITIONS = {
   completed: ["refunded"],
   cancelled: [],
   refunded: [],
+};
+
+// ── Bookings list V2 ──
+const BOOKING_STATUSES = ["booked", "confirmed", "completed", "cancelled", "refunded", "pending"];
+// payment filter -> SQL. "sucssess" is a misspelling the booking flow also
+// writes; refunds set payment_status to 'refunded' (updateRefundBookingStatus).
+const BOOKING_PAYMENT_FILTERS = {
+  paid: "a.payment_status IN ('success', 'sucssess') AND a.status <> 'refunded'",
+  unpaid: "(a.payment_status = 'pending' OR a.payment_status IS NULL)",
+  failed: "a.payment_status = 'failed'",
+  refunded: "(a.status = 'refunded' OR a.payment_status = 'refunded')",
+};
+const BOOKING_LIST_MAX_LIMIT = 10000;
+// What one appointment_items row adds to a partner's invoice - the pricing
+// rule in getInvoiceDetailsForPartner(/Monthly): "important" services at the
+// full service price, everything else at what the customer was charged.
+// Expects aliases ai (appointment_items), ss (StoreServices), cb (Combo).
+const INVOICE_ITEM_AMOUNT_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+    WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+    ELSE 0
+  END`;
+// Which date a bookings date range filters on: the appointment day (V1's
+// behaviour, the default) or when the booking was placed.
+const bookingListDateBasis = (basis) => {
+  if (basis === undefined || basis === null || basis === "" || basis === "appointment") {
+    return { dateColumn: "booking_date" };
+  }
+  if (basis === "order") return { dateColumn: "created_at" };
+  throw Error.BadRequest("date_basis must be appointment or order");
+};
+
+// ── Admin users V2 ──
+const USER_STATUSES = ["active", "inactive", "terminated"];
+// Paid = a real booking; the booking flow writes both spellings.
+const PAID_PAYMENT_SQL = "('success', 'sucssess')";
+// How the account was created, inferred from what the sign-up paths store:
+// Apple sign-in sets apple_sub, Google sign-in creates the row with an email
+// and no phone, phone OTP sign-up creates it with a phone. A Google user who
+// later adds a phone reads as "phone", so this is a best guess, not a record.
+const USER_LOGIN_METHOD_SQL = `
+  CASE
+    WHEN u.apple_sub IS NOT NULL AND u.apple_sub <> '' THEN 'apple'
+    WHEN (u.phone IS NULL OR u.phone = '') AND u.email IS NOT NULL AND u.email <> '' THEN 'google'
+    ELSE 'phone'
+  END`;
+// Referral = signed up with someone's invite code (User.used_code).
+const USER_SOURCE_SQL = "CASE WHEN u.used_code IS NOT NULL AND u.used_code <> '' THEN 'referral' ELSE 'organic' END";
+// Per-user paid-booking stats / session activity, joined as derived tables.
+const USER_BOOKING_STATS_SQL = `
+  SELECT user_id,
+    COUNT(*) AS total_bookings,
+    SUM(status = 'completed') AS completed_bookings,
+    MAX(created_at) AS last_booking_at
+  FROM appointments
+  WHERE payment_status IN ${PAID_PAYMENT_SQL}
+  GROUP BY user_id`;
+const USER_SESSION_STATS_SQL = `
+  SELECT user_id, MAX(updated_at) AS last_active_at
+  FROM UserSession
+  WHERE user_id IS NOT NULL
+  GROUP BY user_id`;
+const USER_LIST_SORTS = {
+  newest: "u.registered_at IS NULL, u.registered_at DESC, u.id DESC",
+  last_active: "ss.last_active_at IS NULL, ss.last_active_at DESC, u.id DESC",
+  last_booking: "bk.last_booking_at IS NULL, bk.last_booking_at DESC, u.id DESC",
+  bookings: "COALESCE(bk.total_bookings, 0) DESC, u.id DESC",
+};
+const USER_LIST_MAX_LIMIT = 10000;
+// What the customer paid for a booking: charged price + GST (appointments.gst %).
+const AMOUNT_PAID_SQL = "a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2)";
+
+const requireUserId = (value) => {
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw Error.BadRequest("id must be a positive whole number");
+  }
+  return id;
+};
+const escapeLike = (value) => String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+// Store.images is a JSON array string; first image path or null.
+const firstImage = (raw) => {
+  if (!raw) return null;
+  try {
+    const list = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(list) && list.length ? list[0] : null;
+  } catch {
+    return null;
+  }
 };
 
 const INVOICE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -281,12 +371,630 @@ adminDbController.app = {
       }
 
       return await adminDbController.Models.User.findAll({
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'loyalty_status', 'paid_booking_count'],
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'gender', 'city', 'registered_at'],
         where,
         order: [['id', 'DESC']]
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch users");
+    }
+  },
+  // ── Admin users V2 (UsersV2 / UserDetailsV2 pages) ───────────────────────
+
+  // Paginated user list with every filter in SQL. Adds what the V1 list never
+  // returned: gender, city, registered date, sign-up source / login method,
+  // last active (latest UserSession activity), last paid booking and the real
+  // paid-booking count (User.paid_booking_count was reset to 0 for tier
+  // pricing, so it is not a booking count any more).
+  getUsersListV2: async (data = {}) => {
+    try {
+      const where = [];
+      const replacements = {};
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "CONCAT_WS(' ', u.firstname, u.lastname) LIKE :searchLike",
+          "u.email LIKE :searchLike",
+          "u.phone LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("u.id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.status) {
+        if (!USER_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${USER_STATUSES.join(", ")}`);
+        }
+        addWhere("u.status = :status", { status: data.status });
+      }
+
+      if (data.gender) {
+        const gender = String(data.gender).toLowerCase();
+        if (gender === "male") addWhere("LOWER(u.gender) IN ('male', 'm')");
+        else if (gender === "female") addWhere("LOWER(u.gender) IN ('female', 'f')");
+        else if (gender === "unknown") addWhere("(u.gender IS NULL OR LOWER(u.gender) NOT IN ('male', 'm', 'female', 'f'))");
+        else throw Error.BadRequest("gender must be male, female or unknown");
+      }
+
+      if (data.city) {
+        addWhere("LOWER(TRIM(u.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+
+      if (data.source) {
+        if (!["referral", "organic"].includes(data.source)) {
+          throw Error.BadRequest("source must be referral or organic");
+        }
+        addWhere(`${USER_SOURCE_SQL} = :source`, { source: data.source });
+      }
+
+      if (data.login_method) {
+        if (!["apple", "google", "phone"].includes(data.login_method)) {
+          throw Error.BadRequest("login_method must be apple, google or phone");
+        }
+        addWhere(`${USER_LOGIN_METHOD_SQL} = :loginMethod`, { loginMethod: data.login_method });
+      }
+
+      if (data.loyalty) {
+        addWhere("u.loyalty_status = :loyalty", { loyalty: String(data.loyalty) });
+      }
+
+      if (data.booked === "yes" || data.booked === true) addWhere("COALESCE(bk.total_bookings, 0) > 0");
+      else if (data.booked === "no" || data.booked === false) addWhere("COALESCE(bk.total_bookings, 0) = 0");
+      else if (data.booked !== undefined && data.booked !== null && data.booked !== "") {
+        throw Error.BadRequest("booked must be yes or no");
+      }
+
+      for (const [field, op] of [["joined_from", ">="], ["joined_to", "<"]]) {
+        if (!data[field]) continue;
+        if (!isValidDate(String(data[field]))) {
+          throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+        }
+        const value = field === "joined_to" ? addDays(data[field], 1) : data[field];
+        addWhere(`u.registered_at ${op} :${field}`, { [field]: value });
+      }
+
+      const sort = USER_LIST_SORTS[data.sort || "newest"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(USER_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 10), USER_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM User u
+        LEFT JOIN (${USER_BOOKING_STATS_SQL}) bk ON bk.user_id = u.id
+        LEFT JOIN (${USER_SESSION_STATS_SQL}) ss ON ss.user_id = u.id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            u.id, u.firstname, u.lastname,
+            TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name,
+            u.email, u.phone, u.gender, u.city, u.status, u.loyalty_status,
+            u.profilePic AS profilepic, u.registered_at,
+            ${USER_SOURCE_SQL} AS source,
+            ${USER_LOGIN_METHOD_SQL} AS login_method,
+            ss.last_active_at,
+            bk.last_booking_at,
+            COALESCE(bk.total_bookings, 0) AS total_bookings,
+            COALESCE(bk.completed_bookings, 0) AS completed_bookings
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :limit OFFSET :offset
+          `,
+          { replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          total_bookings: Number(row.total_bookings) || 0,
+          completed_bookings: Number(row.completed_bookings) || 0,
+        })),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUsersListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch users");
+    }
+  },
+
+  // KPIs and charts for the users page, all from real columns:
+  // registered_at (join date), gender, city, used_code, UserSession, paid
+  // appointments. Users with no registered_at (pre-existing accounts with no
+  // history to backfill from) are counted in totals but not in any month.
+  getUsersSummaryV2: async () => {
+    try {
+      const today = toIstDatePart(new Date());
+      const [year, month] = today.split("-").map(Number);
+      const pad = (n) => String(n).padStart(2, "0");
+      const monthKey = (y, m) => {
+        const d = new Date(Date.UTC(y, m - 1, 1));
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+      };
+      const thisMonth = monthKey(year, month);
+      const lastMonth = monthKey(year, month - 1);
+      const monthBefore = monthKey(year, month - 2);
+      const dailyFrom = `${monthBefore}-01` < addDays(today, -29) ? `${monthBefore}-01` : addDays(today, -29);
+      const yearStart = `${year}-01-01`;
+      const run = (sql, replacements = {}) =>
+        adminDbController.connection.query(sql, { replacements, type: Sequelize.QueryTypes.SELECT });
+
+      const [[totals], [booked], daily, monthly, [beforeYear], cities, [latestActive], [latestBooking]] =
+        await Promise.all([
+          run(`
+            SELECT
+              COUNT(*) AS total,
+              COALESCE(SUM(u.status = 'active'), 0) AS active,
+              COALESCE(SUM(LOWER(u.gender) IN ('male', 'm')), 0) AS male,
+              COALESCE(SUM(LOWER(u.gender) IN ('female', 'f')), 0) AS female,
+              COALESCE(SUM(${USER_SOURCE_SQL} = 'referral'), 0) AS referral,
+              COALESCE(SUM(u.registered_at IS NULL), 0) AS unknown_join_date
+            FROM User u
+          `),
+          run(`SELECT COUNT(DISTINCT user_id) AS booked_users FROM appointments WHERE payment_status IN ${PAID_PAYMENT_SQL}`),
+          run(
+            `SELECT DATE_FORMAT(registered_at, '%Y-%m-%d') AS day, COUNT(*) AS users
+             FROM User WHERE registered_at >= :dailyFrom
+             GROUP BY DATE_FORMAT(registered_at, '%Y-%m-%d')`,
+            { dailyFrom }
+          ),
+          run(
+            `SELECT DATE_FORMAT(registered_at, '%Y-%m') AS month, COUNT(*) AS users
+             FROM User WHERE registered_at >= :yearStart
+             GROUP BY DATE_FORMAT(registered_at, '%Y-%m')`,
+            { yearStart }
+          ),
+          run(`SELECT COUNT(*) AS users FROM User WHERE registered_at < :yearStart OR registered_at IS NULL`, { yearStart }),
+          run(`
+            SELECT MIN(TRIM(city)) AS city, COUNT(*) AS users
+            FROM User
+            WHERE city IS NOT NULL AND TRIM(city) <> ''
+            GROUP BY LOWER(TRIM(city))
+            ORDER BY users DESC
+            LIMIT 20
+          `),
+          run(`
+            SELECT u.id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, u.profilePic AS profilepic, s.last_active_at
+            FROM (${USER_SESSION_STATS_SQL}) s
+            INNER JOIN User u ON u.id = s.user_id
+            ORDER BY s.last_active_at DESC
+            LIMIT 1
+          `),
+          run(`
+            SELECT a.id AS appointment_id, a.created_at AS last_booking_at,
+              u.id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, u.profilePic AS profilepic
+            FROM appointments a
+            INNER JOIN User u ON u.id = a.user_id
+            WHERE a.payment_status IN ${PAID_PAYMENT_SQL}
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT 1
+          `),
+        ]);
+
+      const dailyMap = new Map(daily.map((r) => [r.day, Number(r.users) || 0]));
+      const series = (from, days) =>
+        Array.from({ length: days }, (_, i) => dailyMap.get(addDays(from, i)) || 0);
+      const daysIn = (key) => {
+        const [y, m] = key.split("-").map(Number);
+        return new Date(Date.UTC(y, m, 0)).getUTCDate();
+      };
+      const sumMonth = (key) => series(`${key}-01`, daysIn(key)).reduce((a, b) => a + b, 0);
+
+      const monthlyMap = new Map(monthly.map((r) => [r.month, Number(r.users) || 0]));
+      let running = Number(beforeYear?.users) || 0;
+      const growth = Array.from({ length: month }, (_, i) => {
+        const key = monthKey(year, i + 1);
+        running += monthlyMap.get(key) || 0;
+        return { month: key, new_users: monthlyMap.get(key) || 0, total_users: running };
+      });
+
+      return {
+        date: today,
+        total_users: Number(totals?.total) || 0,
+        active_users: Number(totals?.active) || 0,
+        male_users: Number(totals?.male) || 0,
+        female_users: Number(totals?.female) || 0,
+        referral_users: Number(totals?.referral) || 0,
+        unknown_join_date: Number(totals?.unknown_join_date) || 0,
+        booked_users: Number(booked?.booked_users) || 0,
+        new_this_month: sumMonth(thisMonth),
+        new_last_month: sumMonth(lastMonth),
+        new_month_before: sumMonth(monthBefore),
+        daily_signups: {
+          last_30_days: series(addDays(today, -29), 30),
+          this_month: series(`${thisMonth}-01`, Number(today.slice(8, 10))),
+          last_month: series(`${lastMonth}-01`, daysIn(lastMonth)),
+        },
+        growth,
+        top_cities: cities.map((c) => ({ city: c.city, users: Number(c.users) || 0 })),
+        latest_active: latestActive || null,
+        latest_booking: latestBooking || null,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUsersSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch users summary");
+    }
+  },
+
+  // Everything the V2 profile needs in one call, for a user of ANY status
+  // (the V1 details call only returns active users). Bookings keep their real
+  // appointments.status, and carry the list price, what was charged, GST,
+  // what was paid and the saving, plus salon, slot time, services and coupon.
+  getUserProfileV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const run = (sql, replacements = {}) =>
+        adminDbController.connection.query(sql, { replacements: { id, ...replacements }, type: Sequelize.QueryTypes.SELECT });
+
+      const [[user], [sessions], bookingRows] = await Promise.all([
+        run(`
+          SELECT u.id, u.firstname, u.lastname, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name,
+            u.email, u.phone, u.gender, u.age, u.date_of_birth, u.city, u.country, u.status,
+            u.loyalty_status, u.profilePic AS profilepic, u.registered_at, u.wallet,
+            u.invited_code, u.used_code,
+            ${USER_SOURCE_SQL} AS source,
+            ${USER_LOGIN_METHOD_SQL} AS login_method
+          FROM User u
+          WHERE u.id = :id
+          LIMIT 1
+        `),
+        run(`
+          SELECT COUNT(*) AS sessions, MAX(created_at) AS last_login_at, MAX(updated_at) AS last_active_at
+          FROM UserSession
+          WHERE user_id = :id
+        `),
+        run(`
+          SELECT
+            a.id, a.created_at,
+            DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS booking_date,
+            a.status, a.payment_status, a.is_wallet,
+            a.amount AS list_price,
+            a.discounted_amount AS amount,
+            ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
+            ${AMOUNT_PAID_SQL} AS amount_paid,
+            GREATEST(0, a.amount - a.discounted_amount) AS savings,
+            cp.code AS coupon_code,
+            e.\`from\` AS slot_from, e.\`to\` AS slot_to,
+            d.id AS salon_id, d.name AS salon_name, d.images AS salon_images,
+            f.area AS salon_area, f.city AS salon_city,
+            (
+              SELECT GROUP_CONCAT(COALESCE(ss.service_name, cb.combo) ORDER BY si.id SEPARATOR '||')
+              FROM appointment_items si
+              LEFT JOIN StoreServices ss ON si.service_id = ss.id
+              LEFT JOIN Combo cb ON si.combo_id = cb.id
+              WHERE si.appointment_id = a.id
+            ) AS services,
+            (
+              SELECT GROUP_CONCAT(DISTINCT sc.name ORDER BY sc.name SEPARATOR '||')
+              FROM appointment_items ci
+              LEFT JOIN StoreServices css ON ci.service_id = css.id
+              LEFT JOIN Combo ccb ON ci.combo_id = ccb.id
+              INNER JOIN Servicecategory sc ON sc.id = COALESCE(css.service_category, ccb.service_category)
+              WHERE ci.appointment_id = a.id
+            ) AS service_categories
+          FROM appointments a
+          LEFT JOIN Store d ON a.store_id = d.id
+          LEFT JOIN PartnerAddress f ON d.address_id = f.id
+          LEFT JOIN Slots e ON a.slot_id = e.id
+          LEFT JOIN Coupons cp ON a.is_discounted = 1 AND cp.id = a.discount_id
+          WHERE a.user_id = :id
+            AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.booking_date DESC, e.\`from\` DESC, a.id DESC
+        `),
+      ]);
+
+      if (!user) throw Error.NotFound("User not found");
+
+      let referredBy = null;
+      if (user.used_code) {
+        const [referrer] = await run(
+          `SELECT id, TRIM(CONCAT_WS(' ', firstname, lastname)) AS name FROM User WHERE invited_code = :code AND id <> :id LIMIT 1`,
+          { code: user.used_code }
+        );
+        referredBy = referrer || null;
+      }
+
+      const split = (value) => (value ? String(value).split("||").filter(Boolean) : []);
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const today = toIstDatePart(new Date());
+      const bookings = bookingRows.map((row) => {
+        const { salon_images: images, ...rest } = row;
+        return {
+          ...rest,
+          list_price: money(row.list_price),
+          amount: money(row.amount),
+          gst_amount: money(row.gst_amount),
+          amount_paid: money(row.amount_paid),
+          savings: money(row.savings),
+          is_wallet: !!row.is_wallet,
+          salon_image: firstImage(images),
+          services: split(row.services),
+          service_categories: split(row.service_categories),
+          upcoming: ["booked", "confirmed"].includes(row.status) && row.booking_date >= today,
+        };
+      });
+
+      const count = (fn) => bookings.filter(fn).length;
+      const completed = bookings.filter((b) => b.status === "completed");
+      const spent = completed.reduce((sum, b) => sum + b.amount_paid, 0);
+      const notCancelled = bookings.filter((b) => !["cancelled", "refunded"].includes(b.status));
+
+      return {
+        user: {
+          ...user,
+          wallet: Number(user.wallet) || 0,
+          referred_by: referredBy,
+          sessions: Number(sessions?.sessions) || 0,
+          last_login_at: sessions?.last_login_at || null,
+          last_active_at: sessions?.last_active_at || null,
+        },
+        summary: {
+          total_bookings: bookings.length,
+          upcoming: count((b) => b.upcoming),
+          completed: completed.length,
+          cancelled: count((b) => b.status === "cancelled"),
+          refunded: count((b) => b.status === "refunded"),
+          this_month: count((b) => b.booking_date && b.booking_date.slice(0, 7) === today.slice(0, 7)),
+          // Paid (charged price + GST) on completed bookings.
+          total_spent: money(spent),
+          // List price minus charged price, on bookings that weren't cancelled/refunded.
+          total_savings: money(notCancelled.reduce((sum, b) => sum + b.savings, 0)),
+          avg_order_value: completed.length ? money(spent / completed.length) : null,
+          highest_booking: completed.length ? Math.max(...completed.map((b) => b.amount_paid)) : null,
+        },
+        bookings,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserProfileV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user profile");
+    }
+  },
+
+  // Timeline for one user, newest first, merged from every per-user log the
+  // platform writes: logins (UserSession), bookings placed / cancelled /
+  // refunded / checkouts not completed (appointments), reviews, refund
+  // requests, wallet credits/debits (user_transaction_logs), push
+  // notifications received (NotificationLogs) and account changes
+  // (AccountLogs). In-app actions like searches or salon views are not
+  // recorded anywhere, so they can't appear. `communication` is the push
+  // history on its own (WhatsApp / SMS aren't logged per user).
+  getUserActivityV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 50), 200);
+      const run = (sql) =>
+        adminDbController.connection.query(sql, { replacements: { id, limit }, type: Sequelize.QueryTypes.SELECT });
+
+      const [logins, placed, closed, failed, reviews, refunds, wallet, notifications, account] = await Promise.all([
+        run(`SELECT id, created_at AS at FROM UserSession WHERE user_id = :id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT :limit`),
+        run(`
+          SELECT a.id, a.created_at AS at, a.discounted_amount AS amount, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT a.id, a.updated_at AS at, a.status, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.status IN ('cancelled', 'refunded')
+            AND a.payment_status IN (${PAID_PAYMENT_SQL.slice(1, -1)}, 'refunded')
+            AND a.updated_at IS NOT NULL
+          ORDER BY a.updated_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT a.id, a.created_at AS at, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.payment_status = 'failed'
+          ORDER BY a.created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT r.id, r.cretaed_at AS at, r.rating, r.review_description, d.name AS salon_name
+          FROM Reviews r LEFT JOIN Store d ON d.id = r.store_id
+          WHERE r.user_id = :id AND r.cretaed_at IS NOT NULL
+          ORDER BY r.cretaed_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, created_at AS at, appointment_id, reason, status
+          FROM refund_requests WHERE user_id = :id AND created_at IS NOT NULL
+          ORDER BY created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, type, transaction_amount AS amount, description
+          FROM user_transaction_logs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, title, description
+          FROM NotificationLogs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, action, description
+          FROM AccountLogs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+      ]);
+
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const events = [
+        ...logins.map((r) => ({ type: "login", at: r.at, title: "Logged in", ref_id: r.id })),
+        ...placed.map((r) => ({
+          type: "booking",
+          at: r.at,
+          title: `Booked${r.salon_name ? ` at ${r.salon_name}` : ""}`,
+          amount: money(r.amount),
+          ref_id: r.id,
+        })),
+        ...closed.map((r) => ({
+          type: r.status === "refunded" ? "refund" : "cancellation",
+          at: r.at,
+          title: `Booking #${r.id} ${r.status}${r.salon_name ? ` (${r.salon_name})` : ""}`,
+          ref_id: r.id,
+        })),
+        ...failed.map((r) => ({
+          type: "checkout_failed",
+          at: r.at,
+          title: `Checkout not completed${r.salon_name ? ` at ${r.salon_name}` : ""}`,
+          ref_id: r.id,
+        })),
+        ...reviews.map((r) => ({
+          type: "review",
+          at: r.at,
+          title: `Rated ${r.salon_name || "a salon"} ${r.rating ?? "-"}/5`,
+          description: r.review_description || null,
+          ref_id: r.id,
+        })),
+        ...refunds.map((r) => ({
+          type: "refund_request",
+          at: r.at,
+          title: `Refund requested for booking #${r.appointment_id} (${r.status || "pending"})`,
+          description: r.reason || null,
+          ref_id: r.id,
+        })),
+        ...wallet.map((r) => ({
+          type: r.type === "debit" ? "wallet_debit" : "wallet_credit",
+          at: r.at,
+          title: `Wallet ${r.type === "debit" ? "debited" : "credited"}`,
+          amount: money(r.amount),
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+        ...notifications.map((r) => ({
+          type: "notification",
+          at: r.at,
+          title: r.title || "Notification",
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+        ...account.map((r) => ({
+          type: "account",
+          at: r.at,
+          title: String(r.action || "Account change").replace(/_/g, " ").toLowerCase(),
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+      ]
+        .filter((e) => e.at)
+        .sort((a, b) => new Date(b.at) - new Date(a.at))
+        .slice(0, limit);
+
+      return {
+        events,
+        communication: notifications.map((r) => ({
+          id: r.id,
+          channel: "push",
+          at: r.at,
+          title: r.title || "Notification",
+          description: r.description || null,
+        })),
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserActivityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user activity");
+    }
+  },
+
+  // Offers tab: coupons the user redeemed on paid bookings (with the booking
+  // and date, from appointments.discount_id), any redemptions recorded in
+  // UsedCoupons without a matching booking, and wallet credits/debits.
+  getUserOffersV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const run = (sql) =>
+        adminDbController.connection.query(sql, { replacements: { id }, type: Sequelize.QueryTypes.SELECT });
+
+      const [[user], couponBookings, usedCoupons, walletRows] = await Promise.all([
+        run(`SELECT id, wallet FROM User WHERE id = :id LIMIT 1`),
+        run(`
+          SELECT a.id AS appointment_id, a.created_at AS used_at, a.status,
+            GREATEST(0, a.amount - a.discounted_amount) AS booking_savings,
+            cp.id AS coupon_id, cp.code, cp.discount_type, cp.discount_value, cp.description
+          FROM appointments a
+          INNER JOIN Coupons cp ON cp.id = a.discount_id
+          WHERE a.user_id = :id AND a.is_discounted = 1
+            AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.created_at DESC
+        `),
+        run(`
+          SELECT uc.coupon_id, cp.code, cp.discount_type, cp.discount_value, COUNT(*) AS times_used
+          FROM UsedCoupons uc
+          LEFT JOIN Coupons cp ON cp.id = uc.coupon_id
+          WHERE uc.user_id = :id
+          GROUP BY uc.coupon_id, cp.code, cp.discount_type, cp.discount_value
+        `),
+        run(`
+          SELECT id, date, type, transaction_amount AS amount, description
+          FROM user_transaction_logs WHERE user_id = :id
+          ORDER BY date DESC
+        `),
+      ]);
+
+      if (!user) throw Error.NotFound("User not found");
+
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const wallet = walletRows.map((r) => ({ ...r, amount: money(r.amount) }));
+      const total = (type) => money(wallet.filter((w) => w.type === type).reduce((sum, w) => sum + w.amount, 0));
+      const bookedCouponIds = new Set(couponBookings.map((c) => c.coupon_id));
+
+      return {
+        coupon_bookings: couponBookings.map((c) => ({
+          ...c,
+          booking_savings: money(c.booking_savings),
+          discount_value: c.discount_value === null || c.discount_value === undefined ? null : Number(c.discount_value),
+        })),
+        // Redemptions with no paid booking attached (e.g. applied, then released).
+        other_coupons: usedCoupons
+          .filter((c) => !bookedCouponIds.has(c.coupon_id))
+          .map((c) => ({ ...c, times_used: Number(c.times_used) || 0 })),
+        wallet: {
+          balance: Number(user.wallet) || 0,
+          total_credited: total("credit"),
+          total_debited: total("debit"),
+          transactions: wallet,
+        },
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserOffersV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user offers");
+    }
+  },
+
+  // User row for the admin V1 profile call, regardless of status - the
+  // active-only getuserdetails (used by refund approval) left inactive and
+  // terminated users' profiles blank.
+  getAdminUserById: async (id) => {
+    try {
+      return await adminDbController.Models.User.findOne({
+        where: { id },
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id', 'date_of_birth', 'age', 'gender', 'loyalty_status', 'city', 'registered_at'],
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch user details");
     }
   },
   getUsersForExcelExport: async () => {
@@ -1988,6 +2696,9 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to get cancelled orders")
     }
   },
+  // booking_datetime here and in getBookingsDetailsByOrderDate/ById is the
+  // appointment day + the booked slot's start: booking_date itself is
+  // date-only and reads as 05:30 IST.
   getBookingsDetails: async (data) => {
   try {
     const page = Number(data.page) || 1;
@@ -2006,7 +2717,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         d.name AS salon_name,
         a.status,
         a.payment_status,
-        DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+        CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
         a.amount AS service_amount,
         a.discounted_amount AS discount_amount,
         (a.amount - a.discounted_amount) AS subtotal,
@@ -2015,6 +2726,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
       INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
       WHERE 1=1
       ${dateFilter}
       ${statusFilter}
@@ -2080,7 +2792,7 @@ getBookingsDetailsByOrderDate: async (data) => {
         d.name AS salon_name,
         a.status,
         a.payment_status,
-        DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+        CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
         a.amount AS service_amount,
         a.discounted_amount AS discount_amount,
         (a.amount - a.discounted_amount) AS subtotal,
@@ -2089,6 +2801,7 @@ getBookingsDetailsByOrderDate: async (data) => {
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
       INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
       WHERE 1=1
       ${dateFilter}
       ${statusFilter}
@@ -2135,6 +2848,321 @@ getBookingsDetailsByOrderDate: async (data) => {
     throw Error.SomethingWentWrong("Failed to fetch booking details by order date");
   }
 },
+// ── Bookings list V2 (admin "Bookings by Order Date" V2 page) ─────────────
+//
+// Same rows as getBookingsDetailsByOrderDate (V1 keeps using that one,
+// untouched), plus what the V2 table shows: customer phone, salon area/city,
+// slot time, service names and their service categories ("booking type").
+// Search, payment and booking-type filters run in SQL so they work across
+// every page, not just the one loaded.
+//
+// Joins mirror the partner app: slot time via appointments.slot_id -> Slots
+// (getTodayBookingsByStoreId), services via appointment_items -> StoreServices
+// / Combo (getservicebyappoinment), category via service_category ->
+// Servicecategory. User/Store are LEFT JOINed so the total matches V1's
+// count of every appointment in the range.
+getBookingsListV2: async (data = {}) => {
+  try {
+    const where = [];
+    const replacements = {};
+    const addWhere = (sql, values = {}) => {
+      where.push(sql);
+      Object.assign(replacements, values);
+    };
+
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    if (data.fromDate || data.toDate) {
+      if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+        throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+      }
+      if (data.fromDate > data.toDate) {
+        throw Error.BadRequest("fromDate must not be after toDate");
+      }
+      addWhere(`a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd`, {
+        fromDate: data.fromDate,
+        toDateEnd: addDays(data.toDate, 1),
+      });
+    }
+
+    if (data.status) {
+      if (!BOOKING_STATUSES.includes(data.status)) {
+        throw Error.BadRequest(`status must be one of: ${BOOKING_STATUSES.join(", ")}`);
+      }
+      addWhere("a.status = :status", { status: data.status });
+    }
+
+    if (data.payment) {
+      const paymentSql = BOOKING_PAYMENT_FILTERS[data.payment];
+      if (!paymentSql) {
+        throw Error.BadRequest(`payment must be one of: ${Object.keys(BOOKING_PAYMENT_FILTERS).join(", ")}`);
+      }
+      addWhere(paymentSql);
+    }
+
+    if (data.service_category_id !== undefined && data.service_category_id !== null && data.service_category_id !== "") {
+      const categoryId = Number(data.service_category_id);
+      if (!Number.isInteger(categoryId) || categoryId <= 0) {
+        throw Error.BadRequest("service_category_id must be a positive whole number");
+      }
+      addWhere(
+        `EXISTS (
+          SELECT 1 FROM appointment_items fi
+          LEFT JOIN StoreServices fss ON fi.service_id = fss.id
+          LEFT JOIN Combo fcb ON fi.combo_id = fcb.id
+          WHERE fi.appointment_id = a.id
+            AND COALESCE(fss.service_category, fcb.service_category) = :categoryId
+        )`,
+        { categoryId }
+      );
+    }
+
+    const search = String(data.search || "").trim().replace(/^#/, "");
+    if (search) {
+      const like = `%${search.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      const conditions = [
+        "CONCAT_WS(' ', c.firstname, c.lastname) LIKE :searchLike",
+        "c.phone LIKE :searchLike",
+        "c.email LIKE :searchLike",
+        "d.name LIKE :searchLike",
+      ];
+      const searchValues = { searchLike: like };
+      if (/^\d+$/.test(search)) {
+        conditions.unshift("a.id = :searchId");
+        searchValues.searchId = Number(search);
+      }
+      addWhere(`(${conditions.join(" OR ")})`, searchValues);
+    }
+
+    const page = Math.max(1, Number(data.page) || 1);
+    const limit = Math.min(Math.max(1, Number(data.limit) || 10), BOOKING_LIST_MAX_LIMIT);
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const fromSql = `
+      FROM appointments a
+      LEFT JOIN User c ON a.user_id = c.id
+      LEFT JOIN Store d ON a.store_id = d.id
+      LEFT JOIN PartnerAddress f ON d.address_id = f.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
+      ${whereSql}
+    `;
+
+    const [rows, totalRows] = await Promise.all([
+      adminDbController.connection.query(
+        `
+        SELECT
+          a.id,
+          a.created_at,
+          DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS booking_date,
+          a.status,
+          a.payment_status,
+          a.amount,
+          a.discounted_amount,
+          ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
+          a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2) AS payable_amount,
+          c.id AS user_id,
+          TRIM(CONCAT_WS(' ', c.firstname, c.lastname)) AS user_name,
+          c.phone AS user_phone,
+          d.id AS salon_id,
+          d.name AS salon_name,
+          f.area AS salon_area,
+          f.city AS salon_city,
+          e.\`from\` AS slot_from,
+          e.\`to\` AS slot_to,
+          (
+            SELECT GROUP_CONCAT(COALESCE(ss.service_name, cb.combo) ORDER BY si.id SEPARATOR '||')
+            FROM appointment_items si
+            LEFT JOIN StoreServices ss ON si.service_id = ss.id
+            LEFT JOIN Combo cb ON si.combo_id = cb.id
+            WHERE si.appointment_id = a.id
+          ) AS services,
+          (
+            SELECT GROUP_CONCAT(DISTINCT sc.name ORDER BY sc.name SEPARATOR '||')
+            FROM appointment_items ci
+            LEFT JOIN StoreServices css ON ci.service_id = css.id
+            LEFT JOIN Combo ccb ON ci.combo_id = ccb.id
+            INNER JOIN Servicecategory sc ON sc.id = COALESCE(css.service_category, ccb.service_category)
+            WHERE ci.appointment_id = a.id
+          ) AS service_categories
+        ${fromSql}
+        ORDER BY a.${dateColumn} DESC, a.id DESC
+        LIMIT :limit OFFSET :offset
+        `,
+        {
+          replacements: { ...replacements, limit, offset: (page - 1) * limit },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      ),
+      adminDbController.connection.query(
+        `SELECT COUNT(*) AS total ${fromSql}`,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+
+    const split = (value) => (value ? String(value).split("||").filter(Boolean) : []);
+    return {
+      rows: rows.map((row) => ({
+        ...row,
+        amount: Number(row.amount) || 0,
+        discounted_amount: Number(row.discounted_amount) || 0,
+        gst_amount: Number(row.gst_amount) || 0,
+        payable_amount: Number(row.payable_amount) || 0,
+        services: split(row.services),
+        service_categories: split(row.service_categories),
+      })),
+      total: Number(totalRows[0]?.total) || 0,
+      page,
+      limit,
+    };
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getBookingsListV2 error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch bookings");
+  }
+},
+
+// Salons ranked by revenue for a date range (bookings page "Top Performing
+// Salon"). Same definitions as the dashboard V2: bookings = paid
+// appointments, revenue = discounted_amount of completed ones.
+getTopSalonsByDateRange: async (data = {}) => {
+  try {
+    if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+      throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+    }
+    if (data.fromDate > data.toDate) {
+      throw Error.BadRequest("fromDate must not be after toDate");
+    }
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    const limit = Math.min(Math.max(1, Number(data.limit) || 1), 20);
+
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT
+        d.id AS salon_id,
+        d.name AS salon_name,
+        f.area AS salon_area,
+        f.city AS salon_city,
+        COUNT(a.id) AS bookings,
+        COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS revenue
+      FROM appointments a
+      INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN PartnerAddress f ON d.address_id = f.id
+      WHERE a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd
+        AND a.payment_status IN ('success', 'sucssess')
+      GROUP BY d.id, d.name, f.area, f.city
+      ORDER BY revenue DESC, bookings DESC, d.id ASC
+      LIMIT :limit
+      `,
+      {
+        replacements: { fromDate: data.fromDate, toDateEnd: addDays(data.toDate, 1), limit },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      bookings: Number(row.bookings) || 0,
+      revenue: Number(Number(row.revenue || 0).toFixed(2)),
+    }));
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getTopSalonsByDateRange error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch top salons");
+  }
+},
+// Revenue + booking-hour summary for the bookings V2 page.
+//   revenue            invoice rule (getInvoiceDetailsForPartner /
+//                      ...Monthly): every non-cancelled appointment in the
+//                      range, each item priced at the full service price if
+//                      the service is "important", otherwise at what was
+//                      charged (appointment_items.service_amount); items with
+//                      no service/combo are skipped; no GST. Summed over all
+//                      salons it equals the sum of their invoices.
+//   invoiced_bookings  appointments that contributed to revenue
+//   avg_order_value    revenue / invoiced_bookings
+//   today              the same revenue rule for appointments dated today
+//   booking_hours      24 counts: paid bookings in the range by the hour
+//                      they were placed (created_at, stored in IST)
+getBookingsSummaryV2: async (data = {}) => {
+  try {
+    if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+      throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+    }
+    if (data.fromDate > data.toDate) {
+      throw Error.BadRequest("fromDate must not be after toDate");
+    }
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    const today = toIstDatePart(new Date());
+
+    const revenueFor = (column, from, to) =>
+      adminDbController.connection.query(
+        `
+        SELECT
+          COUNT(DISTINCT a.id) AS invoiced_bookings,
+          COALESCE(SUM(${INVOICE_ITEM_AMOUNT_SQL}), 0) AS revenue
+        FROM appointments a
+        INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+        LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+        LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        WHERE a.${column} >= :fromDate AND a.${column} < :toDateEnd
+          AND a.status <> 'cancelled'
+          AND (ss.id IS NOT NULL OR cb.id IS NOT NULL)
+        `,
+        {
+          replacements: { fromDate: from, toDateEnd: addDays(to, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+    const [[range], [todayRow], hourRows] = await Promise.all([
+      revenueFor(dateColumn, data.fromDate, data.toDate),
+      // Invoices are per appointment day, so "today" is always by booking_date.
+      revenueFor("booking_date", today, today),
+      adminDbController.connection.query(
+        `
+        SELECT HOUR(a.created_at) AS hour, COUNT(*) AS bookings
+        FROM appointments a
+        WHERE a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd
+          AND a.payment_status IN ('success', 'sucssess')
+          AND a.created_at IS NOT NULL
+        GROUP BY HOUR(a.created_at)
+        `,
+        {
+          replacements: { fromDate: data.fromDate, toDateEnd: addDays(data.toDate, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      ),
+    ]);
+
+    const money = (v) => Number(Number(v || 0).toFixed(2));
+    const summarize = (row) => {
+      const revenue = money(row?.revenue);
+      const invoiced = Number(row?.invoiced_bookings) || 0;
+      return {
+        revenue,
+        invoiced_bookings: invoiced,
+        avg_order_value: invoiced ? money(revenue / invoiced) : null,
+      };
+    };
+
+    const bookingHours = Array(24).fill(0);
+    hourRows.forEach((row) => {
+      const hour = Number(row.hour);
+      if (hour >= 0 && hour < 24) bookingHours[hour] = Number(row.bookings) || 0;
+    });
+
+    return {
+      from: data.fromDate,
+      to: data.toDate,
+      ...summarize(range),
+      today: { date: today, ...summarize(todayRow) },
+      booking_hours: bookingHours,
+    };
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getBookingsSummaryV2 error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch bookings summary");
+  }
+},
+
 getBookingsDetailsById: async (data) => {
   try {
     const query = `
@@ -2148,7 +3176,7 @@ getBookingsDetailsById: async (data) => {
           d.phone AS salon_phone,
           d.email AS salon_mail,
           a.status,
-          DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+          CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
           CONCAT(e.from,'-',e.to) AS slot_timing,
           a.gst,
           DATE_FORMAT(a.created_at, '%d %b, %Y') AS order_date,
@@ -4200,19 +5228,6 @@ updateRefundBookingStatus: async ({ body, user }) => {
       throw Error.SomethingWentWrong("Failed to fetch professional by ID");
     }
   },
-  getuserdetails: async (body, id) => {
-    try {
-      return await adminDbController.Models.User.findOne({
-        where: {
-          status: "active",
-          id: id
-        },
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status'],
-      });
-    } catch (error) {
-      throw Error.SomethingWentWrong("Failed to fetch users");
-    }
-  },
   addsubscription: async (data, id) => {
     try {
       return await adminDbController.Models.SubscriptionPlans.create({
@@ -4522,15 +5537,22 @@ verifypartnerdetails: async (data) => {
       throw Error.SomethingWentWrong("Failed to fetch user details");
     }
   },
+  // What the user actually paid (charged price + GST) on completed, paid
+  // bookings. The old filter `status: "booked" || "completed"` evaluated to
+  // just "booked" and summed list prices of bookings not yet delivered.
   gettotalspent: async (id) => {
     try {
-      const totalSpent = await adminDbController.Models.appointments.sum('amount', {
-        where: {
-          user_id: id,
-          status: "booked" || "completed",
-        }
-      });
-      return totalSpent || 0;
+      const [row] = await adminDbController.connection.query(
+        `
+        SELECT COALESCE(SUM(${AMOUNT_PAID_SQL}), 0) AS spent
+        FROM appointments a
+        WHERE a.user_id = :id
+          AND a.status = 'completed'
+          AND a.payment_status IN ${PAID_PAYMENT_SQL}
+        `,
+        { replacements: { id }, type: Sequelize.QueryTypes.SELECT }
+      );
+      return Number(Number(row?.spent || 0).toFixed(2));
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch total spent");
     }
@@ -5107,6 +6129,7 @@ verifypartnerdetails: async (data) => {
           a.id AS appointment_id,
           a.booking_date AS appointment_date,
           a.created_at AS order_time,
+          e.\`from\` AS slot_from,
           a.status,
           a.payment_status,
           ai.service_amount AS charged_amount,
@@ -5121,10 +6144,11 @@ verifypartnerdetails: async (data) => {
         INNER JOIN appointment_items ai ON ai.appointment_id = a.id
         LEFT JOIN StoreServices ss ON ai.service_id = ss.id
         LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        LEFT JOIN Slots e ON a.slot_id = e.id
         WHERE a.store_id = :partnerId
           AND DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        ORDER BY a.booking_date ASC, a.id ASC
+        ORDER BY a.booking_date ASC, e.\`from\` ASC, a.id ASC
         `,
         {
           replacements: {
@@ -5168,8 +6192,12 @@ verifypartnerdetails: async (data) => {
 
           return {
             appointment_id: row.appointment_id,
-            // Keep booking_time for PDF/UI compat; value is appointment day
-            booking_time: row.appointment_date,
+            // booking_date is date-only (it reads as 05:30 IST), so the real
+            // appointment time is the booked slot's start - same as the
+            // partner app. null when the booking has no slot.
+            booking_time: row.slot_from
+              ? buildAppointmentDateTime(row.appointment_date, row.slot_from)
+              : null,
             appointment_date: row.appointment_date,
             order_time: row.order_time,
             status: row.status,
@@ -5706,6 +6734,7 @@ verifypartnerdetails: async (data) => {
           a.id AS appointment_id,
           a.booking_date AS appointment_date,
           a.created_at AS order_time,
+          e.\`from\` AS slot_from,
           a.status,
           a.payment_status,
           ai.service_amount AS charged_amount,
@@ -5720,10 +6749,11 @@ verifypartnerdetails: async (data) => {
         INNER JOIN appointment_items ai ON ai.appointment_id = a.id
         LEFT JOIN StoreServices ss ON ai.service_id = ss.id
         LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        LEFT JOIN Slots e ON a.slot_id = e.id
         WHERE a.store_id = :partnerId
           AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate
           AND a.status != 'cancelled'
-        ORDER BY a.booking_date ASC, a.id ASC
+        ORDER BY a.booking_date ASC, e.\`from\` ASC, a.id ASC
         `,
         {
           replacements: {
@@ -5766,8 +6796,12 @@ verifypartnerdetails: async (data) => {
 
           return {
             appointment_id: row.appointment_id,
-            // Keep booking_time for PDF/UI compat; value is appointment day
-            booking_time: row.appointment_date,
+            // booking_date is date-only (it reads as 05:30 IST), so the real
+            // appointment time is the booked slot's start - same as the
+            // partner app. null when the booking has no slot.
+            booking_time: row.slot_from
+              ? buildAppointmentDateTime(row.appointment_date, row.slot_from)
+              : null,
             appointment_date: row.appointment_date,
             order_time: row.order_time,
             status: row.status,

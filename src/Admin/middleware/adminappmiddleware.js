@@ -244,6 +244,78 @@ Adminappmiddleware.app = {
         }
     },
 
+    getUsersListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUsersListV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch users");
+        }
+    },
+
+    getUsersSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUsersSummaryV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch users summary");
+        }
+    },
+
+    getUserProfileV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserProfileV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user profile");
+        }
+    },
+
+    getUserActivityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserActivityV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user activity");
+        }
+    },
+
+    getUserOffersV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserOffersV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user offers");
+        }
+    },
+
+    getBookingsListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingsListV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch bookings");
+        }
+    },
+
+    getBookingsSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingsSummaryV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch bookings summary");
+        }
+    },
+
+    getTopSalonsByDateRange: async ({ body }) => {
+        try {
+            return await adminDbController.app.getTopSalonsByDateRange(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch top salons");
+        }
+    },
+
     getFreeBookingLimit: async () => {
         try {
             return await adminDbController.app.getFreeBookingLimit();
@@ -2005,7 +2077,8 @@ Adminappmiddleware.app = {
         try {
             let data = []
 
-            const getuserdeatils = await adminDbController.app.getuserdetails(body.id);
+            // Any status - getuserdetails is active-only (refund flow relies on that).
+            const getuserdeatils = await adminDbController.app.getAdminUserById(body.id);
 
             const appoinments = await userDbController.app.getallapoinments(body, body.id);
 
