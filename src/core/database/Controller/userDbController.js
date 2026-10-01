@@ -2527,6 +2527,7 @@ SELECT
     SS.servicePrice,
     SS.serviceName,
     SS.categories,
+    SS.servicesList,
 
     L.languageCodes,
 
@@ -2554,7 +2555,8 @@ LEFT JOIN (
     SELECT ss.store_id, 
            MIN(ss.discounted_amount) AS servicePrice, 
            MIN(ss.service_name) AS serviceName,
-           GROUP_CONCAT(DISTINCT sc.name) AS categories
+           GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
@@ -2700,6 +2702,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     SS.servicePrice,
     SS.serviceName,
     SS.categories,
+    SS.servicesList,
 
     L.languageCodes,
 
@@ -2726,7 +2729,8 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     SELECT ss.store_id, 
            MIN(ss.discounted_amount) AS servicePrice, 
            MIN(ss.service_name) AS serviceName,
-           GROUP_CONCAT(DISTINCT sc.name) AS categories
+           GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
