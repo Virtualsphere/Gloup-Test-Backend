@@ -3812,9 +3812,18 @@ END AS distance
   },
 
   getAmenitiesv2: async (store_id) => {
-    return await Models.StoreAminities.findAll({
-      where: { store_id },
-      raw: true
+    const sql = `
+      SELECT a.id,
+             a.name,
+             a.icon
+      FROM Aminities a
+      JOIN StoreAminities sa
+        ON a.id = sa.aminities_id
+      WHERE sa.store_id = :store_id
+    `;
+    return await connection.query(sql, {
+      replacements: { store_id },
+      type: Sequelize.QueryTypes.SELECT
     });
   },
   getStoreLanguagesv2: async (store_id) => {
