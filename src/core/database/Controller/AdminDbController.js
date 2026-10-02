@@ -1,5 +1,6 @@
 import require from "requirejs";
 import * as Error from "../../errors/ErrorConstant.js";
+import { ApplicationError } from "../../errors/ApplicationError.js";
 import { connection } from "../connection.js";
 import * as Models from "../models/index.js";
 import bcrypt from "bcrypt";
@@ -104,6 +105,242 @@ const USER_LIST_SORTS = {
   bookings: "COALESCE(bk.total_bookings, 0) DESC, u.id DESC",
 };
 const USER_LIST_MAX_LIMIT = 10000;
+
+// ── Reviews V2 (ReviewsRatingsV2 page) ──
+// A review links only a customer (user_id) and a salon (store_id) - there is
+// no booking / service on it. Hidden = Reviews.status 'inactive'; Reported =
+// still active with a pending review_delete_requests row (a partner asked to
+// remove it).
+const REVIEW_LIST_MAX_LIMIT = 10000;
+const REVIEW_REPLY_MAX_LENGTH = 1000;
+const REVIEW_BULK_MAX = 500;
+const REVIEW_LIST_SORTS = {
+  newest: "R.cretaed_at DESC, R.id DESC",
+  salon: "S.name ASC, R.cretaed_at DESC, R.id DESC",
+  customer: "customer_name ASC, R.cretaed_at DESC, R.id DESC",
+  rating: "R.rating DESC, R.cretaed_at DESC, R.id DESC",
+};
+// Latest pending removal request per review (partners can file duplicates).
+const REVIEW_PENDING_REQUEST_SQL = `
+  SELECT d.review_id, d.id AS request_id, d.reason AS request_reason
+  FROM review_delete_requests d
+  JOIN (
+    SELECT review_id, MAX(id) AS id
+    FROM review_delete_requests
+    WHERE status = 'pending'
+    GROUP BY review_id
+  ) latest ON latest.id = d.id`;
+// Customer type from completed paid bookings, on the loyalty_status
+// thresholds (0-1 new, 2-9 repeat, 10+ vip). User.loyalty_status itself was
+// reset to new_user for tier pricing, so it can't be used here.
+const REVIEW_CUSTOMER_TAG_SQL = `
+  CASE
+    WHEN COALESCE(bk.completed_bookings, 0) >= 10 THEN 'vip'
+    WHEN COALESCE(bk.completed_bookings, 0) >= 2 THEN 'repeat'
+    ELSE 'new'
+  END`;
+const REVIEW_CUSTOMER_TAGS = ["new", "repeat", "vip"];
+
+// Positive whole number list from `review_ids` (or a single `review_id`).
+const requireReviewIds = (data) => {
+  const raw = Array.isArray(data.review_ids) ? data.review_ids : [data.review_id];
+  const ids = [...new Set(raw.map(Number))];
+  if (!ids.length || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw Error.BadRequest("review_ids must be positive whole numbers");
+  }
+  if (ids.length > REVIEW_BULK_MAX) {
+    throw Error.BadRequest(`at most ${REVIEW_BULK_MAX} reviews at a time`);
+  }
+  return ids;
+};
+
+// ── Manual partner subscriptions V2 (PartnerSubscriptionsV2 page) ──
+// Rows are every PartnerManualSubscriptions row plus "pending" salons: past
+// the free-booking limit with no subscription row at all. A deactivated
+// salon over the limit stays a deactivated row (flagged needs_subscription),
+// so no salon is listed twice.
+const SUB_LIST_MAX_LIMIT = 10000;
+const SUB_STATUSES = ["active", "due", "inactive", "pending"];
+// Status from stored columns: "due" = owes something now - a stored balance
+// or a due date that has passed (accrueDue would add a cycle for it).
+const SUB_STATUS_SQL = `
+  CASE
+    WHEN x.kind = 'pending' THEN 'pending'
+    WHEN x.sub_status <> 'active' THEN 'inactive'
+    WHEN x.outstanding_due > 0 OR x.next_due_date <= :today THEN 'due'
+    ELSE 'active'
+  END`;
+const SUB_LIST_SORTS = {
+  status: "FIELD(row_status, 'pending', 'due', 'active', 'inactive'), s.name ASC, x.store_id ASC",
+  newest: "x.activated_at IS NULL, x.activated_at DESC, x.store_id DESC",
+  name: "s.name ASC, x.store_id ASC",
+  bookings: "s.total_booking_count DESC, x.store_id DESC",
+  next_due: "x.next_due_date IS NULL, x.next_due_date ASC, x.store_id ASC",
+};
+// Store.logo holds the literal string "null" for some salons.
+const cleanLogo = (logo) => (logo && logo !== "null" && logo !== "undefined" ? logo : null);
+// "YYYY-MM-DD" from a DATE column, whether the driver returned a string or a Date.
+const dayString = (value) => {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" ? value.slice(0, 10) : toIstDatePart(value);
+};
+
+// ── Invoices & payouts V2 (InvoicePayoutsV2 page) ──
+// An invoice is one salon's non-cancelled bookings on one visit day (same
+// rule and pricing as getInvoiceDetailsForPartner); it is paid when an
+// InvoicePayouts row exists for (store_id, invoice_date). Store.
+// payout_frequency only decides when that day's money is DUE:
+//   daily   -> the next day
+//   weekly  -> the Monday after its Mon-Sun week
+//   monthly -> the 1st of the next month
+// Unpaid and not due yet = scheduled; due = due 0..GRACE-1 days ago;
+// overdue = due GRACE+ days ago.
+const PAYOUT_FREQUENCIES = ["daily", "weekly", "monthly"];
+const PAYOUT_OVERDUE_GRACE_DAYS = 3;
+const PAYOUT_STATUSES = ["scheduled", "due", "overdue", "paid"];
+const PAYOUT_LIST_MAX_LIMIT = 10000;
+const PAYOUT_BULK_MAX_DAYS = 120;
+// Invoice gross per item - important services at full price, everything else
+// at what the customer was charged (getInvoiceDetailsForPartner's rule).
+const INVOICE_ITEM_GROSS_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+    WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+    ELSE 0
+  END`;
+// One row per (salon, visit day) between :daysFrom and :daysEnd (exclusive).
+const INVOICE_DAYS_SQL = `
+  SELECT a.store_id, DATE(a.booking_date) AS invoice_date,
+         COUNT(DISTINCT a.id) AS bookings,
+         SUM(${INVOICE_ITEM_GROSS_SQL}) AS gross
+  FROM appointments a
+  INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+  LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+  LEFT JOIN Combo cb ON ai.combo_id = cb.id
+  WHERE a.booking_date >= :daysFrom AND a.booking_date < :daysEnd
+    AND a.status != 'cancelled'
+  GROUP BY a.store_id, DATE(a.booking_date)`;
+// Payout due date for an invoice day `d.invoice_date` of salon `s`.
+const INVOICE_DUE_DATE_SQL = `
+  CASE s.payout_frequency
+    WHEN 'weekly' THEN DATE_ADD(d.invoice_date, INTERVAL (7 - WEEKDAY(d.invoice_date)) DAY)
+    WHEN 'monthly' THEN DATE_ADD(LAST_DAY(d.invoice_date), INTERVAL 1 DAY)
+    ELSE DATE_ADD(d.invoice_date, INTERVAL 1 DAY)
+  END`;
+// Every invoice day with its salon, payout row and due date.
+const invoiceDayRowsSql = () => `
+  SELECT d.store_id, d.invoice_date, d.bookings, d.gross,
+         s.payout_frequency AS frequency,
+         ${INVOICE_DUE_DATE_SQL} AS due_date,
+         ip.id AS payout_id, ip.amount AS payout_amount,
+         ip.subscription_deducted, ip.paid_at, ip.marked_by
+  FROM (${INVOICE_DAYS_SQL}) d
+  INNER JOIN Store s ON s.id = d.store_id
+  LEFT JOIN InvoicePayouts ip ON ip.store_id = d.store_id AND ip.invoice_date = d.invoice_date`;
+// Status of one invoice day (needs :today, :grace).
+const INVOICE_DAY_STATUS_SQL = `
+  CASE
+    WHEN x.payout_id IS NOT NULL THEN 'paid'
+    WHEN x.due_date > :today THEN 'scheduled'
+    WHEN DATEDIFF(:today, x.due_date) >= :grace THEN 'overdue'
+    ELSE 'due'
+  END`;
+
+// ── Monthly report V2 (MonthlyReportV2 page) ──
+// Per-booking platform fee customers pay (AdminSettings.platform_fee). The
+// fallback matches what createOrderV2 charges today.
+const DEFAULT_PLATFORM_FEE = 3;
+const MAX_PLATFORM_FEE = 100000;
+const REPORT_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const MONTHLY_REPORT_MAX_LIMIT = 10000;
+// A booking counts once it's paid; "active" = paid and not cancelled/refunded
+// (what the customer was actually served and charged for).
+const PAID_BOOKING_SQL = `a.payment_status IN ${PAID_PAYMENT_SQL}`;
+const ACTIVE_BOOKING_SQL = `${PAID_BOOKING_SQL} AND a.status NOT IN ('cancelled', 'refunded')`;
+// Discount Gloup funds on an item - the invoice's "Acquisition Cost" and the
+// dashboard's CAC (0 for important services).
+const ITEM_CAC_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL THEN IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
+    WHEN cb.id IS NOT NULL THEN GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
+    ELSE 0
+  END`;
+const MONTHLY_REPORT_SORTS = {
+  bookings_desc: "COALESCE(b.total_bookings, 0) DESC, s.name ASC",
+  bookings_asc: "COALESCE(b.total_bookings, 0) ASC, s.name ASC",
+  paid_in_desc: "COALESCE(g.gross, 0) DESC, s.name ASC",
+  paid_in_asc: "COALESCE(g.gross, 0) ASC, s.name ASC",
+  rating_desc: "r.average_rating IS NULL, r.average_rating DESC, r.review_count DESC, s.name ASC",
+  name_asc: "s.name ASC, base.store_id ASC",
+};
+
+// "YYYY-MM" (default: this IST month) -> the month and the one before it,
+// each as { month, from, to, end } with `end` exclusive.
+const resolveReportMonths = (monthInput) => {
+  const raw = monthInput ? String(monthInput).trim() : toIstDatePart(new Date()).slice(0, 7);
+  const match = REPORT_MONTH_RE.exec(raw);
+  if (!match) {
+    throw Error.BadRequest("month must be YYYY-MM");
+  }
+  const span = (year, month) => {
+    const pad = (n) => String(n).padStart(2, "0");
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const from = `${year}-${pad(month)}-01`;
+    const to = `${year}-${pad(month)}-${pad(lastDay)}`;
+    return { month: `${year}-${pad(month)}`, from, to, end: addDays(to, 1) };
+  };
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  return {
+    current: span(year, month),
+    previous: month === 1 ? span(year - 1, 12) : span(year, month - 1),
+  };
+};
+
+// Per-salon aggregates for one month (:fromDate inclusive, :toEnd exclusive),
+// each grouped by store_id so they can be LEFT JOINed onto a salon list.
+const MONTHLY_BOOKINGS_SQL = `
+  SELECT a.store_id,
+    COUNT(*) AS total_bookings,
+    SUM(a.status = 'completed') AS completed,
+    SUM(a.status IN ('cancelled', 'refunded')) AS cancelled,
+    SUM(a.status NOT IN ('cancelled', 'refunded')) AS active_bookings,
+    COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
+      THEN ROUND(a.discounted_amount * COALESCE(a.gst, 0) / 100, 2) END), 0) AS gst,
+    COUNT(DISTINCT CASE WHEN a.status NOT IN ('cancelled', 'refunded') THEN a.user_id END) AS customers,
+    MAX(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
+      THEN CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), ' ', COALESCE(TIME_FORMAT(sl.\`from\`, '%H:%i:%s'), '')) END) AS last_booking
+  FROM appointments a
+  LEFT JOIN Slots sl ON sl.id = a.slot_id
+  WHERE ${PAID_BOOKING_SQL} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+  GROUP BY a.store_id`;
+// Invoice value (same pricing and "not cancelled" rule as the invoice page)
+// and CAC (paid, not cancelled / refunded - same as the dashboard).
+const MONTHLY_ITEMS_SQL = `
+  SELECT a.store_id,
+    COALESCE(SUM(${INVOICE_ITEM_GROSS_SQL}), 0) AS gross,
+    COUNT(DISTINCT a.id) AS orders,
+    COALESCE(SUM(CASE WHEN ${ACTIVE_BOOKING_SQL} THEN ${ITEM_CAC_SQL} END), 0) AS cac_spend,
+    COUNT(DISTINCT CASE WHEN ${ACTIVE_BOOKING_SQL} THEN a.id END) AS cac_bookings
+  FROM appointments a
+  INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+  LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+  LEFT JOIN Combo cb ON ai.combo_id = cb.id
+  WHERE a.booking_date >= :fromDate AND a.booking_date < :toEnd AND a.status != 'cancelled'
+  GROUP BY a.store_id`;
+const MONTHLY_PAYOUTS_SQL = `
+  SELECT store_id, COALESCE(SUM(amount), 0) AS payout,
+         COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted, COUNT(*) AS payouts
+  FROM InvoicePayouts
+  WHERE invoice_date >= :fromDate AND invoice_date < :toEnd
+  GROUP BY store_id`;
+// Every salon with a paid booking or an invoice line in the month.
+const MONTHLY_SALONS_SQL = `
+  SELECT DISTINCT a.store_id
+  FROM appointments a
+  WHERE a.booking_date >= :fromDate AND a.booking_date < :toEnd
+    AND (${PAID_BOOKING_SQL} OR a.status != 'cancelled')`;
+
 // What the customer paid for a booking: charged price + GST (appointments.gst %).
 const AMOUNT_PAID_SQL = "a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2)";
 
@@ -1520,7 +1757,7 @@ adminDbController.app = {
           ),
         adminDbController.connection.query(
           `
-          SELECT store_id, plan_amount, outstanding_due, next_due_date
+          SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
           FROM PartnerManualSubscriptions
           WHERE status = 'active'
           `,
@@ -2545,6 +2782,428 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     } catch (error) {
       console.log("🚀 ~ getallreviews error:", error);
       throw Error.SomethingWentWrong("Failed to fetch salon reviews");
+    }
+  },
+
+  // ── Reviews V2 (ReviewsRatingsV2 page) ───────────────────────────────────
+
+  // Paginated reviews with every filter in SQL, plus what V1 never returned:
+  // salon status / logo, customer type (from completed bookings), the
+  // pending removal request and the admin reply.
+  getReviewsListV2: async (data = {}) => {
+    try {
+      const where = [];
+      const replacements = {};
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "S.name LIKE :searchLike",
+          "S.email LIKE :searchLike",
+          "S.phone LIKE :searchLike",
+          "CONCAT_WS(' ', U.firstname, U.lastname) LIKE :searchLike",
+          "U.email LIKE :searchLike",
+          "U.phone LIKE :searchLike",
+          "R.review_description LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("R.id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.store_id) {
+        const storeId = Number(data.store_id);
+        if (!Number.isInteger(storeId) || storeId <= 0) {
+          throw Error.BadRequest("store_id must be a positive whole number");
+        }
+        addWhere("R.store_id = :storeId", { storeId });
+      }
+
+      if (data.rating) {
+        const rating = Number(data.rating);
+        if (![1, 2, 3, 4, 5].includes(rating)) {
+          throw Error.BadRequest("rating must be 1-5");
+        }
+        addWhere("R.rating = :rating", { rating });
+      }
+
+      if (data.status) {
+        const statusSql = {
+          active: "R.status = 'active' AND dr.review_id IS NULL",
+          reported: "R.status = 'active' AND dr.review_id IS NOT NULL",
+          hidden: "R.status = 'inactive'",
+        }[data.status];
+        if (!statusSql) {
+          throw Error.BadRequest("status must be active, reported or hidden");
+        }
+        addWhere(`(${statusSql})`);
+      }
+
+      // "pending" = still visible and nobody has replied yet.
+      if (data.response) {
+        const responseSql = {
+          responded: "RR.id IS NOT NULL",
+          pending: "R.status = 'active' AND RR.id IS NULL",
+        }[data.response];
+        if (!responseSql) {
+          throw Error.BadRequest("response must be responded or pending");
+        }
+        addWhere(`(${responseSql})`);
+      }
+
+      if (data.customer_tag) {
+        if (!REVIEW_CUSTOMER_TAGS.includes(data.customer_tag)) {
+          throw Error.BadRequest(`customer_tag must be one of: ${REVIEW_CUSTOMER_TAGS.join(", ")}`);
+        }
+        addWhere(`${REVIEW_CUSTOMER_TAG_SQL} = :customerTag`, { customerTag: data.customer_tag });
+      }
+
+      // Inclusive IST calendar days on the review's creation time.
+      for (const [field, op] of [["from", ">="], ["to", "<"]]) {
+        if (!data[field]) continue;
+        if (!isValidDate(String(data[field]))) {
+          throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+        }
+        const value = field === "to" ? addDays(data[field], 1) : data[field];
+        addWhere(`R.cretaed_at ${op} :${field}`, { [field]: value });
+      }
+
+      const sort = REVIEW_LIST_SORTS[data.sort || "newest"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(REVIEW_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 10), REVIEW_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM Reviews R
+        INNER JOIN Store S ON S.id = R.store_id
+        INNER JOIN User U ON U.id = R.user_id
+        LEFT JOIN (${USER_BOOKING_STATS_SQL}) bk ON bk.user_id = R.user_id
+        LEFT JOIN (${REVIEW_PENDING_REQUEST_SQL}) dr ON dr.review_id = R.id
+        LEFT JOIN review_replies RR ON RR.review_id = R.id
+        LEFT JOIN \`admin\` A ON A.id = RR.replied_by
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            R.id AS review_id, R.rating, R.review_description,
+            R.status AS review_status, R.cretaed_at AS created_at, R.updated_at,
+            R.store_id, S.name AS store_name, S.email AS store_email,
+            S.phone AS store_phone, S.status AS store_status, S.logo AS store_logo,
+            R.user_id, TRIM(CONCAT_WS(' ', U.firstname, U.lastname)) AS customer_name,
+            U.phone AS user_phone, U.email AS user_email,
+            COALESCE(bk.completed_bookings, 0) AS completed_bookings,
+            ${REVIEW_CUSTOMER_TAG_SQL} AS customer_tag,
+            dr.request_id, dr.request_reason,
+            RR.reply, RR.updated_at AS replied_at, A.name AS replied_by_name
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :limit OFFSET :offset
+          `,
+          { replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          rating: row.rating === null ? null : Number(row.rating),
+          completed_bookings: Number(row.completed_bookings) || 0,
+        })),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getReviewsListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch reviews");
+    }
+  },
+
+  // KPIs for the reviews page. The client sends named inclusive IST ranges
+  // ({ key, from, to }) - the selected period, the two 30-day windows the
+  // deltas compare, one per sparkline week and chart month - and gets the
+  // same counts back for each. `focus` names the range Top Salons uses.
+  // Also returns the all-time queue sizes (tab badges) and the salons that
+  // have reviews (filter dropdown).
+  getReviewsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const focus = resolved.find((r) => r.key === String(data.focus ?? resolved[0].key));
+      if (!focus) {
+        throw Error.BadRequest("focus must be the key of one of the ranges");
+      }
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+
+      // Same INNER JOINs as the list, so totals and the list always agree.
+      const reviewsSql = `
+        SELECT R.id, R.status, R.rating, R.store_id, R.cretaed_at
+        FROM Reviews R
+        INNER JOIN Store S ON S.id = R.store_id
+        INNER JOIN User U ON U.id = R.user_id`;
+      const pendingSql =
+        "SELECT DISTINCT review_id FROM review_delete_requests WHERE status = 'pending'";
+
+      const [metricRows, topSalons, queueRows, salons] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            rg.k AS range_key,
+            COUNT(rv.id) AS all_reviews,
+            SUM(rv.status = 'active') AS total,
+            AVG(CASE WHEN rv.status = 'active' AND rv.rating BETWEEN 1 AND 5 THEN rv.rating END) AS avg_rating,
+            SUM(rv.status = 'active' AND rv.rating = 5) AS stars_5,
+            SUM(rv.status = 'active' AND rv.rating = 4) AS stars_4,
+            SUM(rv.status = 'active' AND rv.rating = 3) AS stars_3,
+            SUM(rv.status = 'active' AND rv.rating = 2) AS stars_2,
+            SUM(rv.status = 'active' AND rv.rating = 1) AS stars_1,
+            COUNT(DISTINCT CASE WHEN rv.status = 'active' THEN rv.store_id END) AS salons,
+            SUM(rv.status = 'inactive') AS hidden,
+            SUM(rv.status = 'active' AND dr.review_id IS NOT NULL) AS reported,
+            SUM(rv.status = 'active' AND RR.id IS NOT NULL) AS responded
+          FROM (${rangesSql}) rg
+          LEFT JOIN (${reviewsSql}) rv ON rv.cretaed_at >= rg.f AND rv.cretaed_at < rg.e
+          LEFT JOIN (${pendingSql}) dr ON dr.review_id = rv.id
+          LEFT JOIN review_replies RR ON RR.review_id = rv.id
+          GROUP BY rg.k
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT
+            R.store_id, S.name AS store_name, S.status AS store_status, S.logo AS store_logo,
+            COUNT(*) AS review_count,
+            ROUND(AVG(CASE WHEN R.rating BETWEEN 1 AND 5 THEN R.rating END), 2) AS average_rating
+          FROM Reviews R
+          INNER JOIN Store S ON S.id = R.store_id
+          INNER JOIN User U ON U.id = R.user_id
+          WHERE R.status = 'active' AND R.cretaed_at >= :topFrom AND R.cretaed_at < :topEnd
+          GROUP BY R.store_id, S.name, S.status, S.logo
+          ORDER BY review_count DESC, average_rating DESC
+          LIMIT 5
+          `,
+          {
+            replacements: { topFrom: focus.from, topEnd: focus.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT
+            SUM(rv.status = 'active' AND dr.review_id IS NOT NULL) AS reported_pending,
+            SUM(rv.status = 'active' AND RR.id IS NULL) AS awaiting_response
+          FROM (${reviewsSql}) rv
+          LEFT JOIN (${pendingSql}) dr ON dr.review_id = rv.id
+          LEFT JOIN review_replies RR ON RR.review_id = rv.id
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT S.id, S.name
+          FROM Reviews R
+          INNER JOIN Store S ON S.id = R.store_id
+          INNER JOIN User U ON U.id = R.user_id
+          ORDER BY S.name
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (value) => Number(value) || 0;
+      const ranges = {};
+      for (const row of metricRows) {
+        const stars = {
+          5: num(row.stars_5),
+          4: num(row.stars_4),
+          3: num(row.stars_3),
+          2: num(row.stars_2),
+          1: num(row.stars_1),
+        };
+        ranges[row.range_key] = {
+          all_reviews: num(row.all_reviews),
+          total: num(row.total),
+          avg_rating: row.avg_rating === null ? null : Number(row.avg_rating),
+          stars,
+          positive: stars[5] + stars[4],
+          neutral: stars[3],
+          negative: stars[2] + stars[1],
+          salons: num(row.salons),
+          hidden: num(row.hidden),
+          reported: num(row.reported),
+          responded: num(row.responded),
+        };
+      }
+
+      return {
+        ranges,
+        top_salons: topSalons.map((row) => ({
+          ...row,
+          review_count: num(row.review_count),
+          average_rating: row.average_rating === null ? null : Number(row.average_rating),
+        })),
+        queues: {
+          reported_pending: num(queueRows[0]?.reported_pending),
+          awaiting_response: num(queueRows[0]?.awaiting_response),
+        },
+        salons,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getReviewsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch reviews summary");
+    }
+  },
+
+  // Hide (status inactive) or restore (active) one or many reviews. Hiding
+  // also resolves any pending removal request for that review as approved -
+  // the removal it asked for has happened. A review isn't restored if the
+  // customer has since posted another active review for the same salon (the
+  // apps allow one per customer per salon); those come back in `skipped`.
+  updateReviewStatusV2: async (data = {}) => {
+    try {
+      const ids = requireReviewIds(data);
+      if (!["active", "inactive"].includes(data.status)) {
+        throw Error.BadRequest("status must be active or inactive");
+      }
+      const status = data.status;
+
+      const reviews = await adminDbController.Models.Reviews.findAll({
+        where: { id: ids },
+        attributes: ["id", "user_id", "store_id", "status"],
+        raw: true,
+      });
+      const found = new Set(reviews.map((r) => r.id));
+      const notFound = ids.filter((id) => !found.has(id));
+      const unchanged = reviews.filter((r) => r.status === status).map((r) => r.id);
+      let targets = reviews.filter((r) => r.status !== status);
+      const skipped = [];
+
+      if (status === "active" && targets.length) {
+        const active = await adminDbController.Models.Reviews.findAll({
+          where: {
+            status: "active",
+            user_id: [...new Set(targets.map((r) => r.user_id))],
+            store_id: [...new Set(targets.map((r) => r.store_id))],
+          },
+          attributes: ["user_id", "store_id"],
+          raw: true,
+        });
+        const taken = new Set(active.map((r) => `${r.user_id}:${r.store_id}`));
+        targets = targets.filter((r) => {
+          const pair = `${r.user_id}:${r.store_id}`;
+          if (taken.has(pair)) {
+            skipped.push({
+              review_id: r.id,
+              reason: "The customer already has an active review for this salon",
+            });
+            return false;
+          }
+          taken.add(pair);
+          return true;
+        });
+      }
+
+      const targetIds = targets.map((r) => r.id);
+      if (targetIds.length) {
+        await adminDbController.connection.transaction(async (transaction) => {
+          await adminDbController.Models.Reviews.update(
+            { status },
+            { where: { id: targetIds }, transaction }
+          );
+          if (status === "inactive") {
+            await adminDbController.Models.review_delete_requests.update(
+              { status: "approved" },
+              { where: { review_id: targetIds, status: "pending" }, transaction }
+            );
+          }
+        });
+      }
+
+      return { updated: targetIds, unchanged, skipped, not_found: notFound };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ updateReviewStatusV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to update reviews");
+    }
+  },
+
+  // Adds the admin reply to a review, or replaces it if there already is one.
+  replyReviewV2: async (data = {}, adminId = null) => {
+    try {
+      const [reviewId] = requireReviewIds({ review_id: data.review_id });
+      const reply = String(data.reply ?? "").trim();
+      if (!reply) {
+        throw Error.BadRequest("reply is required");
+      }
+      if (reply.length > REVIEW_REPLY_MAX_LENGTH) {
+        throw Error.BadRequest(`reply can be at most ${REVIEW_REPLY_MAX_LENGTH} characters`);
+      }
+
+      const review = await adminDbController.Models.Reviews.findOne({
+        where: { id: reviewId },
+        attributes: ["id"],
+        raw: true,
+      });
+      if (!review) {
+        throw Error.NotFound("Review");
+      }
+
+      const now = new Date();
+      const existing = await adminDbController.Models.review_replies.findOne({
+        where: { review_id: reviewId },
+      });
+      if (existing) {
+        await existing.update({ reply, replied_by: adminId, updated_at: now });
+      } else {
+        await adminDbController.Models.review_replies.create({
+          review_id: reviewId,
+          reply,
+          replied_by: adminId,
+          created_at: now,
+          updated_at: now,
+        });
+      }
+
+      return { review_id: reviewId, reply, replied_at: now };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ replyReviewV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to save reply");
+    }
+  },
+
+  deleteReviewReplyV2: async (data = {}) => {
+    try {
+      const [reviewId] = requireReviewIds({ review_id: data.review_id });
+      const deleted = await adminDbController.Models.review_replies.destroy({
+        where: { review_id: reviewId },
+      });
+      if (!deleted) {
+        throw Error.NotFound("Reply");
+      }
+      return { review_id: reviewId };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ deleteReviewReplyV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to delete reply");
     }
   },
   getrefundrequest: async (body) => {
@@ -6508,9 +7167,12 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // Creates (or reactivates + resets) a partner's manual subscription. The
-  // first cycle's fee becomes due immediately — next_due_date = today, so
-  // the very next accrueDue() call (preview or a Payout click) picks it up.
+  // Creates (or reactivates) a partner's manual subscription. The first
+  // cycle's fee becomes due immediately — next_due_date = today, so the very
+  // next accrueDue() call (preview or a Payout click) picks it up.
+  // Reactivating keeps outstanding_due: whatever the partner still owed when
+  // it was deactivated is carried over on top of the new cycle (until
+  // 2026-10 it was reset to 0, silently writing the debt off).
   assignManualPartnerSubscription: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
@@ -6528,7 +7190,6 @@ verifypartnerdetails: async (data) => {
         ON DUPLICATE KEY UPDATE
           plan_amount = VALUES(plan_amount),
           status = 'active',
-          outstanding_due = 0,
           next_due_date = VALUES(next_due_date),
           activated_at = VALUES(activated_at),
           deactivated_at = NULL
@@ -6600,6 +7261,1254 @@ verifypartnerdetails: async (data) => {
       if (error.status) throw error;
       console.log("🚀 ~ deactivateManualPartnerSubscription error:", error);
       throw Error.SomethingWentWrong("Failed to deactivate partner subscription");
+    }
+  },
+
+  // ── Manual partner subscriptions V2 (PartnerSubscriptionsV2 page) ───────
+
+  // Paginated subscriptions + pending salons, every filter in SQL. Adds what
+  // the V1 list never returned: email, city, logo, lifetime bookings, what
+  // the salon owes today (accrueDue, not the stale stored balance), the next
+  // due date after accrual, and how much has been collected from payouts.
+  getManualSubscriptionsListV2: async (data = {}) => {
+    try {
+      const today = toIstDatePart(new Date());
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
+      const where = [];
+      const replacements = { today, limit };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "s.name LIKE :searchLike",
+          "s.phone LIKE :searchLike",
+          "s.email LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("x.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.status) {
+        if (!SUB_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${SUB_STATUSES.join(", ")}`);
+        }
+        addWhere(`${SUB_STATUS_SQL} = :status`, { status: data.status });
+      }
+
+      if (data.plan_amount !== undefined && data.plan_amount !== null && data.plan_amount !== "") {
+        const planAmount = Number(data.plan_amount);
+        if (!(planAmount > 0)) {
+          throw Error.BadRequest("plan_amount must be a positive number");
+        }
+        addWhere("x.plan_amount = :planAmount", { planAmount });
+      }
+
+      if (data.city) {
+        addWhere("LOWER(TRIM(pa.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+
+      // Active subscriptions that owe now or fall due within N days.
+      if (data.due_within !== undefined && data.due_within !== null && data.due_within !== "") {
+        const days = Number(data.due_within);
+        if (!Number.isInteger(days) || days < 0 || days > 366) {
+          throw Error.BadRequest("due_within must be a whole number of days (0-366)");
+        }
+        addWhere(
+          "(x.sub_status = 'active' AND (x.outstanding_due > 0 OR x.next_due_date <= :dueBy))",
+          { dueBy: addDays(today, days) }
+        );
+      }
+
+      const sort = SUB_LIST_SORTS[data.sort || "status"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(SUB_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), SUB_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM (
+          SELECT 'subscription' AS kind, pms.id AS subscription_id, pms.store_id,
+                 pms.plan_amount, pms.status AS sub_status, pms.outstanding_due,
+                 pms.next_due_date, pms.activated_at, pms.deactivated_at
+          FROM PartnerManualSubscriptions pms
+          UNION ALL
+          SELECT 'pending', NULL, st.id, NULL, NULL, NULL, NULL, NULL, NULL
+          FROM Store st
+          WHERE st.total_booking_count >= :limit
+            AND NOT EXISTS (SELECT 1 FROM PartnerManualSubscriptions p WHERE p.store_id = st.id)
+        ) x
+        INNER JOIN Store s ON s.id = x.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (
+          SELECT store_id,
+                 SUM(subscription_deducted) AS collected_total,
+                 MAX(CASE WHEN subscription_deducted > 0 THEN invoice_date END) AS last_deducted_on
+          FROM InvoicePayouts
+          GROUP BY store_id
+        ) ip ON ip.store_id = x.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            x.kind, x.subscription_id, x.store_id,
+            s.name AS partner_name, s.phone AS partner_phone, s.email AS partner_email,
+            s.logo AS partner_logo, s.status AS store_status, pa.city,
+            s.total_booking_count,
+            x.plan_amount, x.sub_status, x.outstanding_due, x.next_due_date,
+            x.activated_at, x.deactivated_at,
+            COALESCE(ip.collected_total, 0) AS collected_total, ip.last_deducted_on,
+            ${SUB_STATUS_SQL} AS row_status
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => {
+          const active = row.sub_status === "active";
+          const accrued = active ? accrueDue(row, today) : null;
+          const bookings = Number(row.total_booking_count) || 0;
+          return {
+            kind: row.kind,
+            subscription_id: row.subscription_id,
+            store_id: row.store_id,
+            partner_name: row.partner_name,
+            partner_phone: row.partner_phone,
+            partner_email: row.partner_email,
+            partner_logo: cleanLogo(row.partner_logo),
+            store_status: row.store_status,
+            city: row.city ? String(row.city).trim() : null,
+            total_booking_count: bookings,
+            status: row.row_status,
+            plan_amount: row.plan_amount === null ? null : Number(row.plan_amount),
+            cycle_fee: row.plan_amount === null ? null : cycleFee(row.plan_amount),
+            // Balance as stored (only moves when a payout is marked paid).
+            stored_outstanding: row.outstanding_due === null ? null : Number(row.outstanding_due),
+            owed_now: accrued ? accrued.due : 0,
+            next_due_date: accrued ? accrued.nextDue : null,
+            activated_at: dayString(row.activated_at),
+            deactivated_at: dayString(row.deactivated_at),
+            collected_total: Number(Number(row.collected_total).toFixed(2)),
+            last_deducted_on: dayString(row.last_deducted_on),
+            // A deactivated salon still over the free-booking limit.
+            needs_subscription: row.row_status === "inactive" && bookings >= limit,
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        today,
+        free_booking_limit: limit,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionsListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscriptions");
+    }
+  },
+
+  // KPIs and panels for the subscriptions page.
+  //   ranges[]  per named IST range: collected (sum of subscription fees
+  //             deducted from payouts, by when the payout was marked paid),
+  //             deductions and paying partners
+  //   focus     which range "top partners by bookings" uses
+  // Point-in-time (today): status counts, owed-now total, due within 7 days,
+  // plan mix of live subscriptions, plus the filter options.
+  getManualSubscriptionsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const focus = resolved.find((r) => r.key === String(data.focus ?? resolved[0].key));
+      if (!focus) {
+        throw Error.BadRequest("focus must be the key of one of the ranges");
+      }
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+      const today = toIstDatePart(new Date());
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
+
+      const [collectedRows, subs, pendingRows, topRows, cityRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT r.k AS range_key,
+            COALESCE(SUM(ip.subscription_deducted), 0) AS collected,
+            COUNT(ip.id) AS deductions,
+            COUNT(DISTINCT ip.store_id) AS partners
+          FROM (${rangesSql}) r
+          LEFT JOIN InvoicePayouts ip
+            ON ip.paid_at >= r.f AND ip.paid_at < r.e AND ip.subscription_deducted > 0
+          GROUP BY r.k
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date,
+                 pms.activated_at, s.total_booking_count
+          FROM PartnerManualSubscriptions pms
+          INNER JOIN Store s ON s.id = pms.store_id
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS pending
+          FROM Store st
+          WHERE st.total_booking_count >= :limit
+            AND NOT EXISTS (SELECT 1 FROM PartnerManualSubscriptions p WHERE p.store_id = st.id)
+          `,
+          { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT a.store_id, s.name AS partner_name, s.logo AS partner_logo,
+                 COUNT(*) AS bookings
+          FROM appointments a
+          INNER JOIN PartnerManualSubscriptions pms
+            ON pms.store_id = a.store_id AND pms.status = 'active'
+          INNER JOIN Store s ON s.id = a.store_id
+          WHERE a.payment_status IN ${PAID_PAYMENT_SQL}
+            AND a.status NOT IN ('cancelled', 'refunded')
+            AND a.booking_date >= :topFrom AND a.booking_date < :topEnd
+          GROUP BY a.store_id, s.name, s.logo
+          ORDER BY bookings DESC, s.name ASC
+          LIMIT 5
+          `,
+          {
+            replacements: { topFrom: focus.from, topEnd: focus.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT TRIM(pa.city) AS city
+          FROM Store s
+          INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE (s.id IN (SELECT store_id FROM PartnerManualSubscriptions) OR s.total_booking_count >= :limit)
+            AND pa.city IS NOT NULL AND TRIM(pa.city) <> ''
+          ORDER BY city
+          `,
+          { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const ranges = {};
+      for (const row of collectedRows) {
+        ranges[row.range_key] = {
+          collected: Number(num(row.collected).toFixed(2)),
+          deductions: num(row.deductions),
+          partners: num(row.partners),
+        };
+      }
+
+      const dueBy = addDays(today, 7);
+      const counts = { active: 0, due: 0, inactive: 0, pending: num(pendingRows[0]?.pending) };
+      const plans = new Map();
+      // Status counts per plan amount, for the overview's plan filter.
+      const byPlan = {};
+      const bump = (amount, key) => {
+        byPlan[amount] = byPlan[amount] || { active: 0, due: 0, inactive: 0 };
+        byPlan[amount][key] += 1;
+      };
+      let owedNow = 0;
+      let owingPartners = 0;
+      let dueSoon = 0;
+      let needsSubscription = 0;
+      for (const sub of subs) {
+        const amount = Number(sub.plan_amount);
+        if (sub.status !== "active") {
+          counts.inactive += 1;
+          bump(amount, "inactive");
+          if (num(sub.total_booking_count) >= limit) needsSubscription += 1;
+          continue;
+        }
+        const { due, nextDue } = accrueDue(sub, today);
+        if (due > 0) {
+          counts.due += 1;
+          bump(amount, "due");
+          owedNow += due;
+          owingPartners += 1;
+        } else {
+          counts.active += 1;
+          bump(amount, "active");
+        }
+        if (due > 0 || nextDue <= dueBy) dueSoon += 1;
+        plans.set(amount, (plans.get(amount) || 0) + 1);
+      }
+
+      return {
+        today,
+        free_booking_limit: limit,
+        ranges,
+        counts,
+        counts_by_plan: byPlan,
+        live_subscriptions: counts.active + counts.due,
+        deactivated_needing_subscription: needsSubscription,
+        owed_now: Number(owedNow.toFixed(2)),
+        owing_partners: owingPartners,
+        due_within_7_days: dueSoon,
+        plan_distribution: [...plans.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([plan_amount, count]) => ({ plan_amount, cycle_fee: cycleFee(plan_amount), count })),
+        top_partners: topRows.map((row) => ({
+          store_id: row.store_id,
+          partner_name: row.partner_name,
+          partner_logo: cleanLogo(row.partner_logo),
+          bookings: num(row.bookings),
+        })),
+        plan_amounts: [...new Set(subs.map((sub) => Number(sub.plan_amount)))].sort((a, b) => a - b),
+        cities: cityRows.map((row) => row.city),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscriptions summary");
+    }
+  },
+
+  // One salon's subscription fee deductions - one row per daily invoice
+  // payout that recovered something - newest first, plus the subscription
+  // itself with what it owes today.
+  getManualSubscriptionHistoryV2: async (data = {}) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 20), 500);
+      const today = toIstDatePart(new Date());
+
+      const [subRows, rows, totals] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT pms.id, pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due,
+                 pms.next_due_date, pms.activated_at, pms.deactivated_at,
+                 s.name AS partner_name
+          FROM PartnerManualSubscriptions pms
+          INNER JOIN Store s ON s.id = pms.store_id
+          WHERE pms.store_id = :storeId
+          LIMIT 1
+          `,
+          { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT invoice_date, paid_at, marked_by, amount AS payout_amount,
+                 subscription_deducted, subscription_outstanding_before, subscription_next_due_before
+          FROM InvoicePayouts
+          WHERE store_id = :storeId AND subscription_deducted > 0
+          ORDER BY invoice_date DESC, id DESC
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { storeId, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS deductions, COALESCE(SUM(subscription_deducted), 0) AS collected
+          FROM InvoicePayouts
+          WHERE store_id = :storeId AND subscription_deducted > 0
+          `,
+          { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const sub = subRows[0];
+      if (!sub) {
+        throw Error.NotFound("Subscription");
+      }
+      const accrued = sub.status === "active" ? accrueDue(sub, today) : null;
+
+      return {
+        subscription: {
+          id: sub.id,
+          store_id: sub.store_id,
+          partner_name: sub.partner_name,
+          status: sub.status,
+          plan_amount: Number(sub.plan_amount),
+          cycle_fee: cycleFee(sub.plan_amount),
+          stored_outstanding: Number(sub.outstanding_due),
+          owed_now: accrued ? accrued.due : 0,
+          next_due_date: accrued ? accrued.nextDue : null,
+          activated_at: dayString(sub.activated_at),
+          deactivated_at: dayString(sub.deactivated_at),
+        },
+        deductions: rows.map((row) => {
+          const deducted = Number(row.subscription_deducted);
+          const payout = Number(row.payout_amount);
+          return {
+            invoice_date: dayString(row.invoice_date),
+            paid_at: row.paid_at,
+            marked_by: row.marked_by,
+            invoice_total: Number((payout + deducted).toFixed(2)),
+            deducted,
+            payout_amount: payout,
+            outstanding_before: row.subscription_outstanding_before === null
+              ? null
+              : Number(row.subscription_outstanding_before),
+            next_due_before: dayString(row.subscription_next_due_before),
+          };
+        }),
+        total: Number(totals[0]?.deductions) || 0,
+        collected_total: Number(Number(totals[0]?.collected || 0).toFixed(2)),
+        page,
+        limit: pageSize,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionHistoryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch subscription history");
+    }
+  },
+
+  // ── Invoices & payouts V2 (InvoicePayoutsV2 page) ───────────────────────
+
+  // First invoice day whose payout is tracked: the later of the dashboard
+  // go-live cutoff and the first payout ever recorded - days before payouts
+  // existed were never meant to be marked (same rule as the dashboard's
+  // overdue alert). With neither, the last 30 days.
+  getPayoutTrackingStart: async () => {
+    const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+    const [first] = await adminDbController.connection.query(
+      `SELECT MIN(invoice_date) AS first_date FROM InvoicePayouts`,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const candidates = [dayString(cutoff), dayString(first?.first_date)].filter(Boolean).sort();
+    return candidates.length ? candidates.pop() : addDays(toIstDatePart(new Date()), -29);
+  },
+
+  // Optional from / to (YYYY-MM-DD) clamped to [tracking start, today].
+  resolvePayoutWindow: async (data = {}) => {
+    const today = toIstDatePart(new Date());
+    const start = await adminDbController.app.getPayoutTrackingStart();
+    for (const field of ["from", "to"]) {
+      if (data[field] && !isValidDate(String(data[field]))) {
+        throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+      }
+    }
+    const from = data.from && data.from > start ? String(data.from) : start;
+    const to = data.to && data.to < today ? String(data.to) : today;
+    return { today, start, from, to };
+  },
+
+  // What each salon's active subscription owes today (store_id -> amount).
+  getSubscriptionOwedByStore: async (storeIds = null) => {
+    if (Array.isArray(storeIds) && storeIds.length === 0) return new Map();
+    const today = toIstDatePart(new Date());
+    const subs = await adminDbController.connection.query(
+      `
+      SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
+      FROM PartnerManualSubscriptions
+      WHERE status = 'active' ${storeIds ? "AND store_id IN (:storeIds)" : ""}
+      `,
+      { replacements: { storeIds }, type: Sequelize.QueryTypes.SELECT }
+    );
+    return new Map(subs.map((sub) => [sub.store_id, accrueDue(sub, today).due]));
+  },
+
+  // Paginated payout queue, one row per salon with invoices in the window:
+  // invoices, gross, paid / unpaid / due / overdue amounts, oldest unpaid day,
+  // next payout date, days overdue, last payout, and an estimated payout net
+  // of what its subscription will deduct. Filters: search, frequency, status
+  // (scheduled | due | overdue | paid), from / to (invoice days), sort.
+  getInvoicePayoutPartnersV2: async (data = {}) => {
+    try {
+      const { today, start, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), PAYOUT_LIST_MAX_LIMIT);
+      const empty = { rows: [], total: 0, page, limit: pageSize, today, tracking_start: start, from, to };
+      if (from > to) return empty;
+
+      const where = [];
+      const replacements = {
+        daysFrom: from,
+        daysEnd: addDays(to, 1),
+        today,
+        grace: PAYOUT_OVERDUE_GRACE_DAYS,
+      };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = ["s.name LIKE :searchLike", "s.phone LIKE :searchLike", "s.email LIKE :searchLike"];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("g.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+      if (data.frequency) {
+        if (!PAYOUT_FREQUENCIES.includes(data.frequency)) {
+          throw Error.BadRequest(`frequency must be one of: ${PAYOUT_FREQUENCIES.join(", ")}`);
+        }
+        addWhere("s.payout_frequency = :frequency", { frequency: data.frequency });
+      }
+
+      const statusSql = `
+        CASE
+          WHEN g.unpaid_invoices = 0 THEN 'paid'
+          WHEN g.max_days_past_due >= :grace THEN 'overdue'
+          WHEN g.max_days_past_due >= 0 THEN 'due'
+          ELSE 'scheduled'
+        END`;
+      if (data.status) {
+        if (!PAYOUT_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${PAYOUT_STATUSES.join(", ")}`);
+        }
+        addWhere(`${statusSql} = :status`, { status: data.status });
+      }
+
+      const sorts = {
+        urgency: "FIELD(payout_status, 'overdue', 'due', 'scheduled', 'paid'), g.max_days_past_due DESC, g.unpaid_gross DESC, s.name ASC",
+        next_payout: "g.next_payout_date IS NULL, g.next_payout_date ASC, s.name ASC",
+        amount: "g.unpaid_gross DESC, s.name ASC",
+        name: "s.name ASC, g.store_id ASC",
+        last_payout: "lp.last_paid_at IS NULL, lp.last_paid_at DESC, s.name ASC",
+      };
+      const sort = sorts[data.sort || "urgency"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(sorts).join(", ")}`);
+      }
+
+      const fromSql = `
+        FROM (
+          SELECT x.store_id,
+            COUNT(*) AS invoices,
+            SUM(x.bookings) AS bookings,
+            SUM(x.gross) AS gross,
+            SUM(x.payout_id IS NOT NULL) AS paid_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NOT NULL THEN x.payout_amount END), 0) AS paid_amount,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NOT NULL THEN x.subscription_deducted END), 0) AS subscription_deducted,
+            SUM(x.payout_id IS NULL) AS unpaid_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL THEN x.gross END), 0) AS unpaid_gross,
+            SUM(x.payout_id IS NULL AND x.due_date <= :today) AS due_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL AND x.due_date <= :today THEN x.gross END), 0) AS due_gross,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL AND DATEDIFF(:today, x.due_date) >= :grace THEN x.gross END), 0) AS overdue_gross,
+            MIN(CASE WHEN x.payout_id IS NULL THEN x.invoice_date END) AS oldest_unpaid_day,
+            MIN(CASE WHEN x.payout_id IS NULL THEN x.due_date END) AS next_payout_date,
+            MAX(CASE WHEN x.payout_id IS NULL THEN DATEDIFF(:today, x.due_date) END) AS max_days_past_due
+          FROM (${invoiceDayRowsSql()}) x
+          GROUP BY x.store_id
+        ) g
+        INNER JOIN Store s ON s.id = g.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (
+          SELECT store_id, MAX(paid_at) AS last_paid_at, MAX(invoice_date) AS last_paid_invoice_date
+          FROM InvoicePayouts
+          GROUP BY store_id
+        ) lp ON lp.store_id = g.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT g.*, s.name AS partner_name, s.phone AS partner_phone, s.email AS partner_email,
+                 s.logo AS partner_logo, s.payout_frequency AS frequency, pa.city,
+                 lp.last_paid_at, lp.last_paid_invoice_date,
+                 ${statusSql} AS payout_status
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      const owed = await adminDbController.app.getSubscriptionOwedByStore(rows.map((r) => r.store_id));
+      const money = (v) => Number((Number(v) || 0).toFixed(2));
+      // A payout deducts what the subscription owes, capped at the invoices paid.
+      const net = (gross, owedNow) => money(gross - Math.min(owedNow, gross));
+
+      return {
+        rows: rows.map((r) => {
+          const owedNow = owed.get(r.store_id) || 0;
+          const daysPastDue = r.max_days_past_due === null ? null : Number(r.max_days_past_due);
+          return {
+            store_id: r.store_id,
+            partner_name: r.partner_name,
+            partner_phone: r.partner_phone,
+            partner_email: r.partner_email,
+            partner_logo: cleanLogo(r.partner_logo),
+            city: r.city ? String(r.city).trim() : null,
+            frequency: r.frequency,
+            status: r.payout_status,
+            invoices: Number(r.invoices) || 0,
+            bookings: Number(r.bookings) || 0,
+            gross: money(r.gross),
+            paid_invoices: Number(r.paid_invoices) || 0,
+            paid_amount: money(r.paid_amount),
+            subscription_deducted: money(r.subscription_deducted),
+            unpaid_invoices: Number(r.unpaid_invoices) || 0,
+            unpaid_gross: money(r.unpaid_gross),
+            due_invoices: Number(r.due_invoices) || 0,
+            due_gross: money(r.due_gross),
+            overdue_gross: money(r.overdue_gross),
+            subscription_owed_now: owedNow,
+            estimated_payout: net(Number(r.unpaid_gross) || 0, owedNow),
+            estimated_due_payout: net(Number(r.due_gross) || 0, owedNow),
+            oldest_unpaid_day: dayString(r.oldest_unpaid_day),
+            next_payout_date: dayString(r.next_payout_date),
+            // Days since the oldest unpaid invoice fell due; negative = not due yet.
+            days_past_due: daysPastDue,
+            last_paid_at: r.last_paid_at,
+            last_paid_invoice_date: dayString(r.last_paid_invoice_date),
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        today,
+        tracking_start: start,
+        from,
+        to,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getInvoicePayoutPartnersV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch payout partners");
+    }
+  },
+
+  // KPIs and panels for the invoices & payouts page.
+  //   ranges[]  per named range of invoice days: invoices, bookings, gross
+  //             (what customers paid), paid / pending / overdue counts and
+  //             amounts. Unpaid days before the tracking start are counted
+  //             as invoices but never as pending or overdue.
+  //   totals    all tracked unpaid money right now, by status and by payout
+  //             frequency (with the estimated net after subscriptions), and
+  //             everything ever paid out.
+  getInvoicePayoutsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const today = toIstDatePart(new Date());
+      const start = await adminDbController.app.getPayoutTrackingStart();
+      const spanFrom = [start, ...resolved.map((r) => r.from)].sort()[0];
+
+      const [dayRows, allTime, frequencyRows] = await Promise.all([
+        adminDbController.connection.query(invoiceDayRowsSql(), {
+          replacements: { daysFrom: spanFrom, daysEnd: addDays(today, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS payouts, COALESCE(SUM(amount), 0) AS paid_out,
+                 COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted
+          FROM InvoicePayouts
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT payout_frequency AS frequency, COUNT(*) AS partners
+          FROM Store
+          WHERE status = 'active'
+          GROUP BY payout_frequency
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const money = (v) => Number((Number(v) || 0).toFixed(2));
+      const days = dayRows.map((row) => {
+        const invoiceDate = dayString(row.invoice_date);
+        const dueDate = dayString(row.due_date);
+        let status = "paid";
+        if (!row.payout_id) {
+          if (invoiceDate < start) status = "untracked";
+          else if (dueDate > today) status = "scheduled";
+          else if (Math.round((Date.parse(today) - Date.parse(dueDate)) / 864e5) >= PAYOUT_OVERDUE_GRACE_DAYS) status = "overdue";
+          else status = "due";
+        }
+        return {
+          store_id: row.store_id,
+          frequency: row.frequency,
+          invoice_date: invoiceDate,
+          gross: Number(row.gross) || 0,
+          bookings: Number(row.bookings) || 0,
+          payout_amount: Number(row.payout_amount) || 0,
+          status,
+        };
+      });
+
+      const ranges = {};
+      for (const r of resolved) {
+        const inRange = days.filter((d) => d.invoice_date >= r.from && d.invoice_date <= r.to);
+        const sum = (list, key) => money(list.reduce((acc, d) => acc + d[key], 0));
+        const by = (status) => inRange.filter((d) => d.status === status);
+        const pending = inRange.filter((d) => d.status === "scheduled" || d.status === "due");
+        ranges[r.key] = {
+          invoices: inRange.length,
+          partners: new Set(inRange.map((d) => d.store_id)).size,
+          bookings: inRange.reduce((acc, d) => acc + d.bookings, 0),
+          gross: sum(inRange, "gross"),
+          paid_invoices: by("paid").length,
+          paid_amount: sum(by("paid"), "payout_amount"),
+          pending_invoices: pending.length,
+          pending_gross: sum(pending, "gross"),
+          overdue_invoices: by("overdue").length,
+          overdue_gross: sum(by("overdue"), "gross"),
+        };
+      }
+
+      // Everything unpaid and tracked, right now.
+      const unpaid = days.filter((d) => ["scheduled", "due", "overdue"].includes(d.status));
+      const owed = await adminDbController.app.getSubscriptionOwedByStore([...new Set(unpaid.map((d) => d.store_id))]);
+      const byFrequency = Object.fromEntries(
+        PAYOUT_FREQUENCIES.map((f) => [f, { partners: 0, partners_with_unpaid: 0, unpaid_gross: 0, estimated_payout: 0 }])
+      );
+      for (const row of frequencyRows) {
+        if (byFrequency[row.frequency]) byFrequency[row.frequency].partners = Number(row.partners) || 0;
+      }
+      const unpaidByStore = new Map();
+      for (const d of unpaid) {
+        const entry = unpaidByStore.get(d.store_id) || { frequency: d.frequency, gross: 0 };
+        entry.gross += d.gross;
+        unpaidByStore.set(d.store_id, entry);
+      }
+      for (const [storeId, entry] of unpaidByStore) {
+        const bucket = byFrequency[entry.frequency];
+        if (!bucket) continue;
+        const owedNow = owed.get(storeId) || 0;
+        bucket.partners_with_unpaid += 1;
+        bucket.unpaid_gross += entry.gross;
+        bucket.estimated_payout += entry.gross - Math.min(owedNow, entry.gross);
+      }
+      for (const bucket of Object.values(byFrequency)) {
+        bucket.unpaid_gross = money(bucket.unpaid_gross);
+        bucket.estimated_payout = money(bucket.estimated_payout);
+      }
+      const total = (status) => money(days.filter((d) => d.status === status).reduce((acc, d) => acc + d.gross, 0));
+      const count = (status) => days.filter((d) => d.status === status).length;
+
+      return {
+        today,
+        tracking_start: start,
+        overdue_grace_days: PAYOUT_OVERDUE_GRACE_DAYS,
+        ranges,
+        totals: {
+          paid_out_all_time: money(allTime[0]?.paid_out),
+          payouts_all_time: Number(allTime[0]?.payouts) || 0,
+          subscription_deducted_all_time: money(allTime[0]?.subscription_deducted),
+          unpaid_gross: money(unpaid.reduce((acc, d) => acc + d.gross, 0)),
+          unpaid_invoices: unpaid.length,
+          scheduled_gross: total("scheduled"),
+          due_gross: total("due"),
+          overdue_gross: total("overdue"),
+          overdue_invoices: count("overdue"),
+          overdue_partners: new Set(days.filter((d) => d.status === "overdue").map((d) => d.store_id)).size,
+        },
+        by_frequency: byFrequency,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getInvoicePayoutsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch invoices summary");
+    }
+  },
+
+  // One salon's invoice days (newest first) with payout status, amounts and
+  // due dates, plus what its subscription owes today.
+  getPartnerInvoiceDaysV2: async (data = {}) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const { today, start, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+
+      const [store] = await adminDbController.connection.query(
+        `
+        SELECT s.id, s.name, s.phone, s.email, s.logo, s.payout_frequency AS frequency, pa.city
+        FROM Store s
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        WHERE s.id = :storeId
+        `,
+        { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+      );
+      if (!store) {
+        throw Error.NotFound("Partner");
+      }
+
+      const rows = from > to
+        ? []
+        : await adminDbController.connection.query(
+          `
+          SELECT x.*, ${INVOICE_DAY_STATUS_SQL} AS status, DATEDIFF(:today, x.due_date) AS days_past_due
+          FROM (${invoiceDayRowsSql()}) x
+          WHERE x.store_id = :storeId
+          ORDER BY x.invoice_date DESC
+          LIMIT 400
+          `,
+          {
+            replacements: {
+              daysFrom: from,
+              daysEnd: addDays(to, 1),
+              today,
+              grace: PAYOUT_OVERDUE_GRACE_DAYS,
+              storeId,
+            },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        );
+      const owed = await adminDbController.app.getSubscriptionOwedByStore([storeId]);
+
+      return {
+        partner: {
+          store_id: store.id,
+          partner_name: store.name,
+          partner_phone: store.phone,
+          partner_email: store.email,
+          partner_logo: cleanLogo(store.logo),
+          city: store.city ? String(store.city).trim() : null,
+          frequency: store.frequency,
+          subscription_owed_now: owed.get(storeId) || 0,
+        },
+        days: rows.map((r) => ({
+          invoice_date: dayString(r.invoice_date),
+          due_date: dayString(r.due_date),
+          status: r.status,
+          days_past_due: Number(r.days_past_due),
+          bookings: Number(r.bookings) || 0,
+          gross: Number((Number(r.gross) || 0).toFixed(2)),
+          payout_amount: r.payout_id ? Number(r.payout_amount) : null,
+          subscription_deducted: r.payout_id ? Number(r.subscription_deducted) : null,
+          paid_at: r.paid_at,
+          marked_by: r.marked_by,
+        })),
+        today,
+        tracking_start: start,
+        from,
+        to,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getPartnerInvoiceDaysV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner invoices");
+    }
+  },
+
+  // Sets how often one or many salons are paid out.
+  setPartnerPayoutFrequencyV2: async (data = {}) => {
+    try {
+      const raw = Array.isArray(data.store_ids) ? data.store_ids : [data.store_id];
+      const storeIds = [...new Set(raw.map(Number))];
+      if (!storeIds.length || storeIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        throw Error.BadRequest("store_ids must be positive whole numbers");
+      }
+      if (storeIds.length > 1000) {
+        throw Error.BadRequest("at most 1000 partners at a time");
+      }
+      if (!PAYOUT_FREQUENCIES.includes(data.frequency)) {
+        throw Error.BadRequest(`frequency must be one of: ${PAYOUT_FREQUENCIES.join(", ")}`);
+      }
+      const [, meta] = await adminDbController.connection.query(
+        `UPDATE Store SET payout_frequency = :frequency WHERE id IN (:storeIds)`,
+        { replacements: { frequency: data.frequency, storeIds } }
+      );
+      return { frequency: data.frequency, store_ids: storeIds, updated: meta?.affectedRows ?? null };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ setPartnerPayoutFrequencyV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to update payout frequency");
+    }
+  },
+
+  // "Pay Now": marks a salon's unpaid invoice days paid, oldest first, each
+  // through the existing markInvoicePayout - so subscription fees are
+  // deducted day by day exactly as on the invoice page, and every day stays
+  // individually undoable there. only_due (default true) skips days whose
+  // payout isn't due yet. Stops at the first failure.
+  payPartnerInvoicesV2: async (data = {}, adminId = null) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const onlyDue = data.only_due !== false;
+      const { today, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+      if (from > to) return { paid: [], failed: null, remaining: 0 };
+
+      const unpaid = await adminDbController.connection.query(
+        `
+        SELECT x.invoice_date, x.due_date
+        FROM (${invoiceDayRowsSql()}) x
+        WHERE x.store_id = :storeId AND x.payout_id IS NULL
+          ${onlyDue ? "AND x.due_date <= :today" : ""}
+        ORDER BY x.invoice_date ASC
+        `,
+        {
+          replacements: { daysFrom: from, daysEnd: addDays(to, 1), storeId, today },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      if (unpaid.length > PAYOUT_BULK_MAX_DAYS) {
+        throw Error.BadRequest(
+          `${unpaid.length} unpaid days - pay at most ${PAYOUT_BULK_MAX_DAYS} at a time (narrow from / to)`
+        );
+      }
+
+      const paid = [];
+      let failed = null;
+      for (const row of unpaid) {
+        const date = dayString(row.invoice_date);
+        try {
+          const invoice = await adminDbController.app.markInvoicePayout({
+            partner_id: storeId,
+            date,
+            marked_by: adminId,
+          });
+          paid.push({
+            invoice_date: date,
+            invoice_total: invoice.total_amount,
+            subscription_deducted: invoice.payout_subscription_deducted,
+            payout_amount: invoice.payout_amount,
+          });
+        } catch (error) {
+          failed = { invoice_date: date, message: error?.message || "Failed to mark invoice as paid" };
+          break;
+        }
+      }
+
+      const sum = (key) => Number(paid.reduce((acc, p) => acc + (Number(p[key]) || 0), 0).toFixed(2));
+      return {
+        paid,
+        failed,
+        remaining: unpaid.length - paid.length,
+        total_paid_out: sum("payout_amount"),
+        total_deducted: sum("subscription_deducted"),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ payPartnerInvoicesV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to pay partner invoices");
+    }
+  },
+
+  // ── Monthly report V2 (MonthlyReportV2 page) ────────────────────────────
+
+  // Per-booking platform fee (AdminSettings.platform_fee). Raw SQL on purpose,
+  // like free_booking_limit: the column isn't on the AdminSettings model.
+  getPlatformFee: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `SELECT platform_fee FROM AdminSettings WHERE id = 1 LIMIT 1`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const fee = rows[0]?.platform_fee;
+      return {
+        platform_fee: fee === null || fee === undefined ? DEFAULT_PLATFORM_FEE : Number(fee),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getPlatformFee error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch platform fee");
+    }
+  },
+  updatePlatformFee: async (data = {}) => {
+    try {
+      const raw = data.platform_fee;
+      const fee = Number(raw);
+      const numeric = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
+      if (!numeric || !Number.isFinite(fee)) {
+        throw Error.BadRequest("platform_fee must be a number");
+      }
+      if (fee < 0 || fee > MAX_PLATFORM_FEE) {
+        throw Error.BadRequest(`platform_fee must be between 0 and ${MAX_PLATFORM_FEE}`);
+      }
+      if (Math.round(fee * 100) !== fee * 100) {
+        throw Error.BadRequest("platform_fee can have at most 2 decimals");
+      }
+      await adminDbController.connection.query(
+        `
+        INSERT INTO AdminSettings (id, platform_fee, updated_at)
+        VALUES (1, :fee, NOW())
+        ON DUPLICATE KEY UPDATE platform_fee = VALUES(platform_fee), updated_at = NOW()
+        `,
+        { replacements: { fee }, type: Sequelize.QueryTypes.INSERT }
+      );
+      return await adminDbController.app.getPlatformFee();
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ updatePlatformFee error:", error);
+      throw Error.SomethingWentWrong("Failed to update platform fee");
+    }
+  },
+
+  // Totals for one month span ({ from, end }) across every salon.
+  getMonthlyReportTotals: async (span, platformFee) => {
+    const replacements = { fromDate: span.from, toEnd: span.end };
+    const run = (sql, extra = {}) =>
+      adminDbController.connection.query(sql, {
+        replacements: { ...replacements, ...extra },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+    const [[bookings], [items], [payouts], [partners], [customers]] = await Promise.all([
+      run(`
+        SELECT COALESCE(SUM(total_bookings), 0) AS total_bookings, COALESCE(SUM(completed), 0) AS completed,
+               COALESCE(SUM(cancelled), 0) AS cancelled, COALESCE(SUM(active_bookings), 0) AS active_bookings,
+               COALESCE(SUM(gst), 0) AS gst
+        FROM (${MONTHLY_BOOKINGS_SQL}) b`),
+      run(`
+        SELECT COALESCE(SUM(gross), 0) AS gross, COALESCE(SUM(orders), 0) AS orders,
+               COALESCE(SUM(cac_spend), 0) AS cac_spend, COALESCE(SUM(cac_bookings), 0) AS cac_bookings
+        FROM (${MONTHLY_ITEMS_SQL}) g`),
+      run(`
+        SELECT COALESCE(SUM(payout), 0) AS payout, COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted
+        FROM (${MONTHLY_PAYOUTS_SQL}) p`),
+      run(`SELECT COUNT(*) AS partners FROM (${MONTHLY_SALONS_SQL}) base`),
+      // New = their first ever paid, served booking falls in this month.
+      run(`
+        SELECT COUNT(*) AS customers, COALESCE(SUM(f.first_booking >= :fromDate), 0) AS new_customers
+        FROM (
+          SELECT DISTINCT a.user_id FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+        ) m
+        INNER JOIN (
+          SELECT a.user_id, MIN(a.booking_date) AS first_booking FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL}
+          GROUP BY a.user_id
+        ) f ON f.user_id = m.user_id`),
+    ]);
+
+    const num = (v) => Number(v) || 0;
+    const money = (v) => Number(num(v).toFixed(2));
+    const active = num(bookings.active_bookings);
+    const partnerCount = num(partners.partners);
+    const customerCount = num(customers.customers);
+    const newCustomers = num(customers.new_customers);
+    const cacBookings = num(items.cac_bookings);
+    return {
+      month: span.month,
+      from: span.from,
+      to: span.to,
+      partners: partnerCount,
+      total_bookings: num(bookings.total_bookings),
+      completed: num(bookings.completed),
+      cancelled: num(bookings.cancelled),
+      active_bookings: active,
+      avg_bookings_per_partner: partnerCount ? Number((num(bookings.total_bookings) / partnerCount).toFixed(2)) : null,
+      gross: money(items.gross),
+      orders: num(items.orders),
+      gst: money(bookings.gst),
+      platform_fee_total: money(active * platformFee),
+      payout: money(payouts.payout),
+      subscription_deducted: money(payouts.subscription_deducted),
+      cac_spend: money(items.cac_spend),
+      cac_per_booking: cacBookings ? money(num(items.cac_spend) / cacBookings) : null,
+      customers: customerCount,
+      new_customers: newCustomers,
+      repeat_customers: customerCount - newCustomers,
+      returning_rate: customerCount ? Number((((customerCount - newCustomers) / customerCount) * 100).toFixed(1)) : null,
+    };
+  },
+
+  // The month's totals next to the month before's, the platform fee used,
+  // and the cities with bookings (for the filter).
+  getMonthlyReportSummaryV2: async (data = {}) => {
+    try {
+      const { current, previous } = resolveReportMonths(data.month);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const [cur, prev, cityRows] = await Promise.all([
+        adminDbController.app.getMonthlyReportTotals(current, platformFee),
+        adminDbController.app.getMonthlyReportTotals(previous, platformFee),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT TRIM(pa.city) AS city
+          FROM (${MONTHLY_SALONS_SQL}) base
+          INNER JOIN Store s ON s.id = base.store_id
+          INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE pa.city IS NOT NULL AND TRIM(pa.city) <> ''
+          ORDER BY city
+          `,
+          {
+            replacements: { fromDate: current.from, toEnd: current.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+      ]);
+      return {
+        month: current.month,
+        platform_fee: platformFee,
+        current: cur,
+        previous: prev,
+        cities: cityRows.map((row) => row.city),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getMonthlyReportSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly report summary");
+    }
+  },
+
+  // One row per salon with activity in the month: bookings (total /
+  // completed / cancelled), invoice value, payout, subscription deducted,
+  // platform fee (served bookings x the fee setting), GST, CAC, average order
+  // value, rating, last booking. Filters: search, city; sorts per the page.
+  getMonthlyReportSalonsV2: async (data = {}) => {
+    try {
+      const { current } = resolveReportMonths(data.month);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const where = [];
+      const replacements = { fromDate: current.from, toEnd: current.end };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = ["s.name LIKE :searchLike", "s.phone LIKE :searchLike", "s.email LIKE :searchLike"];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("base.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+      if (data.city) {
+        addWhere("LOWER(TRIM(pa.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+      const sort = MONTHLY_REPORT_SORTS[data.sort || "bookings_desc"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(MONTHLY_REPORT_SORTS).join(", ")}`);
+      }
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), MONTHLY_REPORT_MAX_LIMIT);
+
+      // LEFT JOIN Store: bookings of since-deleted salons still count in the
+      // month's money, so they stay listed (as "Deleted salon #id") and the
+      // rows always add up to getMonthlyReportSummaryV2.
+      const fromSql = `
+        FROM (${MONTHLY_SALONS_SQL}) base
+        LEFT JOIN Store s ON s.id = base.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (${MONTHLY_BOOKINGS_SQL}) b ON b.store_id = base.store_id
+        LEFT JOIN (${MONTHLY_ITEMS_SQL}) g ON g.store_id = base.store_id
+        LEFT JOIN (${MONTHLY_PAYOUTS_SQL}) p ON p.store_id = base.store_id
+        LEFT JOIN (
+          SELECT store_id, ROUND(AVG(rating), 1) AS average_rating, COUNT(*) AS review_count
+          FROM Reviews
+          WHERE status = 'active' AND rating BETWEEN 1 AND 5
+          GROUP BY store_id
+        ) r ON r.store_id = base.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT base.store_id, s.id AS existing_store_id, s.name, s.store_type, s.phone, s.email, s.logo,
+                 s.status AS store_status,
+                 pa.area, pa.city, pa.state,
+                 b.total_bookings, b.completed, b.cancelled, b.active_bookings, b.gst, b.customers, b.last_booking,
+                 g.gross, g.orders, g.cac_spend, g.cac_bookings,
+                 p.payout, p.subscription_deducted, p.payouts,
+                 r.average_rating, r.review_count
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      return {
+        rows: rows.map((r) => {
+          const total = num(r.total_bookings);
+          const active = num(r.active_bookings);
+          const orders = num(r.orders);
+          const cacBookings = num(r.cac_bookings);
+          const [lastDay, lastTime] = String(r.last_booking || "").split(" ");
+          return {
+            store_id: r.store_id,
+            partner_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+            salon_deleted: r.existing_store_id === null,
+            store_type: r.store_type || null,
+            partner_phone: r.phone,
+            partner_email: r.email,
+            partner_logo: cleanLogo(r.logo),
+            store_status: r.store_status,
+            area: r.area ? String(r.area).trim() : null,
+            city: r.city ? String(r.city).trim() : null,
+            state: r.state ? String(r.state).trim() : null,
+            total_bookings: total,
+            completed: num(r.completed),
+            completed_pct: pct(num(r.completed), total),
+            cancelled: num(r.cancelled),
+            cancelled_pct: pct(num(r.cancelled), total),
+            active_bookings: active,
+            customers: num(r.customers),
+            gross: money(r.gross),
+            orders,
+            payout: money(r.payout),
+            payouts: num(r.payouts),
+            subscription_deducted: money(r.subscription_deducted),
+            platform_fee: money(active * platformFee),
+            gst: money(r.gst),
+            cac_spend: money(r.cac_spend),
+            cac_per_booking: cacBookings ? money(num(r.cac_spend) / cacBookings) : null,
+            avg_order_value: orders ? money(num(r.gross) / orders) : null,
+            average_rating: r.average_rating === null ? null : Number(r.average_rating),
+            review_count: num(r.review_count),
+            // Visit day + booked slot start, IST - same as the invoice page.
+            last_booking_at: lastDay ? (lastTime ? `${lastDay}T${lastTime}+05:30` : lastDay) : null,
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        month: current.month,
+        platform_fee: platformFee,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getMonthlyReportSalonsV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly report");
     }
   },
 

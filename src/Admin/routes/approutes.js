@@ -79,6 +79,11 @@ import {
   getRevenueCategoryGrowth,
   getreviewrequest,
   getallreviews,
+  getReviewsListV2,
+  getReviewsSummaryV2,
+  updateReviewStatusV2,
+  replyReviewV2,
+  deleteReviewReplyV2,
   getSalons,
   getservices,
   getStoreBySearch,
@@ -109,6 +114,18 @@ import {
   assignManualPartnerSubscription,
   updateManualPartnerSubscription,
   deactivateManualPartnerSubscription,
+  getManualSubscriptionsListV2,
+  getManualSubscriptionsSummaryV2,
+  getManualSubscriptionHistoryV2,
+  getInvoicePayoutsSummaryV2,
+  getInvoicePayoutPartnersV2,
+  getPartnerInvoiceDaysV2,
+  setPartnerPayoutFrequencyV2,
+  payPartnerInvoicesV2,
+  getPlatformFee,
+  updatePlatformFee,
+  getMonthlyReportSummaryV2,
+  getMonthlyReportSalonsV2,
   resetAllUserPaidBookingCounts,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
@@ -267,6 +284,11 @@ approutes.post(
 approutes.post('/getreviewrequest', verifyadmin, getreviewrequest);
 approutes.post('/getallreviews', verifyadmin, getallreviews);
 approutes.post('/updatereviewrequest', verifyadmin, updatereviewrequest);
+approutes.post("/getReviewsListV2", verifyadmin, getReviewsListV2); // Paginated reviews: SQL search/filters, salon status/logo, customer type, pending removal request, admin reply
+approutes.post("/getReviewsSummaryV2", verifyadmin, getReviewsSummaryV2); // Review KPIs per named IST range, top salons, queue sizes, reviewed salons
+approutes.post("/updateReviewStatusV2", verifyadmin, updateReviewStatusV2); // Hide / restore one or many reviews
+approutes.post("/replyReviewV2", verifyadmin, replyReviewV2); // Add or edit the admin reply to a review
+approutes.post("/deleteReviewReplyV2", verifyadmin, deleteReviewReplyV2); // Remove the admin reply
 
 // Partner subscription
 approutes.post('/getallpartnersubscription', verifyadmin, getallpartnersubscription);
@@ -321,6 +343,18 @@ approutes.post("/getallmanualpartnersubscriptions", verifyadmin, getAllManualPar
 approutes.post("/assignmanualpartnersubscription", verifyadmin, assignManualPartnerSubscription);
 approutes.post("/updatemanualpartnersubscription", verifyadmin, updateManualPartnerSubscription);
 approutes.post("/deactivatemanualpartnersubscription", verifyadmin, deactivateManualPartnerSubscription);
+approutes.post("/getManualSubscriptionsListV2", verifyadmin, getManualSubscriptionsListV2); // Paginated subscriptions + pending salons: SQL filters, email/city/bookings, owed today, collected
+approutes.post("/getManualSubscriptionsSummaryV2", verifyadmin, getManualSubscriptionsSummaryV2); // Collected per IST range, status counts, owed now, due soon, plan mix, top partners, filter options
+approutes.post("/getManualSubscriptionHistoryV2", verifyadmin, getManualSubscriptionHistoryV2); // One salon's fee deductions from daily payouts
+approutes.post("/getInvoicePayoutsSummaryV2", verifyadmin, getInvoicePayoutsSummaryV2); // Invoice KPIs per range, unpaid/overdue totals, by payout frequency, all-time paid out
+approutes.post("/getInvoicePayoutPartnersV2", verifyadmin, getInvoicePayoutPartnersV2); // Paginated payout queue per salon: unpaid/due/overdue, next payout, estimated payout
+approutes.post("/getPartnerInvoiceDaysV2", verifyadmin, getPartnerInvoiceDaysV2); // One salon's invoice days with payout status
+approutes.post("/setPartnerPayoutFrequencyV2", verifyadmin, setPartnerPayoutFrequencyV2); // Body: { store_ids, frequency: daily|weekly|monthly }
+approutes.post("/payPartnerInvoicesV2", verifyadmin, payPartnerInvoicesV2); // Mark a salon's due invoice days paid, oldest first (markInvoicePayout per day)
+approutes.post("/getplatformfee", verifyadmin, getPlatformFee); // Per-booking platform fee used by reports
+approutes.post("/updateplatformfee", verifyadmin, updatePlatformFee); // Body: { platform_fee } - rupees, 0-100000, 2 decimals
+approutes.post("/getMonthlyReportSummaryV2", verifyadmin, getMonthlyReportSummaryV2); // Month vs previous month totals: bookings, invoice value, payout, platform fee, GST, CAC, customers
+approutes.post("/getMonthlyReportSalonsV2", verifyadmin, getMonthlyReportSalonsV2); // Paginated per-salon monthly report: search, city, sort
 approutes.post("/resetalluserpaidbookingcounts", verifyadmin, resetAllUserPaidBookingCounts);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);

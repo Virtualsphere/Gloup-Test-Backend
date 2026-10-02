@@ -893,7 +893,191 @@ export const updatereviewrequest = async(req, res) => {
                 res.status(response.status).json(response);
             });
         });
-}    
+}
+
+// Invoices & payouts V2 - all five share the standard success/error envelope.
+const respondV2 = (handler) => async (req, res) => {
+    handler(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+};
+
+export const getInvoicePayoutsSummaryV2 = respondV2((req) => Adminappmiddleware.app.getInvoicePayoutsSummaryV2(req));
+export const getInvoicePayoutPartnersV2 = respondV2((req) => Adminappmiddleware.app.getInvoicePayoutPartnersV2(req));
+export const getPartnerInvoiceDaysV2 = respondV2((req) => Adminappmiddleware.app.getPartnerInvoiceDaysV2(req));
+export const setPartnerPayoutFrequencyV2 = respondV2((req) => Adminappmiddleware.app.setPartnerPayoutFrequencyV2(req));
+export const payPartnerInvoicesV2 = respondV2((req) => Adminappmiddleware.app.payPartnerInvoicesV2(req));
+
+// Platform fee setting + monthly report V2.
+export const getPlatformFee = respondV2((req) => Adminappmiddleware.app.getPlatformFee(req));
+export const updatePlatformFee = respondV2((req) => Adminappmiddleware.app.updatePlatformFee(req));
+export const getMonthlyReportSummaryV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSummaryV2(req));
+export const getMonthlyReportSalonsV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSalonsV2(req));
+
+export const getManualSubscriptionsListV2 = async (req, res) => {
+    Adminappmiddleware.app.getManualSubscriptionsListV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getManualSubscriptionsSummaryV2 = async (req, res) => {
+    Adminappmiddleware.app.getManualSubscriptionsSummaryV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getManualSubscriptionHistoryV2 = async (req, res) => {
+    Adminappmiddleware.app.getManualSubscriptionHistoryV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getReviewsListV2 = async (req, res) => {
+    Adminappmiddleware.app.getReviewsListV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const getReviewsSummaryV2 = async (req, res) => {
+    Adminappmiddleware.app.getReviewsSummaryV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const updateReviewStatusV2 = async (req, res) => {
+    Adminappmiddleware.app.updateReviewStatusV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const replyReviewV2 = async (req, res) => {
+    Adminappmiddleware.app.replyReviewV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
+
+export const deleteReviewReplyV2 = async (req, res) => {
+    Adminappmiddleware.app.deleteReviewReplyV2(req)
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+}
 
 export const getpayoutlogs = async(req, res) => {
     Adminappmiddleware.app.getpayoutlogs(req)

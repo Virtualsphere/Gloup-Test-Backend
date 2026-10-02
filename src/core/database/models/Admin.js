@@ -478,4 +478,42 @@ AdminSettings.init({
   freezeTableName: true,
 });
 
-export { SettlementLogs, StoreWallet, StoreSubscription, Banner, category, SubscriptionPlans, Location, admin, adminSession, Adminnotificationlogs, Coupons, SentNotificationDevices, FailedNotificationTokens, ErrorLogs, AdminSettings };
+// Admin reply to a customer review - one per review (unique review_id),
+// created by migrations/20261001120000-review-replies.js.
+class review_replies extends Model { }
+
+review_replies.init({
+  id: {
+    type: DataTypes.INTEGER,
+    primaryKey: true,
+    autoIncrement: true,
+    allowNull: false,
+  },
+  review_id: {
+    type: DataTypes.INTEGER,
+    allowNull: false,
+    unique: true,
+  },
+  reply: {
+    type: DataTypes.TEXT,
+    allowNull: false,
+  },
+  replied_by: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+  updated_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+}, {
+  sequelize: connection,
+  freezeTableName: true,
+  timestamps: false,
+});
+
+export { SettlementLogs, StoreWallet, StoreSubscription, Banner, category, SubscriptionPlans, Location, admin, adminSession, Adminnotificationlogs, Coupons, SentNotificationDevices, FailedNotificationTokens, ErrorLogs, AdminSettings, review_replies };
