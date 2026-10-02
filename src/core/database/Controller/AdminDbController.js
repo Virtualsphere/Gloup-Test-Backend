@@ -341,6 +341,81 @@ const MONTHLY_SALONS_SQL = `
   WHERE a.booking_date >= :fromDate AND a.booking_date < :toEnd
     AND (${PAID_BOOKING_SQL} OR a.status != 'cancelled')`;
 
+// ── Analytics intelligence V2 (AnalyticsIntelligenceV2 page) ──
+// Salon profitability tiers by contribution margin %, and switching-risk
+// tiers by the share of a salon's customers whose next booking was elsewhere.
+const PROFIT_TIERS = [
+  { tier: "High", min: 20 },
+  { tier: "Medium", min: 10 },
+  { tier: "Low", min: 0 },
+];
+const SWITCH_RISK_TIERS = [
+  { tier: "High", min: 30 },
+  { tier: "Medium", min: 20 },
+];
+// A salon needs this many customers in the window to be ranked for risk.
+const SWITCH_RISK_MIN_CUSTOMERS = 2;
+const ANALYTICS_MAX_DAYS = 366;
+// Uninstalled users: "high value" = this many served bookings, and the
+// last-active buckets (days since registration / OTP login / booking).
+const UNINSTALLED_HIGH_VALUE_BOOKINGS = 2;
+const UNINSTALLED_SEGMENTS = [
+  { key: "d7", label: "Active within 7 days", max_days: 7 },
+  { key: "d30", label: "Active 8–30 days ago", max_days: 30 },
+  { key: "d60", label: "Active 31–60 days ago", max_days: 60 },
+  { key: "d60plus", label: "Active 60+ days ago", max_days: Infinity },
+];
+
+// { from, to } (YYYY-MM-DD, inclusive, default the last `defaultDays` days)
+// plus `end` (exclusive) and the equal-length previous window.
+const resolveAnalyticsWindow = (data = {}, defaultDays = 30) => {
+  const today = toIstDatePart(new Date());
+  const to = data.to ? String(data.to) : today;
+  const from = data.from ? String(data.from) : addDays(to, -(defaultDays - 1));
+  if (!isValidDate(from) || !isValidDate(to)) {
+    throw Error.BadRequest("from and to must be YYYY-MM-DD");
+  }
+  if (from > to) {
+    throw Error.BadRequest("from must not be after to");
+  }
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 864e5) + 1;
+  if (days > ANALYTICS_MAX_DAYS) {
+    throw Error.BadRequest(`the window can be at most ${ANALYTICS_MAX_DAYS} days`);
+  }
+  const prevTo = addDays(from, -1);
+  const prevFrom = addDays(from, -days);
+  return {
+    from,
+    to,
+    end: addDays(to, 1),
+    days,
+    previous: { from: prevFrom, to: prevTo, end: from },
+  };
+};
+
+const profitTier = (margin, contribution) => {
+  if (margin === null) return contribution < 0 ? "Negative" : "Low";
+  return PROFIT_TIERS.find((t) => margin >= t.min)?.tier || "Negative";
+};
+const switchRiskTier = (pct) => SWITCH_RISK_TIERS.find((t) => pct >= t.min)?.tier || "Low";
+
+// Each customer's FIRST served booking in [:fromDate, :toEnd) with the salon
+// of their next served booking after it (any time, NULL = none since).
+const SWITCH_ANCHORS_SQL = `
+  SELECT x.user_id, x.store_id, x.next_store
+  FROM (
+    SELECT b.user_id, b.store_id, b.next_store,
+           ROW_NUMBER() OVER (PARTITION BY b.user_id ORDER BY b.booking_date, b.id) AS window_rank
+    FROM (
+      SELECT a.id, a.user_id, a.store_id, a.booking_date,
+             LEAD(a.store_id) OVER (PARTITION BY a.user_id ORDER BY a.booking_date, a.id) AS next_store
+      FROM appointments a
+      WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL
+    ) b
+    WHERE b.booking_date >= :fromDate AND b.booking_date < :toEnd
+  ) x
+  WHERE x.window_rank = 1`;
+
 // What the customer paid for a booking: charged price + GST (appointments.gst %).
 const AMOUNT_PAID_SQL = "a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2)";
 
@@ -8509,6 +8584,475 @@ verifypartnerdetails: async (data) => {
       if (error instanceof ApplicationError) throw error;
       console.log("🚀 ~ getMonthlyReportSalonsV2 error:", error);
       throw Error.SomethingWentWrong("Failed to fetch monthly report");
+    }
+  },
+
+  // ── Analytics intelligence V2 (AnalyticsIntelligenceV2 page) ────────────
+  // Every card takes { from, to } (YYYY-MM-DD, IST, inclusive) and also
+  // returns the equal-length window just before it for the Compare toggle.
+
+  // Per-salon profitability for one window ({ from, end }). Same money as
+  // the monthly report: GMV = invoice value, GloUp revenue = served bookings
+  // x platform fee + subscription fees deducted from payouts, contribution =
+  // revenue - CAC (Gloup-funded discounts), margin = contribution / GMV.
+  getAnalyticsProfitRows: async (span, platformFee) => {
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT base.store_id, s.id AS existing_store_id, s.name, s.logo, pa.area, pa.city,
+             b.active_bookings, g.gross, g.cac_spend, p.subscription_deducted
+      FROM (${MONTHLY_SALONS_SQL}) base
+      LEFT JOIN Store s ON s.id = base.store_id
+      LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+      LEFT JOIN (${MONTHLY_BOOKINGS_SQL}) b ON b.store_id = base.store_id
+      LEFT JOIN (${MONTHLY_ITEMS_SQL}) g ON g.store_id = base.store_id
+      LEFT JOIN (${MONTHLY_PAYOUTS_SQL}) p ON p.store_id = base.store_id
+      `,
+      {
+        replacements: { fromDate: span.from, toEnd: span.end },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+    const num = (v) => Number(v) || 0;
+    const money = (v) => Number(num(v).toFixed(2));
+    return rows.map((r) => {
+      const bookings = num(r.active_bookings);
+      const gmv = money(r.gross);
+      const feeRevenue = money(bookings * platformFee);
+      const subscription = money(r.subscription_deducted);
+      const revenue = money(feeRevenue + subscription);
+      const cac = money(r.cac_spend);
+      const contribution = money(revenue - cac);
+      const margin = gmv > 0 ? Number(((contribution / gmv) * 100).toFixed(1)) : null;
+      return {
+        store_id: r.store_id,
+        salon_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+        salon_deleted: r.existing_store_id === null,
+        salon_logo: cleanLogo(r.logo),
+        area: r.area ? String(r.area).trim() : null,
+        city: r.city ? String(r.city).trim() : null,
+        bookings,
+        gmv,
+        platform_fee_revenue: feeRevenue,
+        subscription_revenue: subscription,
+        revenue,
+        cac_spend: cac,
+        contribution,
+        margin_pct: margin,
+        tier: profitTier(margin, contribution),
+      };
+    });
+  },
+
+  getAnalyticsProfitabilityV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const [rows, prevRows] = await Promise.all([
+        adminDbController.app.getAnalyticsProfitRows(win, platformFee),
+        adminDbController.app.getAnalyticsProfitRows(win.previous, platformFee),
+      ]);
+      // Sales = served bookings, grouped by their salon's tier.
+      const stats = (list) => {
+        const sum = (pred) => list.filter(pred).reduce((total, r) => total + r.bookings, 0);
+        const money = (key) => Number(list.reduce((total, r) => total + r[key], 0).toFixed(2));
+        return {
+          total_sales: sum(() => true),
+          profitable_sales: sum((r) => r.tier === "High" || r.tier === "Medium"),
+          low_sales: sum((r) => r.tier === "Low"),
+          negative_sales: sum((r) => r.tier === "Negative"),
+          gmv: money("gmv"),
+          revenue: money("revenue"),
+          cac_spend: money("cac_spend"),
+          contribution: money("contribution"),
+        };
+      };
+      rows.sort((a, b) => b.contribution - a.contribution || b.bookings - a.bookings);
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        platform_fee: platformFee,
+        tiers: PROFIT_TIERS,
+        stats: stats(rows),
+        previous_stats: stats(prevRows),
+        rows,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsProfitabilityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch profitability analytics");
+    }
+  },
+
+  // Switching for one window: per salon, the customers whose first served
+  // booking in the window was there, split by where their NEXT served booking
+  // (any time after) went - same salon / another salon / none yet.
+  getAnalyticsSwitchRows: async (span) => {
+    const replacements = { fromDate: span.from, toEnd: span.end };
+    const [bySalon, switchedTo] = await Promise.all([
+      adminDbController.connection.query(
+        `
+        SELECT anc.store_id, COUNT(*) AS customers,
+               SUM(anc.next_store = anc.store_id) AS stayed,
+               SUM(anc.next_store <> anc.store_id) AS switched,
+               SUM(anc.next_store IS NULL) AS no_return
+        FROM (${SWITCH_ANCHORS_SQL}) anc
+        GROUP BY anc.store_id
+        `,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `
+        SELECT anc.next_store AS store_id, COUNT(*) AS customers
+        FROM (${SWITCH_ANCHORS_SQL}) anc
+        WHERE anc.next_store <> anc.store_id
+        GROUP BY anc.next_store
+        `,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+    const num = (v) => Number(v) || 0;
+    return {
+      bySalon: bySalon.map((r) => ({
+        store_id: r.store_id,
+        customers: num(r.customers),
+        stayed: num(r.stayed),
+        switched: num(r.switched),
+        no_return: num(r.no_return),
+      })),
+      switchedTo: switchedTo.map((r) => ({ store_id: r.store_id, customers: num(r.customers) })),
+    };
+  },
+
+  getAnalyticsSwitchingV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 90);
+      const [cur, prev] = await Promise.all([
+        adminDbController.app.getAnalyticsSwitchRows(win),
+        adminDbController.app.getAnalyticsSwitchRows(win.previous),
+      ]);
+      const totals = (list) => ({
+        customers: list.reduce((t, r) => t + r.customers, 0),
+        stayed: list.reduce((t, r) => t + r.stayed, 0),
+        switched: list.reduce((t, r) => t + r.switched, 0),
+        no_return: list.reduce((t, r) => t + r.no_return, 0),
+      });
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+
+      const ids = [...new Set([...cur.bySalon, ...cur.switchedTo].map((r) => r.store_id))];
+      const stores = ids.length
+        ? await adminDbController.connection.query(`SELECT id, name, logo FROM Store WHERE id IN (:ids)`, {
+            replacements: { ids },
+            type: Sequelize.QueryTypes.SELECT,
+          })
+        : [];
+      const storeById = new Map(stores.map((s) => [Number(s.id), s]));
+      const salon = (id) => {
+        const s = storeById.get(Number(id));
+        return {
+          store_id: id,
+          salon_name: s ? s.name : `Deleted salon #${id}`,
+          salon_deleted: !s,
+          salon_logo: s ? cleanLogo(s.logo) : null,
+        };
+      };
+
+      const prevById = new Map(prev.bySalon.map((r) => [Number(r.store_id), r]));
+      const risk = cur.bySalon
+        .filter((r) => r.customers >= SWITCH_RISK_MIN_CUSTOMERS)
+        .map((r) => {
+          const switchingPct = pct(r.switched, r.customers);
+          const before = prevById.get(Number(r.store_id));
+          const prevPct = before && before.customers >= SWITCH_RISK_MIN_CUSTOMERS ? pct(before.switched, before.customers) : null;
+          return {
+            ...salon(r.store_id),
+            ...r,
+            switching_pct: switchingPct,
+            previous_switching_pct: prevPct,
+            // Percentage points vs the previous window.
+            trend_pts: prevPct === null ? null : Number((switchingPct - prevPct).toFixed(1)),
+            risk: switchRiskTier(switchingPct),
+          };
+        })
+        .sort((a, b) => b.switching_pct - a.switching_pct || b.customers - a.customers);
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        stats: totals(cur.bySalon),
+        previous_stats: totals(prev.bySalon),
+        switched_to: cur.switchedTo
+          .sort((a, b) => b.customers - a.customers)
+          .slice(0, 10)
+          .map((r) => ({ ...salon(r.store_id), customers: r.customers })),
+        risk_tiers: SWITCH_RISK_TIERS,
+        risk_min_customers: SWITCH_RISK_MIN_CUSTOMERS,
+        risk,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsSwitchingV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch switching analytics");
+    }
+  },
+
+  // Customer gravity per salon: customers served in the window, repeat
+  // customers (2+ served bookings at that salon up to the window's end) and
+  // retention (previous window's customers who came back in this window).
+  // Where customers live / travel distance are not stored, so not returned.
+  getAnalyticsGravityV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const replacements = { fromDate: win.from, toEnd: win.end, prevFrom: win.previous.from };
+      const servedSql = `${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL`;
+      const pairsSql = (fromKey) => `
+        SELECT DISTINCT a.store_id, a.user_id FROM appointments a
+        WHERE ${servedSql} AND a.booking_date >= :${fromKey} AND a.booking_date < :${fromKey === "fromDate" ? "toEnd" : "fromDate"}`;
+      const [rows, [overall]] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT base.store_id, s.id AS existing_store_id, s.name, s.logo, pa.area, pa.city,
+                 COALESCE(cur.customers, 0) AS customers, COALESCE(cur.bookings, 0) AS bookings,
+                 COALESCE(rep.repeat_customers, 0) AS repeat_customers,
+                 COALESCE(ret.prev_customers, 0) AS prev_customers, COALESCE(ret.retained, 0) AS retained
+          FROM (
+            SELECT DISTINCT a.store_id FROM appointments a
+            WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :toEnd
+          ) base
+          LEFT JOIN Store s ON s.id = base.store_id
+          LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+          LEFT JOIN (
+            SELECT a.store_id, COUNT(DISTINCT a.user_id) AS customers, COUNT(*) AS bookings
+            FROM appointments a
+            WHERE ${servedSql} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+            GROUP BY a.store_id
+          ) cur ON cur.store_id = base.store_id
+          LEFT JOIN (
+            SELECT w.store_id, COUNT(*) AS repeat_customers
+            FROM (${pairsSql("fromDate")}) w
+            INNER JOIN (
+              SELECT a.store_id, a.user_id FROM appointments a
+              WHERE ${servedSql} AND a.booking_date < :toEnd
+              GROUP BY a.store_id, a.user_id HAVING COUNT(*) >= 2
+            ) h ON h.store_id = w.store_id AND h.user_id = w.user_id
+            GROUP BY w.store_id
+          ) rep ON rep.store_id = base.store_id
+          LEFT JOIN (
+            SELECT p.store_id, COUNT(*) AS prev_customers, SUM(c.user_id IS NOT NULL) AS retained
+            FROM (${pairsSql("prevFrom")}) p
+            LEFT JOIN (${pairsSql("fromDate")}) c ON c.store_id = p.store_id AND c.user_id = p.user_id
+            GROUP BY p.store_id
+          ) ret ON ret.store_id = base.store_id
+          ORDER BY customers DESC, repeat_customers DESC, base.store_id ASC
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        // Platform-wide: same three numbers counted per customer, any salon.
+        adminDbController.connection.query(
+          `
+          SELECT
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd) AS customers,
+            (SELECT COUNT(*) FROM (
+              SELECT a.user_id FROM appointments a
+              WHERE ${servedSql} AND a.booking_date < :toEnd
+                AND a.user_id IN (SELECT a2.user_id FROM appointments a2
+                  WHERE ${servedSql.replace(/\ba\./g, "a2.")} AND a2.booking_date >= :fromDate AND a2.booking_date < :toEnd)
+              GROUP BY a.user_id HAVING COUNT(*) >= 2) r) AS repeat_customers,
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :fromDate) AS prev_customers,
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :fromDate
+                AND a.user_id IN (SELECT a2.user_id FROM appointments a2
+                  WHERE ${servedSql.replace(/\ba\./g, "a2.")} AND a2.booking_date >= :fromDate AND a2.booking_date < :toEnd)) AS retained
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const shape = (r) => ({
+        customers: num(r.customers),
+        repeat_customers: num(r.repeat_customers),
+        repeat_pct: pct(num(r.repeat_customers), num(r.customers)),
+        previous_customers: num(r.prev_customers),
+        retained_customers: num(r.retained),
+        retention_pct: pct(num(r.retained), num(r.prev_customers)),
+      });
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        overall: shape(overall),
+        salons: rows.map((r) => ({
+          store_id: r.store_id,
+          salon_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+          salon_deleted: r.existing_store_id === null,
+          salon_logo: cleanLogo(r.logo),
+          area: r.area ? String(r.area).trim() : null,
+          city: r.city ? String(r.city).trim() : null,
+          bookings: num(r.bookings),
+          ...shape(r),
+        })),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsGravityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch gravity analytics");
+    }
+  },
+
+  // Users whose app is most likely uninstalled: FCM answered
+  // registration-token-not-registered for their push token and they haven't
+  // registered a working one since (their stored token is gone or is that
+  // same dead token). Only known once a push was attempted. detected_at =
+  // the first failure for that dead token; the window filters on it.
+  getUninstalledUsers: async (win) => {
+    const tokenRows = await adminDbController.connection.query(
+      `
+      SELECT f.user_id, f.token, MIN(f.created_at) AS first_at, MAX(f.created_at) AS last_at
+      FROM FailedNotificationTokens f
+      WHERE f.user_id IS NOT NULL AND f.error_code LIKE '%registration-token-not-registered%'
+      GROUP BY f.user_id, f.token
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const failedByUser = new Map();
+    for (const row of tokenRows) {
+      const list = failedByUser.get(Number(row.user_id)) || [];
+      list.push(row);
+      failedByUser.set(Number(row.user_id), list);
+    }
+    const userIds = [...failedByUser.keys()];
+    if (!userIds.length) return [];
+
+    const [users, bookings, logins] = await Promise.all([
+      adminDbController.connection.query(
+        `SELECT u.id, u.firstname, u.lastname, u.phone, u.email, u.gender, u.device_id, u.status, u.registered_at, u.loyalty_status
+         FROM User u WHERE u.id IN (:userIds) AND u.status <> 'terminated'`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `SELECT a.user_id, SUM(${ACTIVE_BOOKING_SQL}) AS served_bookings, MAX(a.created_at) AS last_booking_at
+         FROM appointments a WHERE a.user_id IN (:userIds) GROUP BY a.user_id`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `SELECT o.userId AS user_id, MAX(o.createdAt) AS last_login_at
+         FROM OtpLogs o WHERE o.userId IN (:userIds) AND (o.userType = 'user' OR o.userType IS NULL)
+         GROUP BY o.userId`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+    const bookingsById = new Map(bookings.map((r) => [Number(r.user_id), r]));
+    const loginsById = new Map(logins.map((r) => [Number(r.user_id), r]));
+    // device_id is a JSON array (or a bare token); the last one is current.
+    const currentToken = (raw) => {
+      if (!raw) return null;
+      const text = String(raw).trim();
+      if (!text || text === "null") return null;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          const tokens = parsed.map((t) => String(t).trim()).filter(Boolean);
+          return tokens.length ? tokens[tokens.length - 1] : null;
+        }
+        return typeof parsed === "string" && parsed.trim() ? parsed.trim() : null;
+      } catch {
+        return text;
+      }
+    };
+    const toMs = (v) => (v ? new Date(v).getTime() : null);
+    const fromMs = Date.parse(`${win.from}T00:00:00+05:30`);
+    const endMs = Date.parse(`${win.end}T00:00:00+05:30`);
+
+    const result = [];
+    for (const user of users) {
+      const failed = failedByUser.get(Number(user.id)) || [];
+      const token = currentToken(user.device_id);
+      let dead;
+      if (token) {
+        dead = failed.find((f) => f.token === token);
+        if (!dead) continue; // registered a new, working token since
+      } else {
+        dead = failed.reduce((latest, f) => (!latest || toMs(f.last_at) > toMs(latest.last_at) ? f : latest), null);
+      }
+      const detectedMs = toMs(dead.first_at);
+      if (win.from && (detectedMs < fromMs || detectedMs >= endMs)) continue;
+
+      const booking = bookingsById.get(Number(user.id));
+      const login = loginsById.get(Number(user.id));
+      const activity = [toMs(user.registered_at), toMs(login?.last_login_at), toMs(booking?.last_booking_at)].filter(Boolean);
+      const lastActiveMs = activity.length ? Math.max(...activity) : null;
+      const phone = user.phone ? String(user.phone) : null;
+      result.push({
+        user_id: user.id,
+        name: [user.firstname, user.lastname].filter(Boolean).join(" ").trim() || null,
+        phone,
+        email: user.email || null,
+        gender: user.gender && String(user.gender).toLowerCase() !== "null" ? String(user.gender).trim() : null,
+        loyalty_status: user.loyalty_status,
+        served_bookings: Number(booking?.served_bookings) || 0,
+        detected_at: new Date(detectedMs).toISOString(),
+        last_active_at: lastActiveMs ? new Date(lastActiveMs).toISOString() : null,
+        // A 10-digit Indian mobile: reachable by SMS / WhatsApp.
+        reachable: Boolean(phone && /^[6-9]\d{9}$/.test(phone)),
+        high_value: (Number(booking?.served_bookings) || 0) >= UNINSTALLED_HIGH_VALUE_BOOKINGS,
+      });
+    }
+    return result;
+  },
+
+  getAnalyticsUninstalledV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const [users, prevUsers] = await Promise.all([
+        adminDbController.app.getUninstalledUsers(win),
+        adminDbController.app.getUninstalledUsers(win.previous),
+      ]);
+      const now = Date.now();
+      const segmentOf = (u) => {
+        if (!u.last_active_at) return "unknown";
+        const days = (now - new Date(u.last_active_at).getTime()) / 864e5;
+        return UNINSTALLED_SEGMENTS.find((s) => days <= s.max_days)?.key || "unknown";
+      };
+      const stats = (list) => ({
+        uninstalled: list.length,
+        reachable: list.filter((u) => u.reachable).length,
+        high_value: list.filter((u) => u.high_value).length,
+        high_value_reachable: list.filter((u) => u.high_value && u.reachable).length,
+      });
+      const counts = {};
+      for (const u of users) counts[segmentOf(u)] = (counts[segmentOf(u)] || 0) + 1;
+
+      if (data.include_users) {
+        return {
+          from: win.from,
+          to: win.to,
+          users: users
+            .map((u) => ({ ...u, segment: segmentOf(u) }))
+            .sort((a, b) => b.served_bookings - a.served_bookings || String(b.detected_at).localeCompare(String(a.detected_at))),
+        };
+      }
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        stats: stats(users),
+        previous_stats: stats(prevUsers),
+        segments: [...UNINSTALLED_SEGMENTS, { key: "unknown", label: "No activity recorded" }].map((s) => ({
+          key: s.key,
+          label: s.label,
+          users: counts[s.key] || 0,
+        })),
+        high_value_min_bookings: UNINSTALLED_HIGH_VALUE_BOOKINGS,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsUninstalledV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
     }
   },
 

@@ -1316,6 +1316,42 @@ Adminappmiddleware.app = {
         }
     },
 
+    getAnalyticsProfitabilityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsProfitabilityV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch profitability analytics");
+        }
+    },
+
+    getAnalyticsSwitchingV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsSwitchingV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch switching analytics");
+        }
+    },
+
+    getAnalyticsGravityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsGravityV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch gravity analytics");
+        }
+    },
+
+    getAnalyticsUninstalledV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsUninstalledV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
+        }
+    },
+
     getInvoicePayoutsSummaryV2: async ({ body }) => {
         try {
             return await adminDbController.app.getInvoicePayoutsSummaryV2(body || {});

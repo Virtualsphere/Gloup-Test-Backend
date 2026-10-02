@@ -126,6 +126,10 @@ import {
   updatePlatformFee,
   getMonthlyReportSummaryV2,
   getMonthlyReportSalonsV2,
+  getAnalyticsProfitabilityV2,
+  getAnalyticsSwitchingV2,
+  getAnalyticsGravityV2,
+  getAnalyticsUninstalledV2,
   resetAllUserPaidBookingCounts,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
@@ -355,6 +359,10 @@ approutes.post("/getplatformfee", verifyadmin, getPlatformFee); // Per-booking p
 approutes.post("/updateplatformfee", verifyadmin, updatePlatformFee); // Body: { platform_fee } - rupees, 0-100000, 2 decimals
 approutes.post("/getMonthlyReportSummaryV2", verifyadmin, getMonthlyReportSummaryV2); // Month vs previous month totals: bookings, invoice value, payout, platform fee, GST, CAC, customers
 approutes.post("/getMonthlyReportSalonsV2", verifyadmin, getMonthlyReportSalonsV2); // Paginated per-salon monthly report: search, city, sort
+approutes.post("/getAnalyticsProfitabilityV2", verifyadmin, getAnalyticsProfitabilityV2); // Body: { from, to } - per-salon GMV, GloUp revenue, contribution, margin tier (+ previous window)
+approutes.post("/getAnalyticsSwitchingV2", verifyadmin, getAnalyticsSwitchingV2); // Body: { from, to } - stayed / switched / no return, top switched-to, switching risk per salon
+approutes.post("/getAnalyticsGravityV2", verifyadmin, getAnalyticsGravityV2); // Body: { from, to } - customers, repeat customers, retention per salon and overall
+approutes.post("/getAnalyticsUninstalledV2", verifyadmin, getAnalyticsUninstalledV2); // Body: { from, to, include_users } - push-token-unregistered users, segments, contact list
 approutes.post("/resetalluserpaidbookingcounts", verifyadmin, resetAllUserPaidBookingCounts);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);

@@ -926,6 +926,10 @@ export const getPlatformFee = respondV2((req) => Adminappmiddleware.app.getPlatf
 export const updatePlatformFee = respondV2((req) => Adminappmiddleware.app.updatePlatformFee(req));
 export const getMonthlyReportSummaryV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSummaryV2(req));
 export const getMonthlyReportSalonsV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSalonsV2(req));
+export const getAnalyticsProfitabilityV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsProfitabilityV2(req));
+export const getAnalyticsSwitchingV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsSwitchingV2(req));
+export const getAnalyticsGravityV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsGravityV2(req));
+export const getAnalyticsUninstalledV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsUninstalledV2(req));
 
 export const getManualSubscriptionsListV2 = async (req, res) => {
     Adminappmiddleware.app.getManualSubscriptionsListV2(req)
