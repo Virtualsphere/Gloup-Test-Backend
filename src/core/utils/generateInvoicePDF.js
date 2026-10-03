@@ -104,19 +104,24 @@ function amountToWords(amount) {
   return words + " Only";
 }
 
+// Always IST: the PDF is rendered on the server, whose timezone may be UTC.
 function formatDate(date) {
   return new Date(date).toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "long",
     year: "numeric",
+    timeZone: "Asia/Kolkata",
   });
 }
 
+// booking_time is the slot start (null when the booking has no slot).
 function formatTime(date) {
+  if (!date) return "—";
   return new Date(date).toLocaleTimeString("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
+    timeZone: "Asia/Kolkata",
   });
 }
 

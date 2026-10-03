@@ -1,5 +1,6 @@
 import require from "requirejs";
 import * as Error from "../../core/errors/ErrorConstant.js";
+import { ApplicationError } from "../../core/errors/ApplicationError.js";
 import { PayloadCompiler } from "../../core/inc/access/PayloadCompiler.js";
 import { authentications } from "../../core/utils/jwt.js";
 import { NodeMailerfunction } from "../../core/utils/nodemailer.js";
@@ -241,6 +242,114 @@ Adminappmiddleware.app = {
         } catch (error) {
             if (error.status) throw error;
             throw Error.SomethingWentWrong("Failed to update dashboard data start date");
+        }
+    },
+
+    getUsersListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUsersListV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch users");
+        }
+    },
+
+    getUsersSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUsersSummaryV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch users summary");
+        }
+    },
+
+    getUserProfileV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserProfileV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user profile");
+        }
+    },
+
+    getUserActivityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserActivityV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user activity");
+        }
+    },
+
+    getUserOffersV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserOffersV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user offers");
+        }
+    },
+
+    getBookingsListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingsListV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch bookings");
+        }
+    },
+
+    getBookingsSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingsSummaryV2(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch bookings summary");
+        }
+    },
+
+    getTopSalonsByDateRange: async ({ body }) => {
+        try {
+            return await adminDbController.app.getTopSalonsByDateRange(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch top salons");
+        }
+    },
+
+    getFreeBookingLimit: async () => {
+        try {
+            return await adminDbController.app.getFreeBookingLimit();
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch free booking limit");
+        }
+    },
+
+    updateFreeBookingLimit: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateFreeBookingLimit(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to update free booking limit");
+        }
+    },
+
+    getDashboardV2Metrics: async ({ body }) => {
+        try {
+            return await adminDbController.app.getDashboardV2Metrics(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch dashboard metrics");
+        }
+    },
+
+    getDashboardV2Alerts: async ({ body }) => {
+        try {
+            return await adminDbController.app.getDashboardV2Alerts(body || {});
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch dashboard alerts");
         }
     },
 
@@ -1170,6 +1279,195 @@ Adminappmiddleware.app = {
             throw Error.SomethingWentWrong("Failed to update review request");
         }
     },
+
+    getPlatformFee: async () => {
+        try {
+            return await adminDbController.app.getPlatformFee();
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch platform fee");
+        }
+    },
+
+    updatePlatformFee: async ({ body }) => {
+        try {
+            return await adminDbController.app.updatePlatformFee(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to update platform fee");
+        }
+    },
+
+    getMonthlyReportSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getMonthlyReportSummaryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch monthly report summary");
+        }
+    },
+
+    getMonthlyReportSalonsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getMonthlyReportSalonsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch monthly report");
+        }
+    },
+
+    getAnalyticsProfitabilityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsProfitabilityV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch profitability analytics");
+        }
+    },
+
+    getAnalyticsSwitchingV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsSwitchingV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch switching analytics");
+        }
+    },
+
+    getAnalyticsGravityV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsGravityV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch gravity analytics");
+        }
+    },
+
+    getAnalyticsUninstalledV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getAnalyticsUninstalledV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
+        }
+    },
+
+    getInvoicePayoutsSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getInvoicePayoutsSummaryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch invoices summary");
+        }
+    },
+
+    getInvoicePayoutPartnersV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getInvoicePayoutPartnersV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch payout partners");
+        }
+    },
+
+    getPartnerInvoiceDaysV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getPartnerInvoiceDaysV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch partner invoices");
+        }
+    },
+
+    setPartnerPayoutFrequencyV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.setPartnerPayoutFrequencyV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to update payout frequency");
+        }
+    },
+
+    payPartnerInvoicesV2: async ({ body, user }) => {
+        try {
+            return await adminDbController.app.payPartnerInvoicesV2(body || {}, user?.id ?? null);
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to pay partner invoices");
+        }
+    },
+
+    getManualSubscriptionsListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getManualSubscriptionsListV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch partner subscriptions");
+        }
+    },
+
+    getManualSubscriptionsSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getManualSubscriptionsSummaryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch partner subscriptions summary");
+        }
+    },
+
+    getManualSubscriptionHistoryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getManualSubscriptionHistoryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch subscription history");
+        }
+    },
+
+    getReviewsListV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getReviewsListV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch reviews");
+        }
+    },
+
+    getReviewsSummaryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getReviewsSummaryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch reviews summary");
+        }
+    },
+
+    updateReviewStatusV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.updateReviewStatusV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to update reviews");
+        }
+    },
+
+    replyReviewV2: async ({ body, user }) => {
+        try {
+            return await adminDbController.app.replyReviewV2(body || {}, user?.id ?? null);
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to save reply");
+        }
+    },
+
+    deleteReviewReplyV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.deleteReviewReplyV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to delete reply");
+        }
+    },
     getpayoutlogs: async ({ body, user }) => {
         try {
             const payoutlogs = await adminDbController.app.getpayoutlogs(body);
@@ -1969,7 +2267,8 @@ Adminappmiddleware.app = {
         try {
             let data = []
 
-            const getuserdeatils = await adminDbController.app.getuserdetails(body.id);
+            // Any status - getuserdetails is active-only (refund flow relies on that).
+            const getuserdeatils = await adminDbController.app.getAdminUserById(body.id);
 
             const appoinments = await userDbController.app.getallapoinments(body, body.id);
 

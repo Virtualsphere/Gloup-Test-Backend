@@ -97,6 +97,13 @@ User.init({
     type: DataTypes.INTEGER,
     allowNull: true,
   },
+  // Account creation time. NULL for pre-existing users with no session,
+  // booking or OTP history to backfill from (see the migration).
+  registered_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+    defaultValue: DataTypes.NOW,
+  },
 }, {
   sequelize: connection,
   timestamps: false,

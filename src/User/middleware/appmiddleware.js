@@ -1748,8 +1748,9 @@ userappmiddleware.user = {
                 item.images = JSON.parse(item.images);
             })
 
-            const upcomming = []
-            const past = []
+            const upcoming = []
+            const completed = []
+            const cancelled = []
 
             for (const item of appoinments) {
                 const bookingDate = new Date(item.booking_date);
@@ -1759,10 +1760,12 @@ userappmiddleware.user = {
                 const appointmentDateTime = new Date(bookingDate);
                 appointmentDateTime.setHours(hours, minutes, seconds, 0);
 
-                if (appointmentDateTime > today) {
-                    item.status = "upcomming";
+                if (item.appointment_status === "cancelled" || item.appointment_status === "Cancelled") {
+                    item.status = "cancelled";
+                } else if (appointmentDateTime > today) {
+                    item.status = "upcoming";
                 } else {
-                    item.status = "past";
+                    item.status = "completed";
                 }
             }
 
@@ -1774,15 +1777,16 @@ userappmiddleware.user = {
                     items: getservices
                 }
 
-                if (new_data.common_data.status === "upcomming") {
-                    upcomming.push(new_data)
+                if (new_data.common_data.status === "cancelled") {
+                    cancelled.push(new_data)
+                } else if (new_data.common_data.status === "upcoming") {
+                    upcoming.push(new_data)
                 } else {
-                    past.push(new_data)
+                    completed.push(new_data)
                 }
-
             }
 
-            return { upcoming: upcomming, past: past }
+            return { upcoming, completed, cancelled }
 
         } catch (error) {
             throw Error.SomethingWentWrong();

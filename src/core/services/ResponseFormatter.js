@@ -377,8 +377,8 @@ function formatOpeningHours(slots = []) {
 function formatAmenities(amenities = []) {
   return amenities.map((a) => ({
     id: `ambient_${a.id}`,
-    icon: "info",
-    label: "Amenity",
+    icon: a.icon || "info",
+    label: a.name || "Amenity",
   }));
 }
 
@@ -586,6 +586,7 @@ export function formatNearbyStores(stores = []) {
       logo: media.logo,
       images: media.images,
       rating: parseFloat(Number(store.rating || 0).toFixed(1)),
+      reviewCount: store.reviewCount || 0,
       distance:
         store.distance != null && store.distance !== ""
           ? parseFloat(Number(store.distance).toFixed(2))
@@ -657,6 +658,7 @@ export const formatSalonList = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
+        dynamicServices: (function() { try { return store.servicesList ? JSON.parse(store.servicesList) : []; } catch(e) { return []; } })(),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.languageCodes
           ? store.languageCodes.split(",")
@@ -719,6 +721,7 @@ export const formatTopSalons = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
+        dynamicServices: (function() { try { return store.servicesList ? JSON.parse(store.servicesList) : []; } catch(e) { return []; } })(),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.language_codes
           ? store.language_codes.split(",")

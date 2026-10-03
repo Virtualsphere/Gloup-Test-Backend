@@ -53,6 +53,18 @@ import {
   getCustomers,
   getdashboard,
   updateDashboardDataStartDate,
+  getUsersListV2,
+  getUsersSummaryV2,
+  getUserProfileV2,
+  getUserActivityV2,
+  getUserOffersV2,
+  getBookingsListV2,
+  getTopSalonsByDateRange,
+  getBookingsSummaryV2,
+  getFreeBookingLimit,
+  updateFreeBookingLimit,
+  getDashboardV2Metrics,
+  getDashboardV2Alerts,
   getLiveStats,
   getFilteredStores,
   getFilterReport,
@@ -67,6 +79,11 @@ import {
   getRevenueCategoryGrowth,
   getreviewrequest,
   getallreviews,
+  getReviewsListV2,
+  getReviewsSummaryV2,
+  updateReviewStatusV2,
+  replyReviewV2,
+  deleteReviewReplyV2,
   getSalons,
   getservices,
   getStoreBySearch,
@@ -97,6 +114,22 @@ import {
   assignManualPartnerSubscription,
   updateManualPartnerSubscription,
   deactivateManualPartnerSubscription,
+  getManualSubscriptionsListV2,
+  getManualSubscriptionsSummaryV2,
+  getManualSubscriptionHistoryV2,
+  getInvoicePayoutsSummaryV2,
+  getInvoicePayoutPartnersV2,
+  getPartnerInvoiceDaysV2,
+  setPartnerPayoutFrequencyV2,
+  payPartnerInvoicesV2,
+  getPlatformFee,
+  updatePlatformFee,
+  getMonthlyReportSummaryV2,
+  getMonthlyReportSalonsV2,
+  getAnalyticsProfitabilityV2,
+  getAnalyticsSwitchingV2,
+  getAnalyticsGravityV2,
+  getAnalyticsUninstalledV2,
   resetAllUserPaidBookingCounts,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
@@ -141,6 +174,11 @@ approutes.post("/downloadUsersExcel", verifyadmin, downloadUsersExcel);
 approutes.post("/addsubscription", verifyadmin, addsubscription);
 approutes.post("/updateuser", verifyadmin, updateuser);
 approutes.post("/getalluserdeatils", verifyadmin, getalluserbooking);
+approutes.post("/getUsersListV2", verifyadmin, getUsersListV2); // Paginated users: SQL search/filters, gender, city, join date, source, last active, last booking, booking count
+approutes.post("/getUsersSummaryV2", verifyadmin, getUsersSummaryV2); // Users KPIs: totals, gender, booked users, new per month, growth, top cities, latest activity
+approutes.post("/getUserProfileV2", verifyadmin, getUserProfileV2); // Body { id } - profile for any status + bookings with real status, amounts paid, savings
+approutes.post("/getUserActivityV2", verifyadmin, getUserActivityV2); // Body { id, limit } - merged timeline + push notification history
+approutes.post("/getUserOffersV2", verifyadmin, getUserOffersV2); // Body { id } - coupons redeemed + wallet transactions
 approutes.post("/getallpartner", verifyadmin, getallpartner);
 approutes.post("/getallpartnerdetails", verifyadmin, getallpartnerdetails);
 approutes.post("/getrefundrequets", verifyadmin, getrefundrequests);
@@ -250,6 +288,11 @@ approutes.post(
 approutes.post('/getreviewrequest', verifyadmin, getreviewrequest);
 approutes.post('/getallreviews', verifyadmin, getallreviews);
 approutes.post('/updatereviewrequest', verifyadmin, updatereviewrequest);
+approutes.post("/getReviewsListV2", verifyadmin, getReviewsListV2); // Paginated reviews: SQL search/filters, salon status/logo, customer type, pending removal request, admin reply
+approutes.post("/getReviewsSummaryV2", verifyadmin, getReviewsSummaryV2); // Review KPIs per named IST range, top salons, queue sizes, reviewed salons
+approutes.post("/updateReviewStatusV2", verifyadmin, updateReviewStatusV2); // Hide / restore one or many reviews
+approutes.post("/replyReviewV2", verifyadmin, replyReviewV2); // Add or edit the admin reply to a review
+approutes.post("/deleteReviewReplyV2", verifyadmin, deleteReviewReplyV2); // Remove the admin reply
 
 // Partner subscription
 approutes.post('/getallpartnersubscription', verifyadmin, getallpartnersubscription);
@@ -266,6 +309,8 @@ approutes.post('/getpayoutlogs', verifyadmin, getpayoutlogs);
 
 approutes.post('/getdashborad', verifyadmin, getdashboard);
 approutes.post('/updatedashboarddatastartdate', verifyadmin, updateDashboardDataStartDate);
+approutes.post('/getDashboardV2Metrics', verifyadmin, getDashboardV2Metrics); // Same metrics for each requested { key, from, to } range
+approutes.post('/getDashboardV2Alerts', verifyadmin, getDashboardV2Alerts); // Idle salons, overdue payouts, subscription dues, checkout drop-offs
 approutes.get('/livestats', verifyadmin, getLiveStats);
 // approutes.post('/getallcoupons',verifyadmin,getallcoupons);
 approutes.post("/addcoupons", verifyadmin, addcoupons);
@@ -276,6 +321,9 @@ approutes.post("/getBookings", verifyadmin, getBookings);
 approutes.post("/getBookingsDetails", verifyadmin, getBookingsDetails);
 approutes.post("/getBookingsDetailsByOrderDate", verifyadmin, getBookingsDetailsByOrderDate); // Same as getBookingsDetails but filtered by appointment/order date (booking_date)
 approutes.post("/getBookingsDetailsById", verifyadmin, getBookingsDetailsById);
+approutes.post("/getBookingsListV2", verifyadmin, getBookingsListV2); // V2 bookings list: phone, city, slot time, services/categories; SQL search + payment + category filters
+approutes.post("/getTopSalonsByDateRange", verifyadmin, getTopSalonsByDateRange); // Salons ranked by revenue (completed) for a date range
+approutes.post("/getBookingsSummaryV2", verifyadmin, getBookingsSummaryV2); // Revenue (invoice rule), avg order value, today's revenue, bookings by hour placed
 approutes.get("/bookings/sse", verifyadmin, bookingSSE);
 // TEMP — remove before production
 approutes.get("/bookings/sse/test", verifyadmin, (req, res) => {
@@ -292,11 +340,29 @@ approutes.post("/getinvoicepartnerstoday", verifyadmin, getInvoicePartnersToday)
 approutes.post("/getinvoicedetails", verifyadmin, getInvoiceDetailsForPartner);
 approutes.post("/markinvoicepayout", verifyadmin, markInvoicePayout);
 approutes.post("/undoinvoicepayout", verifyadmin, undoInvoicePayout);
+approutes.post("/getfreebookinglimit", verifyadmin, getFreeBookingLimit); // Free paid bookings before a partner needs a manual subscription
+approutes.post("/updatefreebookinglimit", verifyadmin, updateFreeBookingLimit); // Body: { free_booking_limit } - whole number, 0 = no free bookings
 approutes.post("/getpartnersneedingmanualsubscription", verifyadmin, getPartnersNeedingManualSubscription);
 approutes.post("/getallmanualpartnersubscriptions", verifyadmin, getAllManualPartnerSubscriptions);
 approutes.post("/assignmanualpartnersubscription", verifyadmin, assignManualPartnerSubscription);
 approutes.post("/updatemanualpartnersubscription", verifyadmin, updateManualPartnerSubscription);
 approutes.post("/deactivatemanualpartnersubscription", verifyadmin, deactivateManualPartnerSubscription);
+approutes.post("/getManualSubscriptionsListV2", verifyadmin, getManualSubscriptionsListV2); // Paginated subscriptions + pending salons: SQL filters, email/city/bookings, owed today, collected
+approutes.post("/getManualSubscriptionsSummaryV2", verifyadmin, getManualSubscriptionsSummaryV2); // Collected per IST range, status counts, owed now, due soon, plan mix, top partners, filter options
+approutes.post("/getManualSubscriptionHistoryV2", verifyadmin, getManualSubscriptionHistoryV2); // One salon's fee deductions from daily payouts
+approutes.post("/getInvoicePayoutsSummaryV2", verifyadmin, getInvoicePayoutsSummaryV2); // Invoice KPIs per range, unpaid/overdue totals, by payout frequency, all-time paid out
+approutes.post("/getInvoicePayoutPartnersV2", verifyadmin, getInvoicePayoutPartnersV2); // Paginated payout queue per salon: unpaid/due/overdue, next payout, estimated payout
+approutes.post("/getPartnerInvoiceDaysV2", verifyadmin, getPartnerInvoiceDaysV2); // One salon's invoice days with payout status
+approutes.post("/setPartnerPayoutFrequencyV2", verifyadmin, setPartnerPayoutFrequencyV2); // Body: { store_ids, frequency: daily|weekly|monthly }
+approutes.post("/payPartnerInvoicesV2", verifyadmin, payPartnerInvoicesV2); // Mark a salon's due invoice days paid, oldest first (markInvoicePayout per day)
+approutes.post("/getplatformfee", verifyadmin, getPlatformFee); // Per-booking platform fee used by reports
+approutes.post("/updateplatformfee", verifyadmin, updatePlatformFee); // Body: { platform_fee } - rupees, 0-100000, 2 decimals
+approutes.post("/getMonthlyReportSummaryV2", verifyadmin, getMonthlyReportSummaryV2); // Month vs previous month totals: bookings, invoice value, payout, platform fee, GST, CAC, customers
+approutes.post("/getMonthlyReportSalonsV2", verifyadmin, getMonthlyReportSalonsV2); // Paginated per-salon monthly report: search, city, sort
+approutes.post("/getAnalyticsProfitabilityV2", verifyadmin, getAnalyticsProfitabilityV2); // Body: { from, to } - per-salon GMV, GloUp revenue, contribution, margin tier (+ previous window)
+approutes.post("/getAnalyticsSwitchingV2", verifyadmin, getAnalyticsSwitchingV2); // Body: { from, to } - stayed / switched / no return, top switched-to, switching risk per salon
+approutes.post("/getAnalyticsGravityV2", verifyadmin, getAnalyticsGravityV2); // Body: { from, to } - customers, repeat customers, retention per salon and overall
+approutes.post("/getAnalyticsUninstalledV2", verifyadmin, getAnalyticsUninstalledV2); // Body: { from, to, include_users } - push-token-unregistered users, segments, contact list
 approutes.post("/resetalluserpaidbookingcounts", verifyadmin, resetAllUserPaidBookingCounts);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);

@@ -104,19 +104,24 @@ function amountToWords(amount) {
   return words + " Only";
 }
 
+// Always IST: the PDF is rendered on the server, whose timezone may be UTC.
 function formatDate(date) {
   return new Date(date).toLocaleDateString("en-GB", {
     day: "2-digit",
     month: "long",
     year: "numeric",
+    timeZone: "Asia/Kolkata",
   });
 }
 
+// booking_time is the slot start (null when the booking has no slot).
 function formatTime(date) {
+  if (!date) return "—";
   return new Date(date).toLocaleTimeString("en-IN", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: true,
+    timeZone: "Asia/Kolkata",
   });
 }
 
@@ -152,7 +157,7 @@ const generateMonthlyInvoicePDF = async (invoice) => {
           <td class="num">${index + 1}</td>
           <td>
             <div class="svc-name">${escapeHtml(item.service_name)}${item.important ? ' <span class="tag">Important</span>' : ""}</div>
-            <div class="svc-sub">Booking #${item.appointment_id} &middot; ${formatDate(item.appointment_date)}, ${formatTime(item.appointment_date)}</div>
+            <div class="svc-sub">Booking #${item.appointment_id} &middot; ${formatDate(item.appointment_date)}, ${formatTime(item.booking_time)}</div>
           </td>
           <td class="num">1</td>
           <td class="amt">${Number(item.amount).toFixed(2)}</td>

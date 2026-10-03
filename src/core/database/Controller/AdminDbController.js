@@ -1,5 +1,6 @@
 import require from "requirejs";
 import * as Error from "../../errors/ErrorConstant.js";
+import { ApplicationError } from "../../errors/ApplicationError.js";
 import { connection } from "../connection.js";
 import * as Models from "../models/index.js";
 import bcrypt from "bcrypt";
@@ -19,8 +20,14 @@ import {
     formatDurationFromDecimal,
     normalizeCategoryKey,
 } from "../../utils/excelParser.js";
-import { toIstDatePart } from "../../schema/formats.js";
-import { accrueDue, cycleFee } from "../../utils/partnerSubscriptionBilling.js";
+import { buildAppointmentDateTime, toIstDatePart } from "../../schema/formats.js";
+import {
+  accrueDue,
+  cycleFee,
+  DEFAULT_FREE_BOOKING_LIMIT,
+  MAX_FREE_BOOKING_LIMIT,
+} from "../../utils/partnerSubscriptionBilling.js";
+import { addDays, isValidDate, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -28,6 +35,407 @@ const ALLOWED_STATUS_TRANSITIONS = {
   completed: ["refunded"],
   cancelled: [],
   refunded: [],
+};
+
+// ── Bookings list V2 ──
+const BOOKING_STATUSES = ["booked", "confirmed", "completed", "cancelled", "refunded", "pending"];
+// payment filter -> SQL. "sucssess" is a misspelling the booking flow also
+// writes; refunds set payment_status to 'refunded' (updateRefundBookingStatus).
+const BOOKING_PAYMENT_FILTERS = {
+  paid: "a.payment_status IN ('success', 'sucssess') AND a.status <> 'refunded'",
+  unpaid: "(a.payment_status = 'pending' OR a.payment_status IS NULL)",
+  failed: "a.payment_status = 'failed'",
+  refunded: "(a.status = 'refunded' OR a.payment_status = 'refunded')",
+};
+const BOOKING_LIST_MAX_LIMIT = 10000;
+// What one appointment_items row adds to a partner's invoice - the pricing
+// rule in getInvoiceDetailsForPartner(/Monthly): "important" services at the
+// full service price, everything else at what the customer was charged.
+// Expects aliases ai (appointment_items), ss (StoreServices), cb (Combo).
+const INVOICE_ITEM_AMOUNT_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+    WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+    ELSE 0
+  END`;
+// Which date a bookings date range filters on: the appointment day (V1's
+// behaviour, the default) or when the booking was placed.
+const bookingListDateBasis = (basis) => {
+  if (basis === undefined || basis === null || basis === "" || basis === "appointment") {
+    return { dateColumn: "booking_date" };
+  }
+  if (basis === "order") return { dateColumn: "created_at" };
+  throw Error.BadRequest("date_basis must be appointment or order");
+};
+
+// ── Admin users V2 ──
+const USER_STATUSES = ["active", "inactive", "terminated"];
+// Paid = a real booking; the booking flow writes both spellings.
+const PAID_PAYMENT_SQL = "('success', 'sucssess')";
+// How the account was created, inferred from what the sign-up paths store:
+// Apple sign-in sets apple_sub, Google sign-in creates the row with an email
+// and no phone, phone OTP sign-up creates it with a phone. A Google user who
+// later adds a phone reads as "phone", so this is a best guess, not a record.
+const USER_LOGIN_METHOD_SQL = `
+  CASE
+    WHEN u.apple_sub IS NOT NULL AND u.apple_sub <> '' THEN 'apple'
+    WHEN (u.phone IS NULL OR u.phone = '') AND u.email IS NOT NULL AND u.email <> '' THEN 'google'
+    ELSE 'phone'
+  END`;
+// Referral = signed up with someone's invite code (User.used_code).
+const USER_SOURCE_SQL = "CASE WHEN u.used_code IS NOT NULL AND u.used_code <> '' THEN 'referral' ELSE 'organic' END";
+// Per-user paid-booking stats / session activity, joined as derived tables.
+const USER_BOOKING_STATS_SQL = `
+  SELECT user_id,
+    COUNT(*) AS total_bookings,
+    SUM(status = 'completed') AS completed_bookings,
+    MAX(created_at) AS last_booking_at
+  FROM appointments
+  WHERE payment_status IN ${PAID_PAYMENT_SQL}
+  GROUP BY user_id`;
+const USER_SESSION_STATS_SQL = `
+  SELECT user_id, MAX(updated_at) AS last_active_at
+  FROM UserSession
+  WHERE user_id IS NOT NULL
+  GROUP BY user_id`;
+const USER_LIST_SORTS = {
+  newest: "u.registered_at IS NULL, u.registered_at DESC, u.id DESC",
+  last_active: "ss.last_active_at IS NULL, ss.last_active_at DESC, u.id DESC",
+  last_booking: "bk.last_booking_at IS NULL, bk.last_booking_at DESC, u.id DESC",
+  bookings: "COALESCE(bk.total_bookings, 0) DESC, u.id DESC",
+};
+const USER_LIST_MAX_LIMIT = 10000;
+
+// ── Reviews V2 (ReviewsRatingsV2 page) ──
+// A review links only a customer (user_id) and a salon (store_id) - there is
+// no booking / service on it. Hidden = Reviews.status 'inactive'; Reported =
+// still active with a pending review_delete_requests row (a partner asked to
+// remove it).
+const REVIEW_LIST_MAX_LIMIT = 10000;
+const REVIEW_REPLY_MAX_LENGTH = 1000;
+const REVIEW_BULK_MAX = 500;
+const REVIEW_LIST_SORTS = {
+  newest: "R.cretaed_at DESC, R.id DESC",
+  salon: "S.name ASC, R.cretaed_at DESC, R.id DESC",
+  customer: "customer_name ASC, R.cretaed_at DESC, R.id DESC",
+  rating: "R.rating DESC, R.cretaed_at DESC, R.id DESC",
+};
+// Latest pending removal request per review (partners can file duplicates).
+const REVIEW_PENDING_REQUEST_SQL = `
+  SELECT d.review_id, d.id AS request_id, d.reason AS request_reason
+  FROM review_delete_requests d
+  JOIN (
+    SELECT review_id, MAX(id) AS id
+    FROM review_delete_requests
+    WHERE status = 'pending'
+    GROUP BY review_id
+  ) latest ON latest.id = d.id`;
+// Customer type from completed paid bookings, on the loyalty_status
+// thresholds (0-1 new, 2-9 repeat, 10+ vip). User.loyalty_status itself was
+// reset to new_user for tier pricing, so it can't be used here.
+const REVIEW_CUSTOMER_TAG_SQL = `
+  CASE
+    WHEN COALESCE(bk.completed_bookings, 0) >= 10 THEN 'vip'
+    WHEN COALESCE(bk.completed_bookings, 0) >= 2 THEN 'repeat'
+    ELSE 'new'
+  END`;
+const REVIEW_CUSTOMER_TAGS = ["new", "repeat", "vip"];
+
+// Positive whole number list from `review_ids` (or a single `review_id`).
+const requireReviewIds = (data) => {
+  const raw = Array.isArray(data.review_ids) ? data.review_ids : [data.review_id];
+  const ids = [...new Set(raw.map(Number))];
+  if (!ids.length || ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw Error.BadRequest("review_ids must be positive whole numbers");
+  }
+  if (ids.length > REVIEW_BULK_MAX) {
+    throw Error.BadRequest(`at most ${REVIEW_BULK_MAX} reviews at a time`);
+  }
+  return ids;
+};
+
+// ── Manual partner subscriptions V2 (PartnerSubscriptionsV2 page) ──
+// Rows are every PartnerManualSubscriptions row plus "pending" salons: past
+// the free-booking limit with no subscription row at all. A deactivated
+// salon over the limit stays a deactivated row (flagged needs_subscription),
+// so no salon is listed twice.
+const SUB_LIST_MAX_LIMIT = 10000;
+const SUB_STATUSES = ["active", "due", "inactive", "pending"];
+// Status from stored columns: "due" = owes something now - a stored balance
+// or a due date that has passed (accrueDue would add a cycle for it).
+const SUB_STATUS_SQL = `
+  CASE
+    WHEN x.kind = 'pending' THEN 'pending'
+    WHEN x.sub_status <> 'active' THEN 'inactive'
+    WHEN x.outstanding_due > 0 OR x.next_due_date <= :today THEN 'due'
+    ELSE 'active'
+  END`;
+const SUB_LIST_SORTS = {
+  status: "FIELD(row_status, 'pending', 'due', 'active', 'inactive'), s.name ASC, x.store_id ASC",
+  newest: "x.activated_at IS NULL, x.activated_at DESC, x.store_id DESC",
+  name: "s.name ASC, x.store_id ASC",
+  bookings: "s.total_booking_count DESC, x.store_id DESC",
+  next_due: "x.next_due_date IS NULL, x.next_due_date ASC, x.store_id ASC",
+};
+// Store.logo holds the literal string "null" for some salons.
+const cleanLogo = (logo) => (logo && logo !== "null" && logo !== "undefined" ? logo : null);
+// "YYYY-MM-DD" from a DATE column, whether the driver returned a string or a Date.
+const dayString = (value) => {
+  if (value === null || value === undefined) return null;
+  return typeof value === "string" ? value.slice(0, 10) : toIstDatePart(value);
+};
+
+// ── Invoices & payouts V2 (InvoicePayoutsV2 page) ──
+// An invoice is one salon's non-cancelled bookings on one visit day (same
+// rule and pricing as getInvoiceDetailsForPartner); it is paid when an
+// InvoicePayouts row exists for (store_id, invoice_date). Store.
+// payout_frequency only decides when that day's money is DUE:
+//   daily   -> the next day
+//   weekly  -> the Monday after its Mon-Sun week
+//   monthly -> the 1st of the next month
+// Unpaid and not due yet = scheduled; due = due 0..GRACE-1 days ago;
+// overdue = due GRACE+ days ago.
+const PAYOUT_FREQUENCIES = ["daily", "weekly", "monthly"];
+const PAYOUT_OVERDUE_GRACE_DAYS = 3;
+const PAYOUT_STATUSES = ["scheduled", "due", "overdue", "paid"];
+const PAYOUT_LIST_MAX_LIMIT = 10000;
+const PAYOUT_BULK_MAX_DAYS = 120;
+// Invoice gross per item - important services at full price, everything else
+// at what the customer was charged (getInvoiceDetailsForPartner's rule).
+const INVOICE_ITEM_GROSS_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+    WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+    ELSE 0
+  END`;
+// One row per (salon, visit day) between :daysFrom and :daysEnd (exclusive).
+const INVOICE_DAYS_SQL = `
+  SELECT a.store_id, DATE(a.booking_date) AS invoice_date,
+         COUNT(DISTINCT a.id) AS bookings,
+         SUM(${INVOICE_ITEM_GROSS_SQL}) AS gross
+  FROM appointments a
+  INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+  LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+  LEFT JOIN Combo cb ON ai.combo_id = cb.id
+  WHERE a.booking_date >= :daysFrom AND a.booking_date < :daysEnd
+    AND a.status != 'cancelled'
+  GROUP BY a.store_id, DATE(a.booking_date)`;
+// Payout due date for an invoice day `d.invoice_date` of salon `s`.
+const INVOICE_DUE_DATE_SQL = `
+  CASE s.payout_frequency
+    WHEN 'weekly' THEN DATE_ADD(d.invoice_date, INTERVAL (7 - WEEKDAY(d.invoice_date)) DAY)
+    WHEN 'monthly' THEN DATE_ADD(LAST_DAY(d.invoice_date), INTERVAL 1 DAY)
+    ELSE DATE_ADD(d.invoice_date, INTERVAL 1 DAY)
+  END`;
+// Every invoice day with its salon, payout row and due date.
+const invoiceDayRowsSql = () => `
+  SELECT d.store_id, d.invoice_date, d.bookings, d.gross,
+         s.payout_frequency AS frequency,
+         ${INVOICE_DUE_DATE_SQL} AS due_date,
+         ip.id AS payout_id, ip.amount AS payout_amount,
+         ip.subscription_deducted, ip.paid_at, ip.marked_by
+  FROM (${INVOICE_DAYS_SQL}) d
+  INNER JOIN Store s ON s.id = d.store_id
+  LEFT JOIN InvoicePayouts ip ON ip.store_id = d.store_id AND ip.invoice_date = d.invoice_date`;
+// Status of one invoice day (needs :today, :grace).
+const INVOICE_DAY_STATUS_SQL = `
+  CASE
+    WHEN x.payout_id IS NOT NULL THEN 'paid'
+    WHEN x.due_date > :today THEN 'scheduled'
+    WHEN DATEDIFF(:today, x.due_date) >= :grace THEN 'overdue'
+    ELSE 'due'
+  END`;
+
+// ── Monthly report V2 (MonthlyReportV2 page) ──
+// Per-booking platform fee customers pay (AdminSettings.platform_fee). The
+// fallback matches what createOrderV2 charges today.
+const DEFAULT_PLATFORM_FEE = 3;
+const MAX_PLATFORM_FEE = 100000;
+const REPORT_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const MONTHLY_REPORT_MAX_LIMIT = 10000;
+// A booking counts once it's paid; "active" = paid and not cancelled/refunded
+// (what the customer was actually served and charged for).
+const PAID_BOOKING_SQL = `a.payment_status IN ${PAID_PAYMENT_SQL}`;
+const ACTIVE_BOOKING_SQL = `${PAID_BOOKING_SQL} AND a.status NOT IN ('cancelled', 'refunded')`;
+// Discount Gloup funds on an item - the invoice's "Acquisition Cost" and the
+// dashboard's CAC (0 for important services).
+const ITEM_CAC_SQL = `
+  CASE
+    WHEN ss.id IS NOT NULL THEN IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
+    WHEN cb.id IS NOT NULL THEN GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
+    ELSE 0
+  END`;
+const MONTHLY_REPORT_SORTS = {
+  bookings_desc: "COALESCE(b.total_bookings, 0) DESC, s.name ASC",
+  bookings_asc: "COALESCE(b.total_bookings, 0) ASC, s.name ASC",
+  paid_in_desc: "COALESCE(g.gross, 0) DESC, s.name ASC",
+  paid_in_asc: "COALESCE(g.gross, 0) ASC, s.name ASC",
+  rating_desc: "r.average_rating IS NULL, r.average_rating DESC, r.review_count DESC, s.name ASC",
+  name_asc: "s.name ASC, base.store_id ASC",
+};
+
+// "YYYY-MM" (default: this IST month) -> the month and the one before it,
+// each as { month, from, to, end } with `end` exclusive.
+const resolveReportMonths = (monthInput) => {
+  const raw = monthInput ? String(monthInput).trim() : toIstDatePart(new Date()).slice(0, 7);
+  const match = REPORT_MONTH_RE.exec(raw);
+  if (!match) {
+    throw Error.BadRequest("month must be YYYY-MM");
+  }
+  const span = (year, month) => {
+    const pad = (n) => String(n).padStart(2, "0");
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const from = `${year}-${pad(month)}-01`;
+    const to = `${year}-${pad(month)}-${pad(lastDay)}`;
+    return { month: `${year}-${pad(month)}`, from, to, end: addDays(to, 1) };
+  };
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  return {
+    current: span(year, month),
+    previous: month === 1 ? span(year - 1, 12) : span(year, month - 1),
+  };
+};
+
+// Per-salon aggregates for one month (:fromDate inclusive, :toEnd exclusive),
+// each grouped by store_id so they can be LEFT JOINed onto a salon list.
+const MONTHLY_BOOKINGS_SQL = `
+  SELECT a.store_id,
+    COUNT(*) AS total_bookings,
+    SUM(a.status = 'completed') AS completed,
+    SUM(a.status IN ('cancelled', 'refunded')) AS cancelled,
+    SUM(a.status NOT IN ('cancelled', 'refunded')) AS active_bookings,
+    COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
+      THEN ROUND(a.discounted_amount * COALESCE(a.gst, 0) / 100, 2) END), 0) AS gst,
+    COUNT(DISTINCT CASE WHEN a.status NOT IN ('cancelled', 'refunded') THEN a.user_id END) AS customers,
+    MAX(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
+      THEN CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), ' ', COALESCE(TIME_FORMAT(sl.\`from\`, '%H:%i:%s'), '')) END) AS last_booking
+  FROM appointments a
+  LEFT JOIN Slots sl ON sl.id = a.slot_id
+  WHERE ${PAID_BOOKING_SQL} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+  GROUP BY a.store_id`;
+// Invoice value (same pricing and "not cancelled" rule as the invoice page)
+// and CAC (paid, not cancelled / refunded - same as the dashboard).
+const MONTHLY_ITEMS_SQL = `
+  SELECT a.store_id,
+    COALESCE(SUM(${INVOICE_ITEM_GROSS_SQL}), 0) AS gross,
+    COUNT(DISTINCT a.id) AS orders,
+    COALESCE(SUM(CASE WHEN ${ACTIVE_BOOKING_SQL} THEN ${ITEM_CAC_SQL} END), 0) AS cac_spend,
+    COUNT(DISTINCT CASE WHEN ${ACTIVE_BOOKING_SQL} THEN a.id END) AS cac_bookings
+  FROM appointments a
+  INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+  LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+  LEFT JOIN Combo cb ON ai.combo_id = cb.id
+  WHERE a.booking_date >= :fromDate AND a.booking_date < :toEnd AND a.status != 'cancelled'
+  GROUP BY a.store_id`;
+const MONTHLY_PAYOUTS_SQL = `
+  SELECT store_id, COALESCE(SUM(amount), 0) AS payout,
+         COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted, COUNT(*) AS payouts
+  FROM InvoicePayouts
+  WHERE invoice_date >= :fromDate AND invoice_date < :toEnd
+  GROUP BY store_id`;
+// Every salon with a paid booking or an invoice line in the month.
+const MONTHLY_SALONS_SQL = `
+  SELECT DISTINCT a.store_id
+  FROM appointments a
+  WHERE a.booking_date >= :fromDate AND a.booking_date < :toEnd
+    AND (${PAID_BOOKING_SQL} OR a.status != 'cancelled')`;
+
+// ── Analytics intelligence V2 (AnalyticsIntelligenceV2 page) ──
+// Salon profitability tiers by contribution margin %, and switching-risk
+// tiers by the share of a salon's customers whose next booking was elsewhere.
+const PROFIT_TIERS = [
+  { tier: "High", min: 20 },
+  { tier: "Medium", min: 10 },
+  { tier: "Low", min: 0 },
+];
+const SWITCH_RISK_TIERS = [
+  { tier: "High", min: 30 },
+  { tier: "Medium", min: 20 },
+];
+// A salon needs this many customers in the window to be ranked for risk.
+const SWITCH_RISK_MIN_CUSTOMERS = 2;
+const ANALYTICS_MAX_DAYS = 366;
+// Uninstalled users: "high value" = this many served bookings, and the
+// last-active buckets (days since registration / OTP login / booking).
+const UNINSTALLED_HIGH_VALUE_BOOKINGS = 2;
+const UNINSTALLED_SEGMENTS = [
+  { key: "d7", label: "Active within 7 days", max_days: 7 },
+  { key: "d30", label: "Active 8–30 days ago", max_days: 30 },
+  { key: "d60", label: "Active 31–60 days ago", max_days: 60 },
+  { key: "d60plus", label: "Active 60+ days ago", max_days: Infinity },
+];
+
+// { from, to } (YYYY-MM-DD, inclusive, default the last `defaultDays` days)
+// plus `end` (exclusive) and the equal-length previous window.
+const resolveAnalyticsWindow = (data = {}, defaultDays = 30) => {
+  const today = toIstDatePart(new Date());
+  const to = data.to ? String(data.to) : today;
+  const from = data.from ? String(data.from) : addDays(to, -(defaultDays - 1));
+  if (!isValidDate(from) || !isValidDate(to)) {
+    throw Error.BadRequest("from and to must be YYYY-MM-DD");
+  }
+  if (from > to) {
+    throw Error.BadRequest("from must not be after to");
+  }
+  const days = Math.round((Date.parse(to) - Date.parse(from)) / 864e5) + 1;
+  if (days > ANALYTICS_MAX_DAYS) {
+    throw Error.BadRequest(`the window can be at most ${ANALYTICS_MAX_DAYS} days`);
+  }
+  const prevTo = addDays(from, -1);
+  const prevFrom = addDays(from, -days);
+  return {
+    from,
+    to,
+    end: addDays(to, 1),
+    days,
+    previous: { from: prevFrom, to: prevTo, end: from },
+  };
+};
+
+const profitTier = (margin, contribution) => {
+  if (margin === null) return contribution < 0 ? "Negative" : "Low";
+  return PROFIT_TIERS.find((t) => margin >= t.min)?.tier || "Negative";
+};
+const switchRiskTier = (pct) => SWITCH_RISK_TIERS.find((t) => pct >= t.min)?.tier || "Low";
+
+// Each customer's FIRST served booking in [:fromDate, :toEnd) with the salon
+// of their next served booking after it (any time, NULL = none since).
+const SWITCH_ANCHORS_SQL = `
+  SELECT x.user_id, x.store_id, x.next_store
+  FROM (
+    SELECT b.user_id, b.store_id, b.next_store,
+           ROW_NUMBER() OVER (PARTITION BY b.user_id ORDER BY b.booking_date, b.id) AS window_rank
+    FROM (
+      SELECT a.id, a.user_id, a.store_id, a.booking_date,
+             LEAD(a.store_id) OVER (PARTITION BY a.user_id ORDER BY a.booking_date, a.id) AS next_store
+      FROM appointments a
+      WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL
+    ) b
+    WHERE b.booking_date >= :fromDate AND b.booking_date < :toEnd
+  ) x
+  WHERE x.window_rank = 1`;
+
+// What the customer paid for a booking: charged price + GST (appointments.gst %).
+const AMOUNT_PAID_SQL = "a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2)";
+
+const requireUserId = (value) => {
+  const id = Number(value);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw Error.BadRequest("id must be a positive whole number");
+  }
+  return id;
+};
+const escapeLike = (value) => String(value).replace(/[\\%_]/g, (ch) => `\\${ch}`);
+// Store.images is a JSON array string; first image path or null.
+const firstImage = (raw) => {
+  if (!raw) return null;
+  try {
+    const list = typeof raw === "string" ? JSON.parse(raw) : raw;
+    return Array.isArray(list) && list.length ? list[0] : null;
+  } catch {
+    return null;
+  }
 };
 
 const INVOICE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -275,12 +683,630 @@ adminDbController.app = {
       }
 
       return await adminDbController.Models.User.findAll({
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'loyalty_status', 'paid_booking_count'],
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status', 'loyalty_status', 'paid_booking_count', 'gender', 'city', 'registered_at'],
         where,
         order: [['id', 'DESC']]
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch users");
+    }
+  },
+  // ── Admin users V2 (UsersV2 / UserDetailsV2 pages) ───────────────────────
+
+  // Paginated user list with every filter in SQL. Adds what the V1 list never
+  // returned: gender, city, registered date, sign-up source / login method,
+  // last active (latest UserSession activity), last paid booking and the real
+  // paid-booking count (User.paid_booking_count was reset to 0 for tier
+  // pricing, so it is not a booking count any more).
+  getUsersListV2: async (data = {}) => {
+    try {
+      const where = [];
+      const replacements = {};
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "CONCAT_WS(' ', u.firstname, u.lastname) LIKE :searchLike",
+          "u.email LIKE :searchLike",
+          "u.phone LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("u.id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.status) {
+        if (!USER_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${USER_STATUSES.join(", ")}`);
+        }
+        addWhere("u.status = :status", { status: data.status });
+      }
+
+      if (data.gender) {
+        const gender = String(data.gender).toLowerCase();
+        if (gender === "male") addWhere("LOWER(u.gender) IN ('male', 'm')");
+        else if (gender === "female") addWhere("LOWER(u.gender) IN ('female', 'f')");
+        else if (gender === "unknown") addWhere("(u.gender IS NULL OR LOWER(u.gender) NOT IN ('male', 'm', 'female', 'f'))");
+        else throw Error.BadRequest("gender must be male, female or unknown");
+      }
+
+      if (data.city) {
+        addWhere("LOWER(TRIM(u.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+
+      if (data.source) {
+        if (!["referral", "organic"].includes(data.source)) {
+          throw Error.BadRequest("source must be referral or organic");
+        }
+        addWhere(`${USER_SOURCE_SQL} = :source`, { source: data.source });
+      }
+
+      if (data.login_method) {
+        if (!["apple", "google", "phone"].includes(data.login_method)) {
+          throw Error.BadRequest("login_method must be apple, google or phone");
+        }
+        addWhere(`${USER_LOGIN_METHOD_SQL} = :loginMethod`, { loginMethod: data.login_method });
+      }
+
+      if (data.loyalty) {
+        addWhere("u.loyalty_status = :loyalty", { loyalty: String(data.loyalty) });
+      }
+
+      if (data.booked === "yes" || data.booked === true) addWhere("COALESCE(bk.total_bookings, 0) > 0");
+      else if (data.booked === "no" || data.booked === false) addWhere("COALESCE(bk.total_bookings, 0) = 0");
+      else if (data.booked !== undefined && data.booked !== null && data.booked !== "") {
+        throw Error.BadRequest("booked must be yes or no");
+      }
+
+      for (const [field, op] of [["joined_from", ">="], ["joined_to", "<"]]) {
+        if (!data[field]) continue;
+        if (!isValidDate(String(data[field]))) {
+          throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+        }
+        const value = field === "joined_to" ? addDays(data[field], 1) : data[field];
+        addWhere(`u.registered_at ${op} :${field}`, { [field]: value });
+      }
+
+      const sort = USER_LIST_SORTS[data.sort || "newest"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(USER_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 10), USER_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM User u
+        LEFT JOIN (${USER_BOOKING_STATS_SQL}) bk ON bk.user_id = u.id
+        LEFT JOIN (${USER_SESSION_STATS_SQL}) ss ON ss.user_id = u.id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            u.id, u.firstname, u.lastname,
+            TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name,
+            u.email, u.phone, u.gender, u.city, u.status, u.loyalty_status,
+            u.profilePic AS profilepic, u.registered_at,
+            ${USER_SOURCE_SQL} AS source,
+            ${USER_LOGIN_METHOD_SQL} AS login_method,
+            ss.last_active_at,
+            bk.last_booking_at,
+            COALESCE(bk.total_bookings, 0) AS total_bookings,
+            COALESCE(bk.completed_bookings, 0) AS completed_bookings
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :limit OFFSET :offset
+          `,
+          { replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          total_bookings: Number(row.total_bookings) || 0,
+          completed_bookings: Number(row.completed_bookings) || 0,
+        })),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUsersListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch users");
+    }
+  },
+
+  // KPIs and charts for the users page, all from real columns:
+  // registered_at (join date), gender, city, used_code, UserSession, paid
+  // appointments. Users with no registered_at (pre-existing accounts with no
+  // history to backfill from) are counted in totals but not in any month.
+  getUsersSummaryV2: async () => {
+    try {
+      const today = toIstDatePart(new Date());
+      const [year, month] = today.split("-").map(Number);
+      const pad = (n) => String(n).padStart(2, "0");
+      const monthKey = (y, m) => {
+        const d = new Date(Date.UTC(y, m - 1, 1));
+        return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}`;
+      };
+      const thisMonth = monthKey(year, month);
+      const lastMonth = monthKey(year, month - 1);
+      const monthBefore = monthKey(year, month - 2);
+      const dailyFrom = `${monthBefore}-01` < addDays(today, -29) ? `${monthBefore}-01` : addDays(today, -29);
+      const yearStart = `${year}-01-01`;
+      const run = (sql, replacements = {}) =>
+        adminDbController.connection.query(sql, { replacements, type: Sequelize.QueryTypes.SELECT });
+
+      const [[totals], [booked], daily, monthly, [beforeYear], cities, [latestActive], [latestBooking]] =
+        await Promise.all([
+          run(`
+            SELECT
+              COUNT(*) AS total,
+              COALESCE(SUM(u.status = 'active'), 0) AS active,
+              COALESCE(SUM(LOWER(u.gender) IN ('male', 'm')), 0) AS male,
+              COALESCE(SUM(LOWER(u.gender) IN ('female', 'f')), 0) AS female,
+              COALESCE(SUM(${USER_SOURCE_SQL} = 'referral'), 0) AS referral,
+              COALESCE(SUM(u.registered_at IS NULL), 0) AS unknown_join_date
+            FROM User u
+          `),
+          run(`SELECT COUNT(DISTINCT user_id) AS booked_users FROM appointments WHERE payment_status IN ${PAID_PAYMENT_SQL}`),
+          run(
+            `SELECT DATE_FORMAT(registered_at, '%Y-%m-%d') AS day, COUNT(*) AS users
+             FROM User WHERE registered_at >= :dailyFrom
+             GROUP BY DATE_FORMAT(registered_at, '%Y-%m-%d')`,
+            { dailyFrom }
+          ),
+          run(
+            `SELECT DATE_FORMAT(registered_at, '%Y-%m') AS month, COUNT(*) AS users
+             FROM User WHERE registered_at >= :yearStart
+             GROUP BY DATE_FORMAT(registered_at, '%Y-%m')`,
+            { yearStart }
+          ),
+          run(`SELECT COUNT(*) AS users FROM User WHERE registered_at < :yearStart OR registered_at IS NULL`, { yearStart }),
+          run(`
+            SELECT MIN(TRIM(city)) AS city, COUNT(*) AS users
+            FROM User
+            WHERE city IS NOT NULL AND TRIM(city) <> ''
+            GROUP BY LOWER(TRIM(city))
+            ORDER BY users DESC
+            LIMIT 20
+          `),
+          run(`
+            SELECT u.id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, u.profilePic AS profilepic, s.last_active_at
+            FROM (${USER_SESSION_STATS_SQL}) s
+            INNER JOIN User u ON u.id = s.user_id
+            ORDER BY s.last_active_at DESC
+            LIMIT 1
+          `),
+          run(`
+            SELECT a.id AS appointment_id, a.created_at AS last_booking_at,
+              u.id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, u.profilePic AS profilepic
+            FROM appointments a
+            INNER JOIN User u ON u.id = a.user_id
+            WHERE a.payment_status IN ${PAID_PAYMENT_SQL}
+            ORDER BY a.created_at DESC, a.id DESC
+            LIMIT 1
+          `),
+        ]);
+
+      const dailyMap = new Map(daily.map((r) => [r.day, Number(r.users) || 0]));
+      const series = (from, days) =>
+        Array.from({ length: days }, (_, i) => dailyMap.get(addDays(from, i)) || 0);
+      const daysIn = (key) => {
+        const [y, m] = key.split("-").map(Number);
+        return new Date(Date.UTC(y, m, 0)).getUTCDate();
+      };
+      const sumMonth = (key) => series(`${key}-01`, daysIn(key)).reduce((a, b) => a + b, 0);
+
+      const monthlyMap = new Map(monthly.map((r) => [r.month, Number(r.users) || 0]));
+      let running = Number(beforeYear?.users) || 0;
+      const growth = Array.from({ length: month }, (_, i) => {
+        const key = monthKey(year, i + 1);
+        running += monthlyMap.get(key) || 0;
+        return { month: key, new_users: monthlyMap.get(key) || 0, total_users: running };
+      });
+
+      return {
+        date: today,
+        total_users: Number(totals?.total) || 0,
+        active_users: Number(totals?.active) || 0,
+        male_users: Number(totals?.male) || 0,
+        female_users: Number(totals?.female) || 0,
+        referral_users: Number(totals?.referral) || 0,
+        unknown_join_date: Number(totals?.unknown_join_date) || 0,
+        booked_users: Number(booked?.booked_users) || 0,
+        new_this_month: sumMonth(thisMonth),
+        new_last_month: sumMonth(lastMonth),
+        new_month_before: sumMonth(monthBefore),
+        daily_signups: {
+          last_30_days: series(addDays(today, -29), 30),
+          this_month: series(`${thisMonth}-01`, Number(today.slice(8, 10))),
+          last_month: series(`${lastMonth}-01`, daysIn(lastMonth)),
+        },
+        growth,
+        top_cities: cities.map((c) => ({ city: c.city, users: Number(c.users) || 0 })),
+        latest_active: latestActive || null,
+        latest_booking: latestBooking || null,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUsersSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch users summary");
+    }
+  },
+
+  // Everything the V2 profile needs in one call, for a user of ANY status
+  // (the V1 details call only returns active users). Bookings keep their real
+  // appointments.status, and carry the list price, what was charged, GST,
+  // what was paid and the saving, plus salon, slot time, services and coupon.
+  getUserProfileV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const run = (sql, replacements = {}) =>
+        adminDbController.connection.query(sql, { replacements: { id, ...replacements }, type: Sequelize.QueryTypes.SELECT });
+
+      const [[user], [sessions], bookingRows] = await Promise.all([
+        run(`
+          SELECT u.id, u.firstname, u.lastname, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name,
+            u.email, u.phone, u.gender, u.age, u.date_of_birth, u.city, u.country, u.status,
+            u.loyalty_status, u.profilePic AS profilepic, u.registered_at, u.wallet,
+            u.invited_code, u.used_code,
+            ${USER_SOURCE_SQL} AS source,
+            ${USER_LOGIN_METHOD_SQL} AS login_method
+          FROM User u
+          WHERE u.id = :id
+          LIMIT 1
+        `),
+        run(`
+          SELECT COUNT(*) AS sessions, MAX(created_at) AS last_login_at, MAX(updated_at) AS last_active_at
+          FROM UserSession
+          WHERE user_id = :id
+        `),
+        run(`
+          SELECT
+            a.id, a.created_at,
+            DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS booking_date,
+            a.status, a.payment_status, a.is_wallet,
+            a.amount AS list_price,
+            a.discounted_amount AS amount,
+            ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
+            ${AMOUNT_PAID_SQL} AS amount_paid,
+            GREATEST(0, a.amount - a.discounted_amount) AS savings,
+            cp.code AS coupon_code,
+            e.\`from\` AS slot_from, e.\`to\` AS slot_to,
+            d.id AS salon_id, d.name AS salon_name, d.images AS salon_images,
+            f.area AS salon_area, f.city AS salon_city,
+            (
+              SELECT GROUP_CONCAT(COALESCE(ss.service_name, cb.combo) ORDER BY si.id SEPARATOR '||')
+              FROM appointment_items si
+              LEFT JOIN StoreServices ss ON si.service_id = ss.id
+              LEFT JOIN Combo cb ON si.combo_id = cb.id
+              WHERE si.appointment_id = a.id
+            ) AS services,
+            (
+              SELECT GROUP_CONCAT(DISTINCT sc.name ORDER BY sc.name SEPARATOR '||')
+              FROM appointment_items ci
+              LEFT JOIN StoreServices css ON ci.service_id = css.id
+              LEFT JOIN Combo ccb ON ci.combo_id = ccb.id
+              INNER JOIN Servicecategory sc ON sc.id = COALESCE(css.service_category, ccb.service_category)
+              WHERE ci.appointment_id = a.id
+            ) AS service_categories
+          FROM appointments a
+          LEFT JOIN Store d ON a.store_id = d.id
+          LEFT JOIN PartnerAddress f ON d.address_id = f.id
+          LEFT JOIN Slots e ON a.slot_id = e.id
+          LEFT JOIN Coupons cp ON a.is_discounted = 1 AND cp.id = a.discount_id
+          WHERE a.user_id = :id
+            AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.booking_date DESC, e.\`from\` DESC, a.id DESC
+        `),
+      ]);
+
+      if (!user) throw Error.NotFound("User not found");
+
+      let referredBy = null;
+      if (user.used_code) {
+        const [referrer] = await run(
+          `SELECT id, TRIM(CONCAT_WS(' ', firstname, lastname)) AS name FROM User WHERE invited_code = :code AND id <> :id LIMIT 1`,
+          { code: user.used_code }
+        );
+        referredBy = referrer || null;
+      }
+
+      const split = (value) => (value ? String(value).split("||").filter(Boolean) : []);
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const today = toIstDatePart(new Date());
+      const bookings = bookingRows.map((row) => {
+        const { salon_images: images, ...rest } = row;
+        return {
+          ...rest,
+          list_price: money(row.list_price),
+          amount: money(row.amount),
+          gst_amount: money(row.gst_amount),
+          amount_paid: money(row.amount_paid),
+          savings: money(row.savings),
+          is_wallet: !!row.is_wallet,
+          salon_image: firstImage(images),
+          services: split(row.services),
+          service_categories: split(row.service_categories),
+          upcoming: ["booked", "confirmed"].includes(row.status) && row.booking_date >= today,
+        };
+      });
+
+      const count = (fn) => bookings.filter(fn).length;
+      const completed = bookings.filter((b) => b.status === "completed");
+      const spent = completed.reduce((sum, b) => sum + b.amount_paid, 0);
+      const notCancelled = bookings.filter((b) => !["cancelled", "refunded"].includes(b.status));
+
+      return {
+        user: {
+          ...user,
+          wallet: Number(user.wallet) || 0,
+          referred_by: referredBy,
+          sessions: Number(sessions?.sessions) || 0,
+          last_login_at: sessions?.last_login_at || null,
+          last_active_at: sessions?.last_active_at || null,
+        },
+        summary: {
+          total_bookings: bookings.length,
+          upcoming: count((b) => b.upcoming),
+          completed: completed.length,
+          cancelled: count((b) => b.status === "cancelled"),
+          refunded: count((b) => b.status === "refunded"),
+          this_month: count((b) => b.booking_date && b.booking_date.slice(0, 7) === today.slice(0, 7)),
+          // Paid (charged price + GST) on completed bookings.
+          total_spent: money(spent),
+          // List price minus charged price, on bookings that weren't cancelled/refunded.
+          total_savings: money(notCancelled.reduce((sum, b) => sum + b.savings, 0)),
+          avg_order_value: completed.length ? money(spent / completed.length) : null,
+          highest_booking: completed.length ? Math.max(...completed.map((b) => b.amount_paid)) : null,
+        },
+        bookings,
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserProfileV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user profile");
+    }
+  },
+
+  // Timeline for one user, newest first, merged from every per-user log the
+  // platform writes: logins (UserSession), bookings placed / cancelled /
+  // refunded / checkouts not completed (appointments), reviews, refund
+  // requests, wallet credits/debits (user_transaction_logs), push
+  // notifications received (NotificationLogs) and account changes
+  // (AccountLogs). In-app actions like searches or salon views are not
+  // recorded anywhere, so they can't appear. `communication` is the push
+  // history on its own (WhatsApp / SMS aren't logged per user).
+  getUserActivityV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 50), 200);
+      const run = (sql) =>
+        adminDbController.connection.query(sql, { replacements: { id, limit }, type: Sequelize.QueryTypes.SELECT });
+
+      const [logins, placed, closed, failed, reviews, refunds, wallet, notifications, account] = await Promise.all([
+        run(`SELECT id, created_at AS at FROM UserSession WHERE user_id = :id AND created_at IS NOT NULL ORDER BY created_at DESC LIMIT :limit`),
+        run(`
+          SELECT a.id, a.created_at AS at, a.discounted_amount AS amount, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT a.id, a.updated_at AS at, a.status, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.status IN ('cancelled', 'refunded')
+            AND a.payment_status IN (${PAID_PAYMENT_SQL.slice(1, -1)}, 'refunded')
+            AND a.updated_at IS NOT NULL
+          ORDER BY a.updated_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT a.id, a.created_at AS at, d.name AS salon_name
+          FROM appointments a LEFT JOIN Store d ON d.id = a.store_id
+          WHERE a.user_id = :id AND a.payment_status = 'failed'
+          ORDER BY a.created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT r.id, r.cretaed_at AS at, r.rating, r.review_description, d.name AS salon_name
+          FROM Reviews r LEFT JOIN Store d ON d.id = r.store_id
+          WHERE r.user_id = :id AND r.cretaed_at IS NOT NULL
+          ORDER BY r.cretaed_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, created_at AS at, appointment_id, reason, status
+          FROM refund_requests WHERE user_id = :id AND created_at IS NOT NULL
+          ORDER BY created_at DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, type, transaction_amount AS amount, description
+          FROM user_transaction_logs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, title, description
+          FROM NotificationLogs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+        run(`
+          SELECT id, date AS at, action, description
+          FROM AccountLogs WHERE user_id = :id AND date IS NOT NULL
+          ORDER BY date DESC LIMIT :limit
+        `),
+      ]);
+
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const events = [
+        ...logins.map((r) => ({ type: "login", at: r.at, title: "Logged in", ref_id: r.id })),
+        ...placed.map((r) => ({
+          type: "booking",
+          at: r.at,
+          title: `Booked${r.salon_name ? ` at ${r.salon_name}` : ""}`,
+          amount: money(r.amount),
+          ref_id: r.id,
+        })),
+        ...closed.map((r) => ({
+          type: r.status === "refunded" ? "refund" : "cancellation",
+          at: r.at,
+          title: `Booking #${r.id} ${r.status}${r.salon_name ? ` (${r.salon_name})` : ""}`,
+          ref_id: r.id,
+        })),
+        ...failed.map((r) => ({
+          type: "checkout_failed",
+          at: r.at,
+          title: `Checkout not completed${r.salon_name ? ` at ${r.salon_name}` : ""}`,
+          ref_id: r.id,
+        })),
+        ...reviews.map((r) => ({
+          type: "review",
+          at: r.at,
+          title: `Rated ${r.salon_name || "a salon"} ${r.rating ?? "-"}/5`,
+          description: r.review_description || null,
+          ref_id: r.id,
+        })),
+        ...refunds.map((r) => ({
+          type: "refund_request",
+          at: r.at,
+          title: `Refund requested for booking #${r.appointment_id} (${r.status || "pending"})`,
+          description: r.reason || null,
+          ref_id: r.id,
+        })),
+        ...wallet.map((r) => ({
+          type: r.type === "debit" ? "wallet_debit" : "wallet_credit",
+          at: r.at,
+          title: `Wallet ${r.type === "debit" ? "debited" : "credited"}`,
+          amount: money(r.amount),
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+        ...notifications.map((r) => ({
+          type: "notification",
+          at: r.at,
+          title: r.title || "Notification",
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+        ...account.map((r) => ({
+          type: "account",
+          at: r.at,
+          title: String(r.action || "Account change").replace(/_/g, " ").toLowerCase(),
+          description: r.description || null,
+          ref_id: r.id,
+        })),
+      ]
+        .filter((e) => e.at)
+        .sort((a, b) => new Date(b.at) - new Date(a.at))
+        .slice(0, limit);
+
+      return {
+        events,
+        communication: notifications.map((r) => ({
+          id: r.id,
+          channel: "push",
+          at: r.at,
+          title: r.title || "Notification",
+          description: r.description || null,
+        })),
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserActivityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user activity");
+    }
+  },
+
+  // Offers tab: coupons the user redeemed on paid bookings (with the booking
+  // and date, from appointments.discount_id), any redemptions recorded in
+  // UsedCoupons without a matching booking, and wallet credits/debits.
+  getUserOffersV2: async (data = {}) => {
+    try {
+      const id = requireUserId(data.id);
+      const run = (sql) =>
+        adminDbController.connection.query(sql, { replacements: { id }, type: Sequelize.QueryTypes.SELECT });
+
+      const [[user], couponBookings, usedCoupons, walletRows] = await Promise.all([
+        run(`SELECT id, wallet FROM User WHERE id = :id LIMIT 1`),
+        run(`
+          SELECT a.id AS appointment_id, a.created_at AS used_at, a.status,
+            GREATEST(0, a.amount - a.discounted_amount) AS booking_savings,
+            cp.id AS coupon_id, cp.code, cp.discount_type, cp.discount_value, cp.description
+          FROM appointments a
+          INNER JOIN Coupons cp ON cp.id = a.discount_id
+          WHERE a.user_id = :id AND a.is_discounted = 1
+            AND a.payment_status IN ${PAID_PAYMENT_SQL}
+          ORDER BY a.created_at DESC
+        `),
+        run(`
+          SELECT uc.coupon_id, cp.code, cp.discount_type, cp.discount_value, COUNT(*) AS times_used
+          FROM UsedCoupons uc
+          LEFT JOIN Coupons cp ON cp.id = uc.coupon_id
+          WHERE uc.user_id = :id
+          GROUP BY uc.coupon_id, cp.code, cp.discount_type, cp.discount_value
+        `),
+        run(`
+          SELECT id, date, type, transaction_amount AS amount, description
+          FROM user_transaction_logs WHERE user_id = :id
+          ORDER BY date DESC
+        `),
+      ]);
+
+      if (!user) throw Error.NotFound("User not found");
+
+      const money = (v) => Number(Number(v || 0).toFixed(2));
+      const wallet = walletRows.map((r) => ({ ...r, amount: money(r.amount) }));
+      const total = (type) => money(wallet.filter((w) => w.type === type).reduce((sum, w) => sum + w.amount, 0));
+      const bookedCouponIds = new Set(couponBookings.map((c) => c.coupon_id));
+
+      return {
+        coupon_bookings: couponBookings.map((c) => ({
+          ...c,
+          booking_savings: money(c.booking_savings),
+          discount_value: c.discount_value === null || c.discount_value === undefined ? null : Number(c.discount_value),
+        })),
+        // Redemptions with no paid booking attached (e.g. applied, then released).
+        other_coupons: usedCoupons
+          .filter((c) => !bookedCouponIds.has(c.coupon_id))
+          .map((c) => ({ ...c, times_used: Number(c.times_used) || 0 })),
+        wallet: {
+          balance: Number(user.wallet) || 0,
+          total_credited: total("credit"),
+          total_debited: total("debit"),
+          transactions: wallet,
+        },
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getUserOffersV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user offers");
+    }
+  },
+
+  // User row for the admin V1 profile call, regardless of status - the
+  // active-only getuserdetails (used by refund approval) left inactive and
+  // terminated users' profiles blank.
+  getAdminUserById: async (id) => {
+    try {
+      return await adminDbController.Models.User.findOne({
+        where: { id },
+        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilePic', 'status', 'device_id', 'date_of_birth', 'age', 'gender', 'loyalty_status', 'city', 'registered_at'],
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch user details");
     }
   },
   getUsersForExcelExport: async () => {
@@ -507,6 +1533,347 @@ adminDbController.app = {
     } catch (error) {
       console.log("🚀 ~ updateDashboardDataStartDate error:", error);
       throw Error.SomethingWentWrong("Failed to update dashboard data start date");
+    }
+  },
+
+  // Free paid bookings a partner gets before they need a manual
+  // subscription (AdminSettings.free_booking_limit). Raw SQL on purpose:
+  // the column is deliberately not on the AdminSettings model, so the
+  // model upsert in updateDashboardDataStartDate can never reset it.
+  getFreeBookingLimit: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `SELECT free_booking_limit FROM AdminSettings WHERE id = 1 LIMIT 1`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const limit = rows[0]?.free_booking_limit;
+      return {
+        free_booking_limit:
+          limit === null || limit === undefined ? DEFAULT_FREE_BOOKING_LIMIT : Number(limit),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getFreeBookingLimit error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch free booking limit");
+    }
+  },
+  updateFreeBookingLimit: async (data) => {
+    try {
+      const raw = data?.free_booking_limit;
+      const limit = Number(raw);
+      const numeric = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
+      if (!numeric || !Number.isInteger(limit)) {
+        throw Error.BadRequest("free_booking_limit must be a whole number");
+      }
+      if (limit < 0 || limit > MAX_FREE_BOOKING_LIMIT) {
+        throw Error.BadRequest(`free_booking_limit must be between 0 and ${MAX_FREE_BOOKING_LIMIT}`);
+      }
+
+      await adminDbController.connection.query(
+        `
+        INSERT INTO AdminSettings (id, free_booking_limit, updated_at)
+        VALUES (1, :limit, NOW())
+        ON DUPLICATE KEY UPDATE free_booking_limit = VALUES(free_booking_limit), updated_at = NOW()
+        `,
+        { replacements: { limit }, type: Sequelize.QueryTypes.INSERT }
+      );
+
+      return await adminDbController.app.getFreeBookingLimit();
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ updateFreeBookingLimit error:", error);
+      throw Error.SomethingWentWrong("Failed to update free booking limit");
+    }
+  },
+
+  // ── Dashboard V2 ────────────────────────────────────────────────────────
+  //
+  // Same metrics for every requested { key, from, to } range (see
+  // dashboardRanges.js), so the client can show any period it likes and
+  // compare it against any other. One query per metric group — the ranges
+  // are a derived table, not a loop.
+  //
+  // Definitions:
+  //   bookings        paid appointments (payment_status success/sucssess —
+  //                   same rule as Store.total_booking_count), by booking_date
+  //   cancellations   of those, the ones later cancelled or refunded
+  //   revenue         SUM(discounted_amount) of completed appointments —
+  //                   same basis as the V1 dashboard's total_sales
+  //   cac_spend       the discount Gloup funds per booking: StoreServices
+  //                   price minus what the customer was charged, 0 for
+  //                   "important" services — exactly the invoice's
+  //                   "Acquisition Cost" column (getInvoiceDetailsForPartner)
+  //   checkout_dropoffs  appointments whose payment failed/expired
+  //                   (payment_status 'failed'), by created_at
+  //   total_users / total_partners / active_subscriptions
+  //                   running totals as of the end of the range
+  //
+  // Appointment/store metrics honour dashboard_data_start_date; user and
+  // subscription metrics don't (same policy as getDashboard).
+  getDashboardV2Metrics: async (data = {}) => {
+    try {
+      const { dashboard_data_start_date: cutoff } =
+        await adminDbController.app.getDashboardSettings();
+      const resolved = resolveRanges(data.ranges, cutoff || null);
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { ...replacements, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+
+      const [bookingRows, cacRows, dropoffRows, userRows, partnerRows, subscriptionRows] =
+        await Promise.all([
+          run(`
+            SELECT r.k,
+              COUNT(a.id) AS bookings,
+              COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancellations,
+              COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS revenue
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.booking_date >= r.f AND a.booking_date < r.e
+              AND a.payment_status IN ('success', 'sucssess')
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              COUNT(DISTINCT a.id) AS cac_bookings,
+              COALESCE(SUM(
+                CASE
+                  WHEN ss.id IS NOT NULL THEN
+                    IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
+                  WHEN cb.id IS NOT NULL THEN
+                    GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
+                  ELSE 0
+                END
+              ), 0) AS cac_spend
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.booking_date >= r.f AND a.booking_date < r.e
+              AND a.payment_status IN ('success', 'sucssess')
+              AND a.status NOT IN ('cancelled', 'refunded')
+            LEFT JOIN appointment_items ai ON ai.appointment_id = a.id
+            LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+            LEFT JOIN Combo cb ON ai.combo_id = cb.id
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              COUNT(a.id) AS checkout_dropoffs,
+              COUNT(DISTINCT a.user_id) AS checkout_dropoff_users
+            FROM (${rangesSql}) r
+            LEFT JOIN appointments a
+              ON a.created_at >= r.f AND a.created_at < r.e
+              AND a.payment_status = 'failed'
+            GROUP BY r.k
+          `),
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM User u
+                WHERE u.status = 'active'
+                  AND (u.registered_at IS NULL OR u.registered_at < r.e)) AS total_users,
+              (SELECT COUNT(*) FROM User u
+                WHERE u.registered_at >= r.fr AND u.registered_at < r.e) AS new_users
+            FROM (${rangesSql}) r
+          `),
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM Store s
+                WHERE s.status = 'active' AND s.completion_status = 'completed'
+                  AND (:cutoff IS NULL OR s.createdAt >= :cutoff)
+                  AND s.createdAt < r.e) AS total_partners,
+              (SELECT COUNT(*) FROM Store s
+                WHERE s.status = 'active' AND s.completion_status = 'completed'
+                  AND s.createdAt >= r.f AND s.createdAt < r.e) AS new_partners
+            FROM (${rangesSql}) r
+          `, { cutoff: cutoff || null }),
+          // A subscription counts as active on day d if it had started by
+          // then and either is still active or was deactivated after d.
+          // Rows deactivated before deactivated_at existed have no date and
+          // are left out of history (see that migration).
+          run(`
+            SELECT r.k,
+              (SELECT COUNT(*) FROM PartnerManualSubscriptions pms
+                WHERE pms.activated_at <= r.d
+                  AND (pms.status = 'active' OR pms.deactivated_at > r.d)) AS active_subscriptions,
+              (SELECT COUNT(*) FROM PartnerManualSubscriptions pms
+                WHERE pms.activated_at >= DATE(r.fr) AND pms.activated_at <= r.d) AS new_subscriptions
+            FROM (${rangesSql}) r
+          `),
+        ]);
+
+      const byKey = (rows) => new Map(rows.map((row) => [row.k, row]));
+      const bookings = byKey(bookingRows);
+      const cac = byKey(cacRows);
+      const dropoffs = byKey(dropoffRows);
+      const users = byKey(userRows);
+      const partners = byKey(partnerRows);
+      const subscriptions = byKey(subscriptionRows);
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+
+      const result = {};
+      resolved.forEach((r) => {
+        const b = bookings.get(r.key) || {};
+        const c = cac.get(r.key) || {};
+        const d = dropoffs.get(r.key) || {};
+        const u = users.get(r.key) || {};
+        const p = partners.get(r.key) || {};
+        const s = subscriptions.get(r.key) || {};
+        // Appointment/store metrics for a range wholly before go-live are
+        // unknown, not zero.
+        const gated = (v) => (r.beforeDataStart ? null : v);
+        const cacBookings = num(c.cac_bookings);
+
+        result[r.key] = {
+          from: r.from,
+          to: r.to,
+          data_from: r.beforeDataStart ? null : r.dataFrom,
+          bookings: gated(num(b.bookings)),
+          cancellations: gated(num(b.cancellations)),
+          revenue: gated(money(b.revenue)),
+          cac_spend: gated(money(c.cac_spend)),
+          cac_bookings: gated(cacBookings),
+          cac_per_booking: gated(cacBookings ? money(num(c.cac_spend) / cacBookings) : null),
+          checkout_dropoffs: gated(num(d.checkout_dropoffs)),
+          checkout_dropoff_users: gated(num(d.checkout_dropoff_users)),
+          total_partners: gated(num(p.total_partners)),
+          new_partners: gated(num(p.new_partners)),
+          total_users: num(u.total_users),
+          new_users: num(u.new_users),
+          active_subscriptions: num(s.active_subscriptions),
+          new_subscriptions: num(s.new_subscriptions),
+        };
+      });
+
+      return { dashboard_data_start_date: cutoff || null, ranges: result };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getDashboardV2Metrics error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch dashboard metrics");
+    }
+  },
+
+  // Point-in-time alerts for the dashboard V2 "Alerts & Insights" card.
+  //   idle_salons        active salons (older than the window) with no paid
+  //                      booking created in the last `idle_days` days
+  //   overdue_payouts    past invoice days (store, date) with non-cancelled
+  //                      bookings but no InvoicePayouts row. Looks back
+  //                      `overdue_days`, never before the first payout ever
+  //                      recorded (days before the payout feature existed
+  //                      were never meant to be marked) or the go-live
+  //                      cutoff. Amount is the invoice gross, before any
+  //                      subscription deduction.
+  //   subscription_dues  what active manual subscriptions owe right now
+  //                      (same accrueDue maths as the invoice page)
+  //   checkout_dropoffs  failed/expired payments created today
+  getDashboardV2Alerts: async (data = {}) => {
+    try {
+      const idleDays = Math.min(Math.max(Number(data.idle_days) || 7, 1), 90);
+      const overdueDays = Math.min(Math.max(Number(data.overdue_days) || 30, 1), 365);
+      const today = toIstDatePart(new Date());
+      const idleFrom = addDays(today, -(idleDays - 1));
+
+      const { dashboard_data_start_date: cutoff } =
+        await adminDbController.app.getDashboardSettings();
+      const [firstPayout] = await adminDbController.connection.query(
+        `SELECT MIN(invoice_date) AS first_date FROM InvoicePayouts`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const firstPayoutDate = firstPayout?.first_date ? toIstDatePart(firstPayout.first_date) : null;
+      const overdueFrom = [addDays(today, -overdueDays), cutoff, firstPayoutDate]
+        .filter(Boolean)
+        .sort()
+        .pop();
+      const overdueTo = addDays(today, -1);
+
+      const [idleRows, overdueRows, subs, dropoffRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS idle_salons
+          FROM Store s
+          WHERE s.status = 'active' AND s.completion_status = 'completed'
+            AND s.createdAt < :idleFrom
+            AND NOT EXISTS (
+              SELECT 1 FROM appointments a
+              WHERE a.store_id = s.id
+                AND a.payment_status IN ('success', 'sucssess')
+                AND a.created_at >= :idleFrom
+            )
+          `,
+          { replacements: { idleFrom }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        // Invoice gross per (store, day) — same pricing rule as
+        // getInvoiceDetailsForPartner: important services at full price,
+        // everything else at what the customer was charged.
+        overdueFrom > overdueTo
+          ? Promise.resolve([])
+          : adminDbController.connection.query(
+            `
+            SELECT a.store_id, DATE(a.booking_date) AS invoice_date,
+              SUM(
+                CASE
+                  WHEN ss.id IS NOT NULL AND ss.important = 1 THEN ss.amount
+                  WHEN ss.id IS NOT NULL OR cb.id IS NOT NULL THEN COALESCE(ai.service_amount, 0)
+                  ELSE 0
+                END
+              ) AS amount
+            FROM appointments a
+            INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+            LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+            LEFT JOIN Combo cb ON ai.combo_id = cb.id
+            LEFT JOIN InvoicePayouts ip
+              ON ip.store_id = a.store_id AND ip.invoice_date = DATE(a.booking_date)
+            WHERE a.booking_date >= :overdueFrom AND a.booking_date < :today
+              AND a.status != 'cancelled'
+              AND ip.id IS NULL
+            GROUP BY a.store_id, DATE(a.booking_date)
+            `,
+            { replacements: { overdueFrom, today }, type: Sequelize.QueryTypes.SELECT }
+          ),
+        adminDbController.connection.query(
+          `
+          SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
+          FROM PartnerManualSubscriptions
+          WHERE status = 'active'
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS attempts, COUNT(DISTINCT user_id) AS users
+          FROM appointments
+          WHERE payment_status = 'failed' AND created_at >= :today
+          `,
+          { replacements: { today }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const overdueAmount = overdueRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+      const dues = subs.map((sub) => accrueDue(sub, today).due).filter((due) => due > 0);
+
+      return {
+        date: today,
+        idle_salons: { count: Number(idleRows[0]?.idle_salons) || 0, days: idleDays },
+        overdue_payouts: {
+          invoices: overdueRows.length,
+          partners: new Set(overdueRows.map((row) => row.store_id)).size,
+          amount: Number(overdueAmount.toFixed(2)),
+          from_date: overdueFrom > overdueTo ? null : overdueFrom,
+          to_date: overdueTo,
+        },
+        subscription_dues: {
+          partners: dues.length,
+          amount: Number(dues.reduce((sum, due) => sum + due, 0).toFixed(2)),
+        },
+        checkout_dropoffs: {
+          attempts: Number(dropoffRows[0]?.attempts) || 0,
+          users: Number(dropoffRows[0]?.users) || 0,
+        },
+      };
+    } catch (error) {
+      if (error.status) throw error;
+      console.log("🚀 ~ getDashboardV2Alerts error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch dashboard alerts");
     }
   },
   gettotalusers: async () => {
@@ -1492,6 +2859,428 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to fetch salon reviews");
     }
   },
+
+  // ── Reviews V2 (ReviewsRatingsV2 page) ───────────────────────────────────
+
+  // Paginated reviews with every filter in SQL, plus what V1 never returned:
+  // salon status / logo, customer type (from completed bookings), the
+  // pending removal request and the admin reply.
+  getReviewsListV2: async (data = {}) => {
+    try {
+      const where = [];
+      const replacements = {};
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "S.name LIKE :searchLike",
+          "S.email LIKE :searchLike",
+          "S.phone LIKE :searchLike",
+          "CONCAT_WS(' ', U.firstname, U.lastname) LIKE :searchLike",
+          "U.email LIKE :searchLike",
+          "U.phone LIKE :searchLike",
+          "R.review_description LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("R.id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.store_id) {
+        const storeId = Number(data.store_id);
+        if (!Number.isInteger(storeId) || storeId <= 0) {
+          throw Error.BadRequest("store_id must be a positive whole number");
+        }
+        addWhere("R.store_id = :storeId", { storeId });
+      }
+
+      if (data.rating) {
+        const rating = Number(data.rating);
+        if (![1, 2, 3, 4, 5].includes(rating)) {
+          throw Error.BadRequest("rating must be 1-5");
+        }
+        addWhere("R.rating = :rating", { rating });
+      }
+
+      if (data.status) {
+        const statusSql = {
+          active: "R.status = 'active' AND dr.review_id IS NULL",
+          reported: "R.status = 'active' AND dr.review_id IS NOT NULL",
+          hidden: "R.status = 'inactive'",
+        }[data.status];
+        if (!statusSql) {
+          throw Error.BadRequest("status must be active, reported or hidden");
+        }
+        addWhere(`(${statusSql})`);
+      }
+
+      // "pending" = still visible and nobody has replied yet.
+      if (data.response) {
+        const responseSql = {
+          responded: "RR.id IS NOT NULL",
+          pending: "R.status = 'active' AND RR.id IS NULL",
+        }[data.response];
+        if (!responseSql) {
+          throw Error.BadRequest("response must be responded or pending");
+        }
+        addWhere(`(${responseSql})`);
+      }
+
+      if (data.customer_tag) {
+        if (!REVIEW_CUSTOMER_TAGS.includes(data.customer_tag)) {
+          throw Error.BadRequest(`customer_tag must be one of: ${REVIEW_CUSTOMER_TAGS.join(", ")}`);
+        }
+        addWhere(`${REVIEW_CUSTOMER_TAG_SQL} = :customerTag`, { customerTag: data.customer_tag });
+      }
+
+      // Inclusive IST calendar days on the review's creation time.
+      for (const [field, op] of [["from", ">="], ["to", "<"]]) {
+        if (!data[field]) continue;
+        if (!isValidDate(String(data[field]))) {
+          throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+        }
+        const value = field === "to" ? addDays(data[field], 1) : data[field];
+        addWhere(`R.cretaed_at ${op} :${field}`, { [field]: value });
+      }
+
+      const sort = REVIEW_LIST_SORTS[data.sort || "newest"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(REVIEW_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const limit = Math.min(Math.max(1, Number(data.limit) || 10), REVIEW_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM Reviews R
+        INNER JOIN Store S ON S.id = R.store_id
+        INNER JOIN User U ON U.id = R.user_id
+        LEFT JOIN (${USER_BOOKING_STATS_SQL}) bk ON bk.user_id = R.user_id
+        LEFT JOIN (${REVIEW_PENDING_REQUEST_SQL}) dr ON dr.review_id = R.id
+        LEFT JOIN review_replies RR ON RR.review_id = R.id
+        LEFT JOIN \`admin\` A ON A.id = RR.replied_by
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            R.id AS review_id, R.rating, R.review_description,
+            R.status AS review_status, R.cretaed_at AS created_at, R.updated_at,
+            R.store_id, S.name AS store_name, S.email AS store_email,
+            S.phone AS store_phone, S.status AS store_status, S.logo AS store_logo,
+            R.user_id, TRIM(CONCAT_WS(' ', U.firstname, U.lastname)) AS customer_name,
+            U.phone AS user_phone, U.email AS user_email,
+            COALESCE(bk.completed_bookings, 0) AS completed_bookings,
+            ${REVIEW_CUSTOMER_TAG_SQL} AS customer_tag,
+            dr.request_id, dr.request_reason,
+            RR.reply, RR.updated_at AS replied_at, A.name AS replied_by_name
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :limit OFFSET :offset
+          `,
+          { replacements: { ...replacements, limit, offset: (page - 1) * limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => ({
+          ...row,
+          rating: row.rating === null ? null : Number(row.rating),
+          completed_bookings: Number(row.completed_bookings) || 0,
+        })),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getReviewsListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch reviews");
+    }
+  },
+
+  // KPIs for the reviews page. The client sends named inclusive IST ranges
+  // ({ key, from, to }) - the selected period, the two 30-day windows the
+  // deltas compare, one per sparkline week and chart month - and gets the
+  // same counts back for each. `focus` names the range Top Salons uses.
+  // Also returns the all-time queue sizes (tab badges) and the salons that
+  // have reviews (filter dropdown).
+  getReviewsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const focus = resolved.find((r) => r.key === String(data.focus ?? resolved[0].key));
+      if (!focus) {
+        throw Error.BadRequest("focus must be the key of one of the ranges");
+      }
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+
+      // Same INNER JOINs as the list, so totals and the list always agree.
+      const reviewsSql = `
+        SELECT R.id, R.status, R.rating, R.store_id, R.cretaed_at
+        FROM Reviews R
+        INNER JOIN Store S ON S.id = R.store_id
+        INNER JOIN User U ON U.id = R.user_id`;
+      const pendingSql =
+        "SELECT DISTINCT review_id FROM review_delete_requests WHERE status = 'pending'";
+
+      const [metricRows, topSalons, queueRows, salons] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            rg.k AS range_key,
+            COUNT(rv.id) AS all_reviews,
+            SUM(rv.status = 'active') AS total,
+            AVG(CASE WHEN rv.status = 'active' AND rv.rating BETWEEN 1 AND 5 THEN rv.rating END) AS avg_rating,
+            SUM(rv.status = 'active' AND rv.rating = 5) AS stars_5,
+            SUM(rv.status = 'active' AND rv.rating = 4) AS stars_4,
+            SUM(rv.status = 'active' AND rv.rating = 3) AS stars_3,
+            SUM(rv.status = 'active' AND rv.rating = 2) AS stars_2,
+            SUM(rv.status = 'active' AND rv.rating = 1) AS stars_1,
+            COUNT(DISTINCT CASE WHEN rv.status = 'active' THEN rv.store_id END) AS salons,
+            SUM(rv.status = 'inactive') AS hidden,
+            SUM(rv.status = 'active' AND dr.review_id IS NOT NULL) AS reported,
+            SUM(rv.status = 'active' AND RR.id IS NOT NULL) AS responded
+          FROM (${rangesSql}) rg
+          LEFT JOIN (${reviewsSql}) rv ON rv.cretaed_at >= rg.f AND rv.cretaed_at < rg.e
+          LEFT JOIN (${pendingSql}) dr ON dr.review_id = rv.id
+          LEFT JOIN review_replies RR ON RR.review_id = rv.id
+          GROUP BY rg.k
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT
+            R.store_id, S.name AS store_name, S.status AS store_status, S.logo AS store_logo,
+            COUNT(*) AS review_count,
+            ROUND(AVG(CASE WHEN R.rating BETWEEN 1 AND 5 THEN R.rating END), 2) AS average_rating
+          FROM Reviews R
+          INNER JOIN Store S ON S.id = R.store_id
+          INNER JOIN User U ON U.id = R.user_id
+          WHERE R.status = 'active' AND R.cretaed_at >= :topFrom AND R.cretaed_at < :topEnd
+          GROUP BY R.store_id, S.name, S.status, S.logo
+          ORDER BY review_count DESC, average_rating DESC
+          LIMIT 5
+          `,
+          {
+            replacements: { topFrom: focus.from, topEnd: focus.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT
+            SUM(rv.status = 'active' AND dr.review_id IS NOT NULL) AS reported_pending,
+            SUM(rv.status = 'active' AND RR.id IS NULL) AS awaiting_response
+          FROM (${reviewsSql}) rv
+          LEFT JOIN (${pendingSql}) dr ON dr.review_id = rv.id
+          LEFT JOIN review_replies RR ON RR.review_id = rv.id
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT S.id, S.name
+          FROM Reviews R
+          INNER JOIN Store S ON S.id = R.store_id
+          INNER JOIN User U ON U.id = R.user_id
+          ORDER BY S.name
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (value) => Number(value) || 0;
+      const ranges = {};
+      for (const row of metricRows) {
+        const stars = {
+          5: num(row.stars_5),
+          4: num(row.stars_4),
+          3: num(row.stars_3),
+          2: num(row.stars_2),
+          1: num(row.stars_1),
+        };
+        ranges[row.range_key] = {
+          all_reviews: num(row.all_reviews),
+          total: num(row.total),
+          avg_rating: row.avg_rating === null ? null : Number(row.avg_rating),
+          stars,
+          positive: stars[5] + stars[4],
+          neutral: stars[3],
+          negative: stars[2] + stars[1],
+          salons: num(row.salons),
+          hidden: num(row.hidden),
+          reported: num(row.reported),
+          responded: num(row.responded),
+        };
+      }
+
+      return {
+        ranges,
+        top_salons: topSalons.map((row) => ({
+          ...row,
+          review_count: num(row.review_count),
+          average_rating: row.average_rating === null ? null : Number(row.average_rating),
+        })),
+        queues: {
+          reported_pending: num(queueRows[0]?.reported_pending),
+          awaiting_response: num(queueRows[0]?.awaiting_response),
+        },
+        salons,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getReviewsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch reviews summary");
+    }
+  },
+
+  // Hide (status inactive) or restore (active) one or many reviews. Hiding
+  // also resolves any pending removal request for that review as approved -
+  // the removal it asked for has happened. A review isn't restored if the
+  // customer has since posted another active review for the same salon (the
+  // apps allow one per customer per salon); those come back in `skipped`.
+  updateReviewStatusV2: async (data = {}) => {
+    try {
+      const ids = requireReviewIds(data);
+      if (!["active", "inactive"].includes(data.status)) {
+        throw Error.BadRequest("status must be active or inactive");
+      }
+      const status = data.status;
+
+      const reviews = await adminDbController.Models.Reviews.findAll({
+        where: { id: ids },
+        attributes: ["id", "user_id", "store_id", "status"],
+        raw: true,
+      });
+      const found = new Set(reviews.map((r) => r.id));
+      const notFound = ids.filter((id) => !found.has(id));
+      const unchanged = reviews.filter((r) => r.status === status).map((r) => r.id);
+      let targets = reviews.filter((r) => r.status !== status);
+      const skipped = [];
+
+      if (status === "active" && targets.length) {
+        const active = await adminDbController.Models.Reviews.findAll({
+          where: {
+            status: "active",
+            user_id: [...new Set(targets.map((r) => r.user_id))],
+            store_id: [...new Set(targets.map((r) => r.store_id))],
+          },
+          attributes: ["user_id", "store_id"],
+          raw: true,
+        });
+        const taken = new Set(active.map((r) => `${r.user_id}:${r.store_id}`));
+        targets = targets.filter((r) => {
+          const pair = `${r.user_id}:${r.store_id}`;
+          if (taken.has(pair)) {
+            skipped.push({
+              review_id: r.id,
+              reason: "The customer already has an active review for this salon",
+            });
+            return false;
+          }
+          taken.add(pair);
+          return true;
+        });
+      }
+
+      const targetIds = targets.map((r) => r.id);
+      if (targetIds.length) {
+        await adminDbController.connection.transaction(async (transaction) => {
+          await adminDbController.Models.Reviews.update(
+            { status },
+            { where: { id: targetIds }, transaction }
+          );
+          if (status === "inactive") {
+            await adminDbController.Models.review_delete_requests.update(
+              { status: "approved" },
+              { where: { review_id: targetIds, status: "pending" }, transaction }
+            );
+          }
+        });
+      }
+
+      return { updated: targetIds, unchanged, skipped, not_found: notFound };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ updateReviewStatusV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to update reviews");
+    }
+  },
+
+  // Adds the admin reply to a review, or replaces it if there already is one.
+  replyReviewV2: async (data = {}, adminId = null) => {
+    try {
+      const [reviewId] = requireReviewIds({ review_id: data.review_id });
+      const reply = String(data.reply ?? "").trim();
+      if (!reply) {
+        throw Error.BadRequest("reply is required");
+      }
+      if (reply.length > REVIEW_REPLY_MAX_LENGTH) {
+        throw Error.BadRequest(`reply can be at most ${REVIEW_REPLY_MAX_LENGTH} characters`);
+      }
+
+      const review = await adminDbController.Models.Reviews.findOne({
+        where: { id: reviewId },
+        attributes: ["id"],
+        raw: true,
+      });
+      if (!review) {
+        throw Error.NotFound("Review");
+      }
+
+      const now = new Date();
+      const existing = await adminDbController.Models.review_replies.findOne({
+        where: { review_id: reviewId },
+      });
+      if (existing) {
+        await existing.update({ reply, replied_by: adminId, updated_at: now });
+      } else {
+        await adminDbController.Models.review_replies.create({
+          review_id: reviewId,
+          reply,
+          replied_by: adminId,
+          created_at: now,
+          updated_at: now,
+        });
+      }
+
+      return { review_id: reviewId, reply, replied_at: now };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ replyReviewV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to save reply");
+    }
+  },
+
+  deleteReviewReplyV2: async (data = {}) => {
+    try {
+      const [reviewId] = requireReviewIds({ review_id: data.review_id });
+      const deleted = await adminDbController.Models.review_replies.destroy({
+        where: { review_id: reviewId },
+      });
+      if (!deleted) {
+        throw Error.NotFound("Reply");
+      }
+      return { review_id: reviewId };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ deleteReviewReplyV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to delete reply");
+    }
+  },
   getrefundrequest: async (body) => {
     try {
       let sql = `SELECT r.*, a.razorpay_id, a.payment.id , a.amount as discounted_amount, u.firstname as user_firstname, u.lastname as user_lastname, u.phone as user_phone, s.name as store_name, s.email as store_email, s.phone as store_phone FROM refund_request r JOIN s ON a.store_id = s.id JOIN User u ON a.user_id = u.id WHERE r.status = 'pending' ORDER BY r.created_at DESC`;
@@ -1641,6 +3430,9 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to get cancelled orders")
     }
   },
+  // booking_datetime here and in getBookingsDetailsByOrderDate/ById is the
+  // appointment day + the booked slot's start: booking_date itself is
+  // date-only and reads as 05:30 IST.
   getBookingsDetails: async (data) => {
   try {
     const page = Number(data.page) || 1;
@@ -1659,7 +3451,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         d.name AS salon_name,
         a.status,
         a.payment_status,
-        DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+        CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
         a.amount AS service_amount,
         a.discounted_amount AS discount_amount,
         (a.amount - a.discounted_amount) AS subtotal,
@@ -1668,6 +3460,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
       INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
       WHERE 1=1
       ${dateFilter}
       ${statusFilter}
@@ -1733,7 +3526,7 @@ getBookingsDetailsByOrderDate: async (data) => {
         d.name AS salon_name,
         a.status,
         a.payment_status,
-        DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+        CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
         a.amount AS service_amount,
         a.discounted_amount AS discount_amount,
         (a.amount - a.discounted_amount) AS subtotal,
@@ -1742,6 +3535,7 @@ getBookingsDetailsByOrderDate: async (data) => {
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
       INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
       WHERE 1=1
       ${dateFilter}
       ${statusFilter}
@@ -1788,6 +3582,321 @@ getBookingsDetailsByOrderDate: async (data) => {
     throw Error.SomethingWentWrong("Failed to fetch booking details by order date");
   }
 },
+// ── Bookings list V2 (admin "Bookings by Order Date" V2 page) ─────────────
+//
+// Same rows as getBookingsDetailsByOrderDate (V1 keeps using that one,
+// untouched), plus what the V2 table shows: customer phone, salon area/city,
+// slot time, service names and their service categories ("booking type").
+// Search, payment and booking-type filters run in SQL so they work across
+// every page, not just the one loaded.
+//
+// Joins mirror the partner app: slot time via appointments.slot_id -> Slots
+// (getTodayBookingsByStoreId), services via appointment_items -> StoreServices
+// / Combo (getservicebyappoinment), category via service_category ->
+// Servicecategory. User/Store are LEFT JOINed so the total matches V1's
+// count of every appointment in the range.
+getBookingsListV2: async (data = {}) => {
+  try {
+    const where = [];
+    const replacements = {};
+    const addWhere = (sql, values = {}) => {
+      where.push(sql);
+      Object.assign(replacements, values);
+    };
+
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    if (data.fromDate || data.toDate) {
+      if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+        throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+      }
+      if (data.fromDate > data.toDate) {
+        throw Error.BadRequest("fromDate must not be after toDate");
+      }
+      addWhere(`a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd`, {
+        fromDate: data.fromDate,
+        toDateEnd: addDays(data.toDate, 1),
+      });
+    }
+
+    if (data.status) {
+      if (!BOOKING_STATUSES.includes(data.status)) {
+        throw Error.BadRequest(`status must be one of: ${BOOKING_STATUSES.join(", ")}`);
+      }
+      addWhere("a.status = :status", { status: data.status });
+    }
+
+    if (data.payment) {
+      const paymentSql = BOOKING_PAYMENT_FILTERS[data.payment];
+      if (!paymentSql) {
+        throw Error.BadRequest(`payment must be one of: ${Object.keys(BOOKING_PAYMENT_FILTERS).join(", ")}`);
+      }
+      addWhere(paymentSql);
+    }
+
+    if (data.service_category_id !== undefined && data.service_category_id !== null && data.service_category_id !== "") {
+      const categoryId = Number(data.service_category_id);
+      if (!Number.isInteger(categoryId) || categoryId <= 0) {
+        throw Error.BadRequest("service_category_id must be a positive whole number");
+      }
+      addWhere(
+        `EXISTS (
+          SELECT 1 FROM appointment_items fi
+          LEFT JOIN StoreServices fss ON fi.service_id = fss.id
+          LEFT JOIN Combo fcb ON fi.combo_id = fcb.id
+          WHERE fi.appointment_id = a.id
+            AND COALESCE(fss.service_category, fcb.service_category) = :categoryId
+        )`,
+        { categoryId }
+      );
+    }
+
+    const search = String(data.search || "").trim().replace(/^#/, "");
+    if (search) {
+      const like = `%${search.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+      const conditions = [
+        "CONCAT_WS(' ', c.firstname, c.lastname) LIKE :searchLike",
+        "c.phone LIKE :searchLike",
+        "c.email LIKE :searchLike",
+        "d.name LIKE :searchLike",
+      ];
+      const searchValues = { searchLike: like };
+      if (/^\d+$/.test(search)) {
+        conditions.unshift("a.id = :searchId");
+        searchValues.searchId = Number(search);
+      }
+      addWhere(`(${conditions.join(" OR ")})`, searchValues);
+    }
+
+    const page = Math.max(1, Number(data.page) || 1);
+    const limit = Math.min(Math.max(1, Number(data.limit) || 10), BOOKING_LIST_MAX_LIMIT);
+    const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+    const fromSql = `
+      FROM appointments a
+      LEFT JOIN User c ON a.user_id = c.id
+      LEFT JOIN Store d ON a.store_id = d.id
+      LEFT JOIN PartnerAddress f ON d.address_id = f.id
+      LEFT JOIN Slots e ON a.slot_id = e.id
+      ${whereSql}
+    `;
+
+    const [rows, totalRows] = await Promise.all([
+      adminDbController.connection.query(
+        `
+        SELECT
+          a.id,
+          a.created_at,
+          DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS booking_date,
+          a.status,
+          a.payment_status,
+          a.amount,
+          a.discounted_amount,
+          ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
+          a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2) AS payable_amount,
+          c.id AS user_id,
+          TRIM(CONCAT_WS(' ', c.firstname, c.lastname)) AS user_name,
+          c.phone AS user_phone,
+          d.id AS salon_id,
+          d.name AS salon_name,
+          f.area AS salon_area,
+          f.city AS salon_city,
+          e.\`from\` AS slot_from,
+          e.\`to\` AS slot_to,
+          (
+            SELECT GROUP_CONCAT(COALESCE(ss.service_name, cb.combo) ORDER BY si.id SEPARATOR '||')
+            FROM appointment_items si
+            LEFT JOIN StoreServices ss ON si.service_id = ss.id
+            LEFT JOIN Combo cb ON si.combo_id = cb.id
+            WHERE si.appointment_id = a.id
+          ) AS services,
+          (
+            SELECT GROUP_CONCAT(DISTINCT sc.name ORDER BY sc.name SEPARATOR '||')
+            FROM appointment_items ci
+            LEFT JOIN StoreServices css ON ci.service_id = css.id
+            LEFT JOIN Combo ccb ON ci.combo_id = ccb.id
+            INNER JOIN Servicecategory sc ON sc.id = COALESCE(css.service_category, ccb.service_category)
+            WHERE ci.appointment_id = a.id
+          ) AS service_categories
+        ${fromSql}
+        ORDER BY a.${dateColumn} DESC, a.id DESC
+        LIMIT :limit OFFSET :offset
+        `,
+        {
+          replacements: { ...replacements, limit, offset: (page - 1) * limit },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      ),
+      adminDbController.connection.query(
+        `SELECT COUNT(*) AS total ${fromSql}`,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+
+    const split = (value) => (value ? String(value).split("||").filter(Boolean) : []);
+    return {
+      rows: rows.map((row) => ({
+        ...row,
+        amount: Number(row.amount) || 0,
+        discounted_amount: Number(row.discounted_amount) || 0,
+        gst_amount: Number(row.gst_amount) || 0,
+        payable_amount: Number(row.payable_amount) || 0,
+        services: split(row.services),
+        service_categories: split(row.service_categories),
+      })),
+      total: Number(totalRows[0]?.total) || 0,
+      page,
+      limit,
+    };
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getBookingsListV2 error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch bookings");
+  }
+},
+
+// Salons ranked by revenue for a date range (bookings page "Top Performing
+// Salon"). Same definitions as the dashboard V2: bookings = paid
+// appointments, revenue = discounted_amount of completed ones.
+getTopSalonsByDateRange: async (data = {}) => {
+  try {
+    if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+      throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+    }
+    if (data.fromDate > data.toDate) {
+      throw Error.BadRequest("fromDate must not be after toDate");
+    }
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    const limit = Math.min(Math.max(1, Number(data.limit) || 1), 20);
+
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT
+        d.id AS salon_id,
+        d.name AS salon_name,
+        f.area AS salon_area,
+        f.city AS salon_city,
+        COUNT(a.id) AS bookings,
+        COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS revenue
+      FROM appointments a
+      INNER JOIN Store d ON a.store_id = d.id
+      LEFT JOIN PartnerAddress f ON d.address_id = f.id
+      WHERE a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd
+        AND a.payment_status IN ('success', 'sucssess')
+      GROUP BY d.id, d.name, f.area, f.city
+      ORDER BY revenue DESC, bookings DESC, d.id ASC
+      LIMIT :limit
+      `,
+      {
+        replacements: { fromDate: data.fromDate, toDateEnd: addDays(data.toDate, 1), limit },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+
+    return rows.map((row) => ({
+      ...row,
+      bookings: Number(row.bookings) || 0,
+      revenue: Number(Number(row.revenue || 0).toFixed(2)),
+    }));
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getTopSalonsByDateRange error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch top salons");
+  }
+},
+// Revenue + booking-hour summary for the bookings V2 page.
+//   revenue            invoice rule (getInvoiceDetailsForPartner /
+//                      ...Monthly): every non-cancelled appointment in the
+//                      range, each item priced at the full service price if
+//                      the service is "important", otherwise at what was
+//                      charged (appointment_items.service_amount); items with
+//                      no service/combo are skipped; no GST. Summed over all
+//                      salons it equals the sum of their invoices.
+//   invoiced_bookings  appointments that contributed to revenue
+//   avg_order_value    revenue / invoiced_bookings
+//   today              the same revenue rule for appointments dated today
+//   booking_hours      24 counts: paid bookings in the range by the hour
+//                      they were placed (created_at, stored in IST)
+getBookingsSummaryV2: async (data = {}) => {
+  try {
+    if (!isValidDate(String(data.fromDate || "")) || !isValidDate(String(data.toDate || ""))) {
+      throw Error.BadRequest("fromDate and toDate must be YYYY-MM-DD");
+    }
+    if (data.fromDate > data.toDate) {
+      throw Error.BadRequest("fromDate must not be after toDate");
+    }
+    const { dateColumn } = bookingListDateBasis(data.date_basis);
+    const today = toIstDatePart(new Date());
+
+    const revenueFor = (column, from, to) =>
+      adminDbController.connection.query(
+        `
+        SELECT
+          COUNT(DISTINCT a.id) AS invoiced_bookings,
+          COALESCE(SUM(${INVOICE_ITEM_AMOUNT_SQL}), 0) AS revenue
+        FROM appointments a
+        INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+        LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+        LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        WHERE a.${column} >= :fromDate AND a.${column} < :toDateEnd
+          AND a.status <> 'cancelled'
+          AND (ss.id IS NOT NULL OR cb.id IS NOT NULL)
+        `,
+        {
+          replacements: { fromDate: from, toDateEnd: addDays(to, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+
+    const [[range], [todayRow], hourRows] = await Promise.all([
+      revenueFor(dateColumn, data.fromDate, data.toDate),
+      // Invoices are per appointment day, so "today" is always by booking_date.
+      revenueFor("booking_date", today, today),
+      adminDbController.connection.query(
+        `
+        SELECT HOUR(a.created_at) AS hour, COUNT(*) AS bookings
+        FROM appointments a
+        WHERE a.${dateColumn} >= :fromDate AND a.${dateColumn} < :toDateEnd
+          AND a.payment_status IN ('success', 'sucssess')
+          AND a.created_at IS NOT NULL
+        GROUP BY HOUR(a.created_at)
+        `,
+        {
+          replacements: { fromDate: data.fromDate, toDateEnd: addDays(data.toDate, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      ),
+    ]);
+
+    const money = (v) => Number(Number(v || 0).toFixed(2));
+    const summarize = (row) => {
+      const revenue = money(row?.revenue);
+      const invoiced = Number(row?.invoiced_bookings) || 0;
+      return {
+        revenue,
+        invoiced_bookings: invoiced,
+        avg_order_value: invoiced ? money(revenue / invoiced) : null,
+      };
+    };
+
+    const bookingHours = Array(24).fill(0);
+    hourRows.forEach((row) => {
+      const hour = Number(row.hour);
+      if (hour >= 0 && hour < 24) bookingHours[hour] = Number(row.bookings) || 0;
+    });
+
+    return {
+      from: data.fromDate,
+      to: data.toDate,
+      ...summarize(range),
+      today: { date: today, ...summarize(todayRow) },
+      booking_hours: bookingHours,
+    };
+  } catch (error) {
+    if (error.status) throw error;
+    console.log("🚀 ~ getBookingsSummaryV2 error:", error);
+    throw Error.SomethingWentWrong("Failed to fetch bookings summary");
+  }
+},
+
 getBookingsDetailsById: async (data) => {
   try {
     const query = `
@@ -1801,7 +3910,7 @@ getBookingsDetailsById: async (data) => {
           d.phone AS salon_phone,
           d.email AS salon_mail,
           a.status,
-          DATE_FORMAT(a.booking_date, '%Y-%m-%d %H:%i') AS booking_datetime,
+          CONCAT(DATE_FORMAT(a.booking_date, '%Y-%m-%d'), IFNULL(CONCAT(' ', TIME_FORMAT(e.\`from\`, '%H:%i')), '')) AS booking_datetime,
           CONCAT(e.from,'-',e.to) AS slot_timing,
           a.gst,
           DATE_FORMAT(a.created_at, '%d %b, %Y') AS order_date,
@@ -3853,19 +5962,6 @@ updateRefundBookingStatus: async ({ body, user }) => {
       throw Error.SomethingWentWrong("Failed to fetch professional by ID");
     }
   },
-  getuserdetails: async (body, id) => {
-    try {
-      return await adminDbController.Models.User.findOne({
-        where: {
-          status: "active",
-          id: id
-        },
-        attributes: ['id', 'firstname', 'lastname', 'email', 'phone', 'profilepic', 'status'],
-      });
-    } catch (error) {
-      throw Error.SomethingWentWrong("Failed to fetch users");
-    }
-  },
   addsubscription: async (data, id) => {
     try {
       return await adminDbController.Models.SubscriptionPlans.create({
@@ -4175,15 +6271,22 @@ verifypartnerdetails: async (data) => {
       throw Error.SomethingWentWrong("Failed to fetch user details");
     }
   },
+  // What the user actually paid (charged price + GST) on completed, paid
+  // bookings. The old filter `status: "booked" || "completed"` evaluated to
+  // just "booked" and summed list prices of bookings not yet delivered.
   gettotalspent: async (id) => {
     try {
-      const totalSpent = await adminDbController.Models.appointments.sum('amount', {
-        where: {
-          user_id: id,
-          status: "booked" || "completed",
-        }
-      });
-      return totalSpent || 0;
+      const [row] = await adminDbController.connection.query(
+        `
+        SELECT COALESCE(SUM(${AMOUNT_PAID_SQL}), 0) AS spent
+        FROM appointments a
+        WHERE a.user_id = :id
+          AND a.status = 'completed'
+          AND a.payment_status IN ${PAID_PAYMENT_SQL}
+        `,
+        { replacements: { id }, type: Sequelize.QueryTypes.SELECT }
+      );
+      return Number(Number(row?.spent || 0).toFixed(2));
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch total spent");
     }
@@ -4760,6 +6863,7 @@ verifypartnerdetails: async (data) => {
           a.id AS appointment_id,
           a.booking_date AS appointment_date,
           a.created_at AS order_time,
+          e.\`from\` AS slot_from,
           a.status,
           a.payment_status,
           ai.service_amount AS charged_amount,
@@ -4774,10 +6878,11 @@ verifypartnerdetails: async (data) => {
         INNER JOIN appointment_items ai ON ai.appointment_id = a.id
         LEFT JOIN StoreServices ss ON ai.service_id = ss.id
         LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        LEFT JOIN Slots e ON a.slot_id = e.id
         WHERE a.store_id = :partnerId
           AND DATE(a.booking_date) = :invoiceDate
           AND a.status != 'cancelled'
-        ORDER BY a.booking_date ASC, a.id ASC
+        ORDER BY a.booking_date ASC, e.\`from\` ASC, a.id ASC
         `,
         {
           replacements: {
@@ -4821,8 +6926,12 @@ verifypartnerdetails: async (data) => {
 
           return {
             appointment_id: row.appointment_id,
-            // Keep booking_time for PDF/UI compat; value is appointment day
-            booking_time: row.appointment_date,
+            // booking_date is date-only (it reads as 05:30 IST), so the real
+            // appointment time is the booked slot's start - same as the
+            // partner app. null when the booking has no slot.
+            booking_time: row.slot_from
+              ? buildAppointmentDateTime(row.appointment_date, row.slot_from)
+              : null,
             appointment_date: row.appointment_date,
             order_time: row.order_time,
             status: row.status,
@@ -5086,26 +7195,28 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // ── Partner Manual Subscriptions (free-15-bookings -> flat monthly fee) ──
+  // ── Partner Manual Subscriptions (free bookings -> flat monthly fee) ──
   // Entirely separate from the Razorpay-driven PartnerSubscriptions system.
 
-  // Partners past the free-15-bookings threshold with no active manual
-  // subscription yet — the "needs subscription" list on the admin page.
+  // Partners who have used up their free bookings (admin-set
+  // free_booking_limit, default 15) with no active manual subscription
+  // yet — the "needs subscription" list on the admin page.
   getPartnersNeedingManualSubscription: async () => {
     try {
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
       return await adminDbController.connection.query(
         `
         SELECT d.id AS partner_id, d.name AS partner_name, d.phone AS partner_phone,
                d.email AS partner_email, d.total_booking_count
         FROM Store d
-        WHERE d.total_booking_count >= 15
+        WHERE d.total_booking_count >= :limit
           AND NOT EXISTS (
             SELECT 1 FROM PartnerManualSubscriptions pms
             WHERE pms.store_id = d.id AND pms.status = 'active'
           )
         ORDER BY d.total_booking_count DESC
         `,
-        { type: Sequelize.QueryTypes.SELECT }
+        { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
       );
     } catch (error) {
       console.log("🚀 ~ getPartnersNeedingManualSubscription error:", error);
@@ -5131,9 +7242,12 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // Creates (or reactivates + resets) a partner's manual subscription. The
-  // first cycle's fee becomes due immediately — next_due_date = today, so
-  // the very next accrueDue() call (preview or a Payout click) picks it up.
+  // Creates (or reactivates) a partner's manual subscription. The first
+  // cycle's fee becomes due immediately — next_due_date = today, so the very
+  // next accrueDue() call (preview or a Payout click) picks it up.
+  // Reactivating keeps outstanding_due: whatever the partner still owed when
+  // it was deactivated is carried over on top of the new cycle (until
+  // 2026-10 it was reset to 0, silently writing the debt off).
   assignManualPartnerSubscription: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
@@ -5146,14 +7260,14 @@ verifypartnerdetails: async (data) => {
 
       await adminDbController.connection.query(
         `
-        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at)
-        VALUES (:storeId, :planAmount, 'active', 0, :today, :today)
+        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at, deactivated_at)
+        VALUES (:storeId, :planAmount, 'active', 0, :today, :today, NULL)
         ON DUPLICATE KEY UPDATE
           plan_amount = VALUES(plan_amount),
           status = 'active',
-          outstanding_due = 0,
           next_due_date = VALUES(next_due_date),
-          activated_at = VALUES(activated_at)
+          activated_at = VALUES(activated_at),
+          deactivated_at = NULL
         `,
         {
           replacements: { storeId: data.store_id, planAmount, today },
@@ -5204,10 +7318,15 @@ verifypartnerdetails: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
 
+      // deactivated_at is what lets the dashboard count this subscription
+      // as active for the months before today. Only stamped on the
+      // active -> inactive transition so a repeat click keeps the real date.
       await adminDbController.connection.query(
-        `UPDATE PartnerManualSubscriptions SET status = 'inactive' WHERE store_id = :storeId`,
+        `UPDATE PartnerManualSubscriptions
+         SET deactivated_at = IF(status = 'active', :today, deactivated_at), status = 'inactive'
+         WHERE store_id = :storeId`,
         {
-          replacements: { storeId: data.store_id },
+          replacements: { storeId: data.store_id, today: toIstDatePart(new Date()) },
           type: Sequelize.QueryTypes.UPDATE,
         }
       );
@@ -5217,6 +7336,1723 @@ verifypartnerdetails: async (data) => {
       if (error.status) throw error;
       console.log("🚀 ~ deactivateManualPartnerSubscription error:", error);
       throw Error.SomethingWentWrong("Failed to deactivate partner subscription");
+    }
+  },
+
+  // ── Manual partner subscriptions V2 (PartnerSubscriptionsV2 page) ───────
+
+  // Paginated subscriptions + pending salons, every filter in SQL. Adds what
+  // the V1 list never returned: email, city, logo, lifetime bookings, what
+  // the salon owes today (accrueDue, not the stale stored balance), the next
+  // due date after accrual, and how much has been collected from payouts.
+  getManualSubscriptionsListV2: async (data = {}) => {
+    try {
+      const today = toIstDatePart(new Date());
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
+      const where = [];
+      const replacements = { today, limit };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = [
+          "s.name LIKE :searchLike",
+          "s.phone LIKE :searchLike",
+          "s.email LIKE :searchLike",
+        ];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("x.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+
+      if (data.status) {
+        if (!SUB_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${SUB_STATUSES.join(", ")}`);
+        }
+        addWhere(`${SUB_STATUS_SQL} = :status`, { status: data.status });
+      }
+
+      if (data.plan_amount !== undefined && data.plan_amount !== null && data.plan_amount !== "") {
+        const planAmount = Number(data.plan_amount);
+        if (!(planAmount > 0)) {
+          throw Error.BadRequest("plan_amount must be a positive number");
+        }
+        addWhere("x.plan_amount = :planAmount", { planAmount });
+      }
+
+      if (data.city) {
+        addWhere("LOWER(TRIM(pa.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+
+      // Active subscriptions that owe now or fall due within N days.
+      if (data.due_within !== undefined && data.due_within !== null && data.due_within !== "") {
+        const days = Number(data.due_within);
+        if (!Number.isInteger(days) || days < 0 || days > 366) {
+          throw Error.BadRequest("due_within must be a whole number of days (0-366)");
+        }
+        addWhere(
+          "(x.sub_status = 'active' AND (x.outstanding_due > 0 OR x.next_due_date <= :dueBy))",
+          { dueBy: addDays(today, days) }
+        );
+      }
+
+      const sort = SUB_LIST_SORTS[data.sort || "status"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(SUB_LIST_SORTS).join(", ")}`);
+      }
+
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), SUB_LIST_MAX_LIMIT);
+      const fromSql = `
+        FROM (
+          SELECT 'subscription' AS kind, pms.id AS subscription_id, pms.store_id,
+                 pms.plan_amount, pms.status AS sub_status, pms.outstanding_due,
+                 pms.next_due_date, pms.activated_at, pms.deactivated_at
+          FROM PartnerManualSubscriptions pms
+          UNION ALL
+          SELECT 'pending', NULL, st.id, NULL, NULL, NULL, NULL, NULL, NULL
+          FROM Store st
+          WHERE st.total_booking_count >= :limit
+            AND NOT EXISTS (SELECT 1 FROM PartnerManualSubscriptions p WHERE p.store_id = st.id)
+        ) x
+        INNER JOIN Store s ON s.id = x.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (
+          SELECT store_id,
+                 SUM(subscription_deducted) AS collected_total,
+                 MAX(CASE WHEN subscription_deducted > 0 THEN invoice_date END) AS last_deducted_on
+          FROM InvoicePayouts
+          GROUP BY store_id
+        ) ip ON ip.store_id = x.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT
+            x.kind, x.subscription_id, x.store_id,
+            s.name AS partner_name, s.phone AS partner_phone, s.email AS partner_email,
+            s.logo AS partner_logo, s.status AS store_status, pa.city,
+            s.total_booking_count,
+            x.plan_amount, x.sub_status, x.outstanding_due, x.next_due_date,
+            x.activated_at, x.deactivated_at,
+            COALESCE(ip.collected_total, 0) AS collected_total, ip.last_deducted_on,
+            ${SUB_STATUS_SQL} AS row_status
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      return {
+        rows: rows.map((row) => {
+          const active = row.sub_status === "active";
+          const accrued = active ? accrueDue(row, today) : null;
+          const bookings = Number(row.total_booking_count) || 0;
+          return {
+            kind: row.kind,
+            subscription_id: row.subscription_id,
+            store_id: row.store_id,
+            partner_name: row.partner_name,
+            partner_phone: row.partner_phone,
+            partner_email: row.partner_email,
+            partner_logo: cleanLogo(row.partner_logo),
+            store_status: row.store_status,
+            city: row.city ? String(row.city).trim() : null,
+            total_booking_count: bookings,
+            status: row.row_status,
+            plan_amount: row.plan_amount === null ? null : Number(row.plan_amount),
+            cycle_fee: row.plan_amount === null ? null : cycleFee(row.plan_amount),
+            // Balance as stored (only moves when a payout is marked paid).
+            stored_outstanding: row.outstanding_due === null ? null : Number(row.outstanding_due),
+            owed_now: accrued ? accrued.due : 0,
+            next_due_date: accrued ? accrued.nextDue : null,
+            activated_at: dayString(row.activated_at),
+            deactivated_at: dayString(row.deactivated_at),
+            collected_total: Number(Number(row.collected_total).toFixed(2)),
+            last_deducted_on: dayString(row.last_deducted_on),
+            // A deactivated salon still over the free-booking limit.
+            needs_subscription: row.row_status === "inactive" && bookings >= limit,
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        today,
+        free_booking_limit: limit,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionsListV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscriptions");
+    }
+  },
+
+  // KPIs and panels for the subscriptions page.
+  //   ranges[]  per named IST range: collected (sum of subscription fees
+  //             deducted from payouts, by when the payout was marked paid),
+  //             deductions and paying partners
+  //   focus     which range "top partners by bookings" uses
+  // Point-in-time (today): status counts, owed-now total, due within 7 days,
+  // plan mix of live subscriptions, plus the filter options.
+  getManualSubscriptionsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const focus = resolved.find((r) => r.key === String(data.focus ?? resolved[0].key));
+      if (!focus) {
+        throw Error.BadRequest("focus must be the key of one of the ranges");
+      }
+      const { sql: rangesSql, replacements } = rangesTableSql(resolved);
+      const today = toIstDatePart(new Date());
+      const { free_booking_limit: limit } = await adminDbController.app.getFreeBookingLimit();
+
+      const [collectedRows, subs, pendingRows, topRows, cityRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT r.k AS range_key,
+            COALESCE(SUM(ip.subscription_deducted), 0) AS collected,
+            COUNT(ip.id) AS deductions,
+            COUNT(DISTINCT ip.store_id) AS partners
+          FROM (${rangesSql}) r
+          LEFT JOIN InvoicePayouts ip
+            ON ip.paid_at >= r.f AND ip.paid_at < r.e AND ip.subscription_deducted > 0
+          GROUP BY r.k
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date,
+                 pms.activated_at, s.total_booking_count
+          FROM PartnerManualSubscriptions pms
+          INNER JOIN Store s ON s.id = pms.store_id
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS pending
+          FROM Store st
+          WHERE st.total_booking_count >= :limit
+            AND NOT EXISTS (SELECT 1 FROM PartnerManualSubscriptions p WHERE p.store_id = st.id)
+          `,
+          { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT a.store_id, s.name AS partner_name, s.logo AS partner_logo,
+                 COUNT(*) AS bookings
+          FROM appointments a
+          INNER JOIN PartnerManualSubscriptions pms
+            ON pms.store_id = a.store_id AND pms.status = 'active'
+          INNER JOIN Store s ON s.id = a.store_id
+          WHERE a.payment_status IN ${PAID_PAYMENT_SQL}
+            AND a.status NOT IN ('cancelled', 'refunded')
+            AND a.booking_date >= :topFrom AND a.booking_date < :topEnd
+          GROUP BY a.store_id, s.name, s.logo
+          ORDER BY bookings DESC, s.name ASC
+          LIMIT 5
+          `,
+          {
+            replacements: { topFrom: focus.from, topEnd: focus.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT TRIM(pa.city) AS city
+          FROM Store s
+          INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE (s.id IN (SELECT store_id FROM PartnerManualSubscriptions) OR s.total_booking_count >= :limit)
+            AND pa.city IS NOT NULL AND TRIM(pa.city) <> ''
+          ORDER BY city
+          `,
+          { replacements: { limit }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const ranges = {};
+      for (const row of collectedRows) {
+        ranges[row.range_key] = {
+          collected: Number(num(row.collected).toFixed(2)),
+          deductions: num(row.deductions),
+          partners: num(row.partners),
+        };
+      }
+
+      const dueBy = addDays(today, 7);
+      const counts = { active: 0, due: 0, inactive: 0, pending: num(pendingRows[0]?.pending) };
+      const plans = new Map();
+      // Status counts per plan amount, for the overview's plan filter.
+      const byPlan = {};
+      const bump = (amount, key) => {
+        byPlan[amount] = byPlan[amount] || { active: 0, due: 0, inactive: 0 };
+        byPlan[amount][key] += 1;
+      };
+      let owedNow = 0;
+      let owingPartners = 0;
+      let dueSoon = 0;
+      let needsSubscription = 0;
+      for (const sub of subs) {
+        const amount = Number(sub.plan_amount);
+        if (sub.status !== "active") {
+          counts.inactive += 1;
+          bump(amount, "inactive");
+          if (num(sub.total_booking_count) >= limit) needsSubscription += 1;
+          continue;
+        }
+        const { due, nextDue } = accrueDue(sub, today);
+        if (due > 0) {
+          counts.due += 1;
+          bump(amount, "due");
+          owedNow += due;
+          owingPartners += 1;
+        } else {
+          counts.active += 1;
+          bump(amount, "active");
+        }
+        if (due > 0 || nextDue <= dueBy) dueSoon += 1;
+        plans.set(amount, (plans.get(amount) || 0) + 1);
+      }
+
+      return {
+        today,
+        free_booking_limit: limit,
+        ranges,
+        counts,
+        counts_by_plan: byPlan,
+        live_subscriptions: counts.active + counts.due,
+        deactivated_needing_subscription: needsSubscription,
+        owed_now: Number(owedNow.toFixed(2)),
+        owing_partners: owingPartners,
+        due_within_7_days: dueSoon,
+        plan_distribution: [...plans.entries()]
+          .sort((a, b) => a[0] - b[0])
+          .map(([plan_amount, count]) => ({ plan_amount, cycle_fee: cycleFee(plan_amount), count })),
+        top_partners: topRows.map((row) => ({
+          store_id: row.store_id,
+          partner_name: row.partner_name,
+          partner_logo: cleanLogo(row.partner_logo),
+          bookings: num(row.bookings),
+        })),
+        plan_amounts: [...new Set(subs.map((sub) => Number(sub.plan_amount)))].sort((a, b) => a - b),
+        cities: cityRows.map((row) => row.city),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner subscriptions summary");
+    }
+  },
+
+  // One salon's subscription fee deductions - one row per daily invoice
+  // payout that recovered something - newest first, plus the subscription
+  // itself with what it owes today.
+  getManualSubscriptionHistoryV2: async (data = {}) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 20), 500);
+      const today = toIstDatePart(new Date());
+
+      const [subRows, rows, totals] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT pms.id, pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due,
+                 pms.next_due_date, pms.activated_at, pms.deactivated_at,
+                 s.name AS partner_name
+          FROM PartnerManualSubscriptions pms
+          INNER JOIN Store s ON s.id = pms.store_id
+          WHERE pms.store_id = :storeId
+          LIMIT 1
+          `,
+          { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT invoice_date, paid_at, marked_by, amount AS payout_amount,
+                 subscription_deducted, subscription_outstanding_before, subscription_next_due_before
+          FROM InvoicePayouts
+          WHERE store_id = :storeId AND subscription_deducted > 0
+          ORDER BY invoice_date DESC, id DESC
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { storeId, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS deductions, COALESCE(SUM(subscription_deducted), 0) AS collected
+          FROM InvoicePayouts
+          WHERE store_id = :storeId AND subscription_deducted > 0
+          `,
+          { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const sub = subRows[0];
+      if (!sub) {
+        throw Error.NotFound("Subscription");
+      }
+      const accrued = sub.status === "active" ? accrueDue(sub, today) : null;
+
+      return {
+        subscription: {
+          id: sub.id,
+          store_id: sub.store_id,
+          partner_name: sub.partner_name,
+          status: sub.status,
+          plan_amount: Number(sub.plan_amount),
+          cycle_fee: cycleFee(sub.plan_amount),
+          stored_outstanding: Number(sub.outstanding_due),
+          owed_now: accrued ? accrued.due : 0,
+          next_due_date: accrued ? accrued.nextDue : null,
+          activated_at: dayString(sub.activated_at),
+          deactivated_at: dayString(sub.deactivated_at),
+        },
+        deductions: rows.map((row) => {
+          const deducted = Number(row.subscription_deducted);
+          const payout = Number(row.payout_amount);
+          return {
+            invoice_date: dayString(row.invoice_date),
+            paid_at: row.paid_at,
+            marked_by: row.marked_by,
+            invoice_total: Number((payout + deducted).toFixed(2)),
+            deducted,
+            payout_amount: payout,
+            outstanding_before: row.subscription_outstanding_before === null
+              ? null
+              : Number(row.subscription_outstanding_before),
+            next_due_before: dayString(row.subscription_next_due_before),
+          };
+        }),
+        total: Number(totals[0]?.deductions) || 0,
+        collected_total: Number(Number(totals[0]?.collected || 0).toFixed(2)),
+        page,
+        limit: pageSize,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getManualSubscriptionHistoryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch subscription history");
+    }
+  },
+
+  // ── Invoices & payouts V2 (InvoicePayoutsV2 page) ───────────────────────
+
+  // First invoice day whose payout is tracked: the later of the dashboard
+  // go-live cutoff and the first payout ever recorded - days before payouts
+  // existed were never meant to be marked (same rule as the dashboard's
+  // overdue alert). With neither, the last 30 days.
+  getPayoutTrackingStart: async () => {
+    const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+    const [first] = await adminDbController.connection.query(
+      `SELECT MIN(invoice_date) AS first_date FROM InvoicePayouts`,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const candidates = [dayString(cutoff), dayString(first?.first_date)].filter(Boolean).sort();
+    return candidates.length ? candidates.pop() : addDays(toIstDatePart(new Date()), -29);
+  },
+
+  // Optional from / to (YYYY-MM-DD) clamped to [tracking start, today].
+  resolvePayoutWindow: async (data = {}) => {
+    const today = toIstDatePart(new Date());
+    const start = await adminDbController.app.getPayoutTrackingStart();
+    for (const field of ["from", "to"]) {
+      if (data[field] && !isValidDate(String(data[field]))) {
+        throw Error.BadRequest(`${field} must be YYYY-MM-DD`);
+      }
+    }
+    const from = data.from && data.from > start ? String(data.from) : start;
+    const to = data.to && data.to < today ? String(data.to) : today;
+    return { today, start, from, to };
+  },
+
+  // What each salon's active subscription owes today (store_id -> amount).
+  getSubscriptionOwedByStore: async (storeIds = null) => {
+    if (Array.isArray(storeIds) && storeIds.length === 0) return new Map();
+    const today = toIstDatePart(new Date());
+    const subs = await adminDbController.connection.query(
+      `
+      SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
+      FROM PartnerManualSubscriptions
+      WHERE status = 'active' ${storeIds ? "AND store_id IN (:storeIds)" : ""}
+      `,
+      { replacements: { storeIds }, type: Sequelize.QueryTypes.SELECT }
+    );
+    return new Map(subs.map((sub) => [sub.store_id, accrueDue(sub, today).due]));
+  },
+
+  // Paginated payout queue, one row per salon with invoices in the window:
+  // invoices, gross, paid / unpaid / due / overdue amounts, oldest unpaid day,
+  // next payout date, days overdue, last payout, and an estimated payout net
+  // of what its subscription will deduct. Filters: search, frequency, status
+  // (scheduled | due | overdue | paid), from / to (invoice days), sort.
+  getInvoicePayoutPartnersV2: async (data = {}) => {
+    try {
+      const { today, start, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), PAYOUT_LIST_MAX_LIMIT);
+      const empty = { rows: [], total: 0, page, limit: pageSize, today, tracking_start: start, from, to };
+      if (from > to) return empty;
+
+      const where = [];
+      const replacements = {
+        daysFrom: from,
+        daysEnd: addDays(to, 1),
+        today,
+        grace: PAYOUT_OVERDUE_GRACE_DAYS,
+      };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = ["s.name LIKE :searchLike", "s.phone LIKE :searchLike", "s.email LIKE :searchLike"];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("g.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+      if (data.frequency) {
+        if (!PAYOUT_FREQUENCIES.includes(data.frequency)) {
+          throw Error.BadRequest(`frequency must be one of: ${PAYOUT_FREQUENCIES.join(", ")}`);
+        }
+        addWhere("s.payout_frequency = :frequency", { frequency: data.frequency });
+      }
+
+      const statusSql = `
+        CASE
+          WHEN g.unpaid_invoices = 0 THEN 'paid'
+          WHEN g.max_days_past_due >= :grace THEN 'overdue'
+          WHEN g.max_days_past_due >= 0 THEN 'due'
+          ELSE 'scheduled'
+        END`;
+      if (data.status) {
+        if (!PAYOUT_STATUSES.includes(data.status)) {
+          throw Error.BadRequest(`status must be one of: ${PAYOUT_STATUSES.join(", ")}`);
+        }
+        addWhere(`${statusSql} = :status`, { status: data.status });
+      }
+
+      const sorts = {
+        urgency: "FIELD(payout_status, 'overdue', 'due', 'scheduled', 'paid'), g.max_days_past_due DESC, g.unpaid_gross DESC, s.name ASC",
+        next_payout: "g.next_payout_date IS NULL, g.next_payout_date ASC, s.name ASC",
+        amount: "g.unpaid_gross DESC, s.name ASC",
+        name: "s.name ASC, g.store_id ASC",
+        last_payout: "lp.last_paid_at IS NULL, lp.last_paid_at DESC, s.name ASC",
+      };
+      const sort = sorts[data.sort || "urgency"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(sorts).join(", ")}`);
+      }
+
+      const fromSql = `
+        FROM (
+          SELECT x.store_id,
+            COUNT(*) AS invoices,
+            SUM(x.bookings) AS bookings,
+            SUM(x.gross) AS gross,
+            SUM(x.payout_id IS NOT NULL) AS paid_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NOT NULL THEN x.payout_amount END), 0) AS paid_amount,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NOT NULL THEN x.subscription_deducted END), 0) AS subscription_deducted,
+            SUM(x.payout_id IS NULL) AS unpaid_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL THEN x.gross END), 0) AS unpaid_gross,
+            SUM(x.payout_id IS NULL AND x.due_date <= :today) AS due_invoices,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL AND x.due_date <= :today THEN x.gross END), 0) AS due_gross,
+            COALESCE(SUM(CASE WHEN x.payout_id IS NULL AND DATEDIFF(:today, x.due_date) >= :grace THEN x.gross END), 0) AS overdue_gross,
+            MIN(CASE WHEN x.payout_id IS NULL THEN x.invoice_date END) AS oldest_unpaid_day,
+            MIN(CASE WHEN x.payout_id IS NULL THEN x.due_date END) AS next_payout_date,
+            MAX(CASE WHEN x.payout_id IS NULL THEN DATEDIFF(:today, x.due_date) END) AS max_days_past_due
+          FROM (${invoiceDayRowsSql()}) x
+          GROUP BY x.store_id
+        ) g
+        INNER JOIN Store s ON s.id = g.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (
+          SELECT store_id, MAX(paid_at) AS last_paid_at, MAX(invoice_date) AS last_paid_invoice_date
+          FROM InvoicePayouts
+          GROUP BY store_id
+        ) lp ON lp.store_id = g.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT g.*, s.name AS partner_name, s.phone AS partner_phone, s.email AS partner_email,
+                 s.logo AS partner_logo, s.payout_frequency AS frequency, pa.city,
+                 lp.last_paid_at, lp.last_paid_invoice_date,
+                 ${statusSql} AS payout_status
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      const owed = await adminDbController.app.getSubscriptionOwedByStore(rows.map((r) => r.store_id));
+      const money = (v) => Number((Number(v) || 0).toFixed(2));
+      // A payout deducts what the subscription owes, capped at the invoices paid.
+      const net = (gross, owedNow) => money(gross - Math.min(owedNow, gross));
+
+      return {
+        rows: rows.map((r) => {
+          const owedNow = owed.get(r.store_id) || 0;
+          const daysPastDue = r.max_days_past_due === null ? null : Number(r.max_days_past_due);
+          return {
+            store_id: r.store_id,
+            partner_name: r.partner_name,
+            partner_phone: r.partner_phone,
+            partner_email: r.partner_email,
+            partner_logo: cleanLogo(r.partner_logo),
+            city: r.city ? String(r.city).trim() : null,
+            frequency: r.frequency,
+            status: r.payout_status,
+            invoices: Number(r.invoices) || 0,
+            bookings: Number(r.bookings) || 0,
+            gross: money(r.gross),
+            paid_invoices: Number(r.paid_invoices) || 0,
+            paid_amount: money(r.paid_amount),
+            subscription_deducted: money(r.subscription_deducted),
+            unpaid_invoices: Number(r.unpaid_invoices) || 0,
+            unpaid_gross: money(r.unpaid_gross),
+            due_invoices: Number(r.due_invoices) || 0,
+            due_gross: money(r.due_gross),
+            overdue_gross: money(r.overdue_gross),
+            subscription_owed_now: owedNow,
+            estimated_payout: net(Number(r.unpaid_gross) || 0, owedNow),
+            estimated_due_payout: net(Number(r.due_gross) || 0, owedNow),
+            oldest_unpaid_day: dayString(r.oldest_unpaid_day),
+            next_payout_date: dayString(r.next_payout_date),
+            // Days since the oldest unpaid invoice fell due; negative = not due yet.
+            days_past_due: daysPastDue,
+            last_paid_at: r.last_paid_at,
+            last_paid_invoice_date: dayString(r.last_paid_invoice_date),
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        today,
+        tracking_start: start,
+        from,
+        to,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getInvoicePayoutPartnersV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch payout partners");
+    }
+  },
+
+  // KPIs and panels for the invoices & payouts page.
+  //   ranges[]  per named range of invoice days: invoices, bookings, gross
+  //             (what customers paid), paid / pending / overdue counts and
+  //             amounts. Unpaid days before the tracking start are counted
+  //             as invoices but never as pending or overdue.
+  //   totals    all tracked unpaid money right now, by status and by payout
+  //             frequency (with the estimated net after subscriptions), and
+  //             everything ever paid out.
+  getInvoicePayoutsSummaryV2: async (data = {}) => {
+    try {
+      const resolved = resolveRanges(data.ranges);
+      const today = toIstDatePart(new Date());
+      const start = await adminDbController.app.getPayoutTrackingStart();
+      const spanFrom = [start, ...resolved.map((r) => r.from)].sort()[0];
+
+      const [dayRows, allTime, frequencyRows] = await Promise.all([
+        adminDbController.connection.query(invoiceDayRowsSql(), {
+          replacements: { daysFrom: spanFrom, daysEnd: addDays(today, 1) },
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+        adminDbController.connection.query(
+          `
+          SELECT COUNT(*) AS payouts, COALESCE(SUM(amount), 0) AS paid_out,
+                 COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted
+          FROM InvoicePayouts
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+        adminDbController.connection.query(
+          `
+          SELECT payout_frequency AS frequency, COUNT(*) AS partners
+          FROM Store
+          WHERE status = 'active'
+          GROUP BY payout_frequency
+          `,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const money = (v) => Number((Number(v) || 0).toFixed(2));
+      const days = dayRows.map((row) => {
+        const invoiceDate = dayString(row.invoice_date);
+        const dueDate = dayString(row.due_date);
+        let status = "paid";
+        if (!row.payout_id) {
+          if (invoiceDate < start) status = "untracked";
+          else if (dueDate > today) status = "scheduled";
+          else if (Math.round((Date.parse(today) - Date.parse(dueDate)) / 864e5) >= PAYOUT_OVERDUE_GRACE_DAYS) status = "overdue";
+          else status = "due";
+        }
+        return {
+          store_id: row.store_id,
+          frequency: row.frequency,
+          invoice_date: invoiceDate,
+          gross: Number(row.gross) || 0,
+          bookings: Number(row.bookings) || 0,
+          payout_amount: Number(row.payout_amount) || 0,
+          status,
+        };
+      });
+
+      const ranges = {};
+      for (const r of resolved) {
+        const inRange = days.filter((d) => d.invoice_date >= r.from && d.invoice_date <= r.to);
+        const sum = (list, key) => money(list.reduce((acc, d) => acc + d[key], 0));
+        const by = (status) => inRange.filter((d) => d.status === status);
+        const pending = inRange.filter((d) => d.status === "scheduled" || d.status === "due");
+        ranges[r.key] = {
+          invoices: inRange.length,
+          partners: new Set(inRange.map((d) => d.store_id)).size,
+          bookings: inRange.reduce((acc, d) => acc + d.bookings, 0),
+          gross: sum(inRange, "gross"),
+          paid_invoices: by("paid").length,
+          paid_amount: sum(by("paid"), "payout_amount"),
+          pending_invoices: pending.length,
+          pending_gross: sum(pending, "gross"),
+          overdue_invoices: by("overdue").length,
+          overdue_gross: sum(by("overdue"), "gross"),
+        };
+      }
+
+      // Everything unpaid and tracked, right now.
+      const unpaid = days.filter((d) => ["scheduled", "due", "overdue"].includes(d.status));
+      const owed = await adminDbController.app.getSubscriptionOwedByStore([...new Set(unpaid.map((d) => d.store_id))]);
+      const byFrequency = Object.fromEntries(
+        PAYOUT_FREQUENCIES.map((f) => [f, { partners: 0, partners_with_unpaid: 0, unpaid_gross: 0, estimated_payout: 0 }])
+      );
+      for (const row of frequencyRows) {
+        if (byFrequency[row.frequency]) byFrequency[row.frequency].partners = Number(row.partners) || 0;
+      }
+      const unpaidByStore = new Map();
+      for (const d of unpaid) {
+        const entry = unpaidByStore.get(d.store_id) || { frequency: d.frequency, gross: 0 };
+        entry.gross += d.gross;
+        unpaidByStore.set(d.store_id, entry);
+      }
+      for (const [storeId, entry] of unpaidByStore) {
+        const bucket = byFrequency[entry.frequency];
+        if (!bucket) continue;
+        const owedNow = owed.get(storeId) || 0;
+        bucket.partners_with_unpaid += 1;
+        bucket.unpaid_gross += entry.gross;
+        bucket.estimated_payout += entry.gross - Math.min(owedNow, entry.gross);
+      }
+      for (const bucket of Object.values(byFrequency)) {
+        bucket.unpaid_gross = money(bucket.unpaid_gross);
+        bucket.estimated_payout = money(bucket.estimated_payout);
+      }
+      const total = (status) => money(days.filter((d) => d.status === status).reduce((acc, d) => acc + d.gross, 0));
+      const count = (status) => days.filter((d) => d.status === status).length;
+
+      return {
+        today,
+        tracking_start: start,
+        overdue_grace_days: PAYOUT_OVERDUE_GRACE_DAYS,
+        ranges,
+        totals: {
+          paid_out_all_time: money(allTime[0]?.paid_out),
+          payouts_all_time: Number(allTime[0]?.payouts) || 0,
+          subscription_deducted_all_time: money(allTime[0]?.subscription_deducted),
+          unpaid_gross: money(unpaid.reduce((acc, d) => acc + d.gross, 0)),
+          unpaid_invoices: unpaid.length,
+          scheduled_gross: total("scheduled"),
+          due_gross: total("due"),
+          overdue_gross: total("overdue"),
+          overdue_invoices: count("overdue"),
+          overdue_partners: new Set(days.filter((d) => d.status === "overdue").map((d) => d.store_id)).size,
+        },
+        by_frequency: byFrequency,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getInvoicePayoutsSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch invoices summary");
+    }
+  },
+
+  // One salon's invoice days (newest first) with payout status, amounts and
+  // due dates, plus what its subscription owes today.
+  getPartnerInvoiceDaysV2: async (data = {}) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const { today, start, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+
+      const [store] = await adminDbController.connection.query(
+        `
+        SELECT s.id, s.name, s.phone, s.email, s.logo, s.payout_frequency AS frequency, pa.city
+        FROM Store s
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        WHERE s.id = :storeId
+        `,
+        { replacements: { storeId }, type: Sequelize.QueryTypes.SELECT }
+      );
+      if (!store) {
+        throw Error.NotFound("Partner");
+      }
+
+      const rows = from > to
+        ? []
+        : await adminDbController.connection.query(
+          `
+          SELECT x.*, ${INVOICE_DAY_STATUS_SQL} AS status, DATEDIFF(:today, x.due_date) AS days_past_due
+          FROM (${invoiceDayRowsSql()}) x
+          WHERE x.store_id = :storeId
+          ORDER BY x.invoice_date DESC
+          LIMIT 400
+          `,
+          {
+            replacements: {
+              daysFrom: from,
+              daysEnd: addDays(to, 1),
+              today,
+              grace: PAYOUT_OVERDUE_GRACE_DAYS,
+              storeId,
+            },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        );
+      const owed = await adminDbController.app.getSubscriptionOwedByStore([storeId]);
+
+      return {
+        partner: {
+          store_id: store.id,
+          partner_name: store.name,
+          partner_phone: store.phone,
+          partner_email: store.email,
+          partner_logo: cleanLogo(store.logo),
+          city: store.city ? String(store.city).trim() : null,
+          frequency: store.frequency,
+          subscription_owed_now: owed.get(storeId) || 0,
+        },
+        days: rows.map((r) => ({
+          invoice_date: dayString(r.invoice_date),
+          due_date: dayString(r.due_date),
+          status: r.status,
+          days_past_due: Number(r.days_past_due),
+          bookings: Number(r.bookings) || 0,
+          gross: Number((Number(r.gross) || 0).toFixed(2)),
+          payout_amount: r.payout_id ? Number(r.payout_amount) : null,
+          subscription_deducted: r.payout_id ? Number(r.subscription_deducted) : null,
+          paid_at: r.paid_at,
+          marked_by: r.marked_by,
+        })),
+        today,
+        tracking_start: start,
+        from,
+        to,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getPartnerInvoiceDaysV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner invoices");
+    }
+  },
+
+  // Sets how often one or many salons are paid out.
+  setPartnerPayoutFrequencyV2: async (data = {}) => {
+    try {
+      const raw = Array.isArray(data.store_ids) ? data.store_ids : [data.store_id];
+      const storeIds = [...new Set(raw.map(Number))];
+      if (!storeIds.length || storeIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        throw Error.BadRequest("store_ids must be positive whole numbers");
+      }
+      if (storeIds.length > 1000) {
+        throw Error.BadRequest("at most 1000 partners at a time");
+      }
+      if (!PAYOUT_FREQUENCIES.includes(data.frequency)) {
+        throw Error.BadRequest(`frequency must be one of: ${PAYOUT_FREQUENCIES.join(", ")}`);
+      }
+      const [, meta] = await adminDbController.connection.query(
+        `UPDATE Store SET payout_frequency = :frequency WHERE id IN (:storeIds)`,
+        { replacements: { frequency: data.frequency, storeIds } }
+      );
+      return { frequency: data.frequency, store_ids: storeIds, updated: meta?.affectedRows ?? null };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ setPartnerPayoutFrequencyV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to update payout frequency");
+    }
+  },
+
+  // "Pay Now": marks a salon's unpaid invoice days paid, oldest first, each
+  // through the existing markInvoicePayout - so subscription fees are
+  // deducted day by day exactly as on the invoice page, and every day stays
+  // individually undoable there. only_due (default true) skips days whose
+  // payout isn't due yet. Stops at the first failure.
+  payPartnerInvoicesV2: async (data = {}, adminId = null) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) {
+        throw Error.BadRequest("store_id must be a positive whole number");
+      }
+      const onlyDue = data.only_due !== false;
+      const { today, from, to } = await adminDbController.app.resolvePayoutWindow(data);
+      if (from > to) return { paid: [], failed: null, remaining: 0 };
+
+      const unpaid = await adminDbController.connection.query(
+        `
+        SELECT x.invoice_date, x.due_date
+        FROM (${invoiceDayRowsSql()}) x
+        WHERE x.store_id = :storeId AND x.payout_id IS NULL
+          ${onlyDue ? "AND x.due_date <= :today" : ""}
+        ORDER BY x.invoice_date ASC
+        `,
+        {
+          replacements: { daysFrom: from, daysEnd: addDays(to, 1), storeId, today },
+          type: Sequelize.QueryTypes.SELECT,
+        }
+      );
+      if (unpaid.length > PAYOUT_BULK_MAX_DAYS) {
+        throw Error.BadRequest(
+          `${unpaid.length} unpaid days - pay at most ${PAYOUT_BULK_MAX_DAYS} at a time (narrow from / to)`
+        );
+      }
+
+      const paid = [];
+      let failed = null;
+      for (const row of unpaid) {
+        const date = dayString(row.invoice_date);
+        try {
+          const invoice = await adminDbController.app.markInvoicePayout({
+            partner_id: storeId,
+            date,
+            marked_by: adminId,
+          });
+          paid.push({
+            invoice_date: date,
+            invoice_total: invoice.total_amount,
+            subscription_deducted: invoice.payout_subscription_deducted,
+            payout_amount: invoice.payout_amount,
+          });
+        } catch (error) {
+          failed = { invoice_date: date, message: error?.message || "Failed to mark invoice as paid" };
+          break;
+        }
+      }
+
+      const sum = (key) => Number(paid.reduce((acc, p) => acc + (Number(p[key]) || 0), 0).toFixed(2));
+      return {
+        paid,
+        failed,
+        remaining: unpaid.length - paid.length,
+        total_paid_out: sum("payout_amount"),
+        total_deducted: sum("subscription_deducted"),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ payPartnerInvoicesV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to pay partner invoices");
+    }
+  },
+
+  // ── Monthly report V2 (MonthlyReportV2 page) ────────────────────────────
+
+  // Per-booking platform fee (AdminSettings.platform_fee). Raw SQL on purpose,
+  // like free_booking_limit: the column isn't on the AdminSettings model.
+  getPlatformFee: async () => {
+    try {
+      const rows = await adminDbController.connection.query(
+        `SELECT platform_fee FROM AdminSettings WHERE id = 1 LIMIT 1`,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+      const fee = rows[0]?.platform_fee;
+      return {
+        platform_fee: fee === null || fee === undefined ? DEFAULT_PLATFORM_FEE : Number(fee),
+      };
+    } catch (error) {
+      console.log("🚀 ~ getPlatformFee error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch platform fee");
+    }
+  },
+  updatePlatformFee: async (data = {}) => {
+    try {
+      const raw = data.platform_fee;
+      const fee = Number(raw);
+      const numeric = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
+      if (!numeric || !Number.isFinite(fee)) {
+        throw Error.BadRequest("platform_fee must be a number");
+      }
+      if (fee < 0 || fee > MAX_PLATFORM_FEE) {
+        throw Error.BadRequest(`platform_fee must be between 0 and ${MAX_PLATFORM_FEE}`);
+      }
+      if (Math.round(fee * 100) !== fee * 100) {
+        throw Error.BadRequest("platform_fee can have at most 2 decimals");
+      }
+      await adminDbController.connection.query(
+        `
+        INSERT INTO AdminSettings (id, platform_fee, updated_at)
+        VALUES (1, :fee, NOW())
+        ON DUPLICATE KEY UPDATE platform_fee = VALUES(platform_fee), updated_at = NOW()
+        `,
+        { replacements: { fee }, type: Sequelize.QueryTypes.INSERT }
+      );
+      return await adminDbController.app.getPlatformFee();
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ updatePlatformFee error:", error);
+      throw Error.SomethingWentWrong("Failed to update platform fee");
+    }
+  },
+
+  // Totals for one month span ({ from, end }) across every salon.
+  getMonthlyReportTotals: async (span, platformFee) => {
+    const replacements = { fromDate: span.from, toEnd: span.end };
+    const run = (sql, extra = {}) =>
+      adminDbController.connection.query(sql, {
+        replacements: { ...replacements, ...extra },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+    const [[bookings], [items], [payouts], [partners], [customers]] = await Promise.all([
+      run(`
+        SELECT COALESCE(SUM(total_bookings), 0) AS total_bookings, COALESCE(SUM(completed), 0) AS completed,
+               COALESCE(SUM(cancelled), 0) AS cancelled, COALESCE(SUM(active_bookings), 0) AS active_bookings,
+               COALESCE(SUM(gst), 0) AS gst
+        FROM (${MONTHLY_BOOKINGS_SQL}) b`),
+      run(`
+        SELECT COALESCE(SUM(gross), 0) AS gross, COALESCE(SUM(orders), 0) AS orders,
+               COALESCE(SUM(cac_spend), 0) AS cac_spend, COALESCE(SUM(cac_bookings), 0) AS cac_bookings
+        FROM (${MONTHLY_ITEMS_SQL}) g`),
+      run(`
+        SELECT COALESCE(SUM(payout), 0) AS payout, COALESCE(SUM(subscription_deducted), 0) AS subscription_deducted
+        FROM (${MONTHLY_PAYOUTS_SQL}) p`),
+      run(`SELECT COUNT(*) AS partners FROM (${MONTHLY_SALONS_SQL}) base`),
+      // New = their first ever paid, served booking falls in this month.
+      run(`
+        SELECT COUNT(*) AS customers, COALESCE(SUM(f.first_booking >= :fromDate), 0) AS new_customers
+        FROM (
+          SELECT DISTINCT a.user_id FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+        ) m
+        INNER JOIN (
+          SELECT a.user_id, MIN(a.booking_date) AS first_booking FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL}
+          GROUP BY a.user_id
+        ) f ON f.user_id = m.user_id`),
+    ]);
+
+    const num = (v) => Number(v) || 0;
+    const money = (v) => Number(num(v).toFixed(2));
+    const active = num(bookings.active_bookings);
+    const partnerCount = num(partners.partners);
+    const customerCount = num(customers.customers);
+    const newCustomers = num(customers.new_customers);
+    const cacBookings = num(items.cac_bookings);
+    return {
+      month: span.month,
+      from: span.from,
+      to: span.to,
+      partners: partnerCount,
+      total_bookings: num(bookings.total_bookings),
+      completed: num(bookings.completed),
+      cancelled: num(bookings.cancelled),
+      active_bookings: active,
+      avg_bookings_per_partner: partnerCount ? Number((num(bookings.total_bookings) / partnerCount).toFixed(2)) : null,
+      gross: money(items.gross),
+      orders: num(items.orders),
+      gst: money(bookings.gst),
+      platform_fee_total: money(active * platformFee),
+      payout: money(payouts.payout),
+      subscription_deducted: money(payouts.subscription_deducted),
+      cac_spend: money(items.cac_spend),
+      cac_per_booking: cacBookings ? money(num(items.cac_spend) / cacBookings) : null,
+      customers: customerCount,
+      new_customers: newCustomers,
+      repeat_customers: customerCount - newCustomers,
+      returning_rate: customerCount ? Number((((customerCount - newCustomers) / customerCount) * 100).toFixed(1)) : null,
+    };
+  },
+
+  // The month's totals next to the month before's, the platform fee used,
+  // and the cities with bookings (for the filter).
+  getMonthlyReportSummaryV2: async (data = {}) => {
+    try {
+      const { current, previous } = resolveReportMonths(data.month);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const [cur, prev, cityRows] = await Promise.all([
+        adminDbController.app.getMonthlyReportTotals(current, platformFee),
+        adminDbController.app.getMonthlyReportTotals(previous, platformFee),
+        adminDbController.connection.query(
+          `
+          SELECT DISTINCT TRIM(pa.city) AS city
+          FROM (${MONTHLY_SALONS_SQL}) base
+          INNER JOIN Store s ON s.id = base.store_id
+          INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE pa.city IS NOT NULL AND TRIM(pa.city) <> ''
+          ORDER BY city
+          `,
+          {
+            replacements: { fromDate: current.from, toEnd: current.end },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+      ]);
+      return {
+        month: current.month,
+        platform_fee: platformFee,
+        current: cur,
+        previous: prev,
+        cities: cityRows.map((row) => row.city),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getMonthlyReportSummaryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly report summary");
+    }
+  },
+
+  // One row per salon with activity in the month: bookings (total /
+  // completed / cancelled), invoice value, payout, subscription deducted,
+  // platform fee (served bookings x the fee setting), GST, CAC, average order
+  // value, rating, last booking. Filters: search, city; sorts per the page.
+  getMonthlyReportSalonsV2: async (data = {}) => {
+    try {
+      const { current } = resolveReportMonths(data.month);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const where = [];
+      const replacements = { fromDate: current.from, toEnd: current.end };
+      const addWhere = (sql, values = {}) => {
+        where.push(sql);
+        Object.assign(replacements, values);
+      };
+
+      const search = String(data.search || "").trim().replace(/^#/, "");
+      if (search) {
+        const conditions = ["s.name LIKE :searchLike", "s.phone LIKE :searchLike", "s.email LIKE :searchLike"];
+        const values = { searchLike: `%${escapeLike(search)}%` };
+        if (/^\d+$/.test(search)) {
+          conditions.unshift("base.store_id = :searchId");
+          values.searchId = Number(search);
+        }
+        addWhere(`(${conditions.join(" OR ")})`, values);
+      }
+      if (data.city) {
+        addWhere("LOWER(TRIM(pa.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
+      }
+      const sort = MONTHLY_REPORT_SORTS[data.sort || "bookings_desc"];
+      if (!sort) {
+        throw Error.BadRequest(`sort must be one of: ${Object.keys(MONTHLY_REPORT_SORTS).join(", ")}`);
+      }
+      const page = Math.max(1, Number(data.page) || 1);
+      const pageSize = Math.min(Math.max(1, Number(data.limit) || 10), MONTHLY_REPORT_MAX_LIMIT);
+
+      // LEFT JOIN Store: bookings of since-deleted salons still count in the
+      // month's money, so they stay listed (as "Deleted salon #id") and the
+      // rows always add up to getMonthlyReportSummaryV2.
+      const fromSql = `
+        FROM (${MONTHLY_SALONS_SQL}) base
+        LEFT JOIN Store s ON s.id = base.store_id
+        LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (${MONTHLY_BOOKINGS_SQL}) b ON b.store_id = base.store_id
+        LEFT JOIN (${MONTHLY_ITEMS_SQL}) g ON g.store_id = base.store_id
+        LEFT JOIN (${MONTHLY_PAYOUTS_SQL}) p ON p.store_id = base.store_id
+        LEFT JOIN (
+          SELECT store_id, ROUND(AVG(rating), 1) AS average_rating, COUNT(*) AS review_count
+          FROM Reviews
+          WHERE status = 'active' AND rating BETWEEN 1 AND 5
+          GROUP BY store_id
+        ) r ON r.store_id = base.store_id
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      `;
+
+      const [rows, totalRows] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT base.store_id, s.id AS existing_store_id, s.name, s.store_type, s.phone, s.email, s.logo,
+                 s.status AS store_status,
+                 pa.area, pa.city, pa.state,
+                 b.total_bookings, b.completed, b.cancelled, b.active_bookings, b.gst, b.customers, b.last_booking,
+                 g.gross, g.orders, g.cac_spend, g.cac_bookings,
+                 p.payout, p.subscription_deducted, p.payouts,
+                 r.average_rating, r.review_count
+          ${fromSql}
+          ORDER BY ${sort}
+          LIMIT :pageSize OFFSET :offset
+          `,
+          {
+            replacements: { ...replacements, pageSize, offset: (page - 1) * pageSize },
+            type: Sequelize.QueryTypes.SELECT,
+          }
+        ),
+        adminDbController.connection.query(`SELECT COUNT(*) AS total ${fromSql}`, {
+          replacements,
+          type: Sequelize.QueryTypes.SELECT,
+        }),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      return {
+        rows: rows.map((r) => {
+          const total = num(r.total_bookings);
+          const active = num(r.active_bookings);
+          const orders = num(r.orders);
+          const cacBookings = num(r.cac_bookings);
+          const [lastDay, lastTime] = String(r.last_booking || "").split(" ");
+          return {
+            store_id: r.store_id,
+            partner_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+            salon_deleted: r.existing_store_id === null,
+            store_type: r.store_type || null,
+            partner_phone: r.phone,
+            partner_email: r.email,
+            partner_logo: cleanLogo(r.logo),
+            store_status: r.store_status,
+            area: r.area ? String(r.area).trim() : null,
+            city: r.city ? String(r.city).trim() : null,
+            state: r.state ? String(r.state).trim() : null,
+            total_bookings: total,
+            completed: num(r.completed),
+            completed_pct: pct(num(r.completed), total),
+            cancelled: num(r.cancelled),
+            cancelled_pct: pct(num(r.cancelled), total),
+            active_bookings: active,
+            customers: num(r.customers),
+            gross: money(r.gross),
+            orders,
+            payout: money(r.payout),
+            payouts: num(r.payouts),
+            subscription_deducted: money(r.subscription_deducted),
+            platform_fee: money(active * platformFee),
+            gst: money(r.gst),
+            cac_spend: money(r.cac_spend),
+            cac_per_booking: cacBookings ? money(num(r.cac_spend) / cacBookings) : null,
+            avg_order_value: orders ? money(num(r.gross) / orders) : null,
+            average_rating: r.average_rating === null ? null : Number(r.average_rating),
+            review_count: num(r.review_count),
+            // Visit day + booked slot start, IST - same as the invoice page.
+            last_booking_at: lastDay ? (lastTime ? `${lastDay}T${lastTime}+05:30` : lastDay) : null,
+          };
+        }),
+        total: Number(totalRows[0]?.total) || 0,
+        page,
+        limit: pageSize,
+        month: current.month,
+        platform_fee: platformFee,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getMonthlyReportSalonsV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch monthly report");
+    }
+  },
+
+  // ── Analytics intelligence V2 (AnalyticsIntelligenceV2 page) ────────────
+  // Every card takes { from, to } (YYYY-MM-DD, IST, inclusive) and also
+  // returns the equal-length window just before it for the Compare toggle.
+
+  // Per-salon profitability for one window ({ from, end }). Same money as
+  // the monthly report: GMV = invoice value, GloUp revenue = served bookings
+  // x platform fee + subscription fees deducted from payouts, contribution =
+  // revenue - CAC (Gloup-funded discounts), margin = contribution / GMV.
+  getAnalyticsProfitRows: async (span, platformFee) => {
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT base.store_id, s.id AS existing_store_id, s.name, s.logo, pa.area, pa.city,
+             b.active_bookings, g.gross, g.cac_spend, p.subscription_deducted
+      FROM (${MONTHLY_SALONS_SQL}) base
+      LEFT JOIN Store s ON s.id = base.store_id
+      LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+      LEFT JOIN (${MONTHLY_BOOKINGS_SQL}) b ON b.store_id = base.store_id
+      LEFT JOIN (${MONTHLY_ITEMS_SQL}) g ON g.store_id = base.store_id
+      LEFT JOIN (${MONTHLY_PAYOUTS_SQL}) p ON p.store_id = base.store_id
+      `,
+      {
+        replacements: { fromDate: span.from, toEnd: span.end },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+    const num = (v) => Number(v) || 0;
+    const money = (v) => Number(num(v).toFixed(2));
+    return rows.map((r) => {
+      const bookings = num(r.active_bookings);
+      const gmv = money(r.gross);
+      const feeRevenue = money(bookings * platformFee);
+      const subscription = money(r.subscription_deducted);
+      const revenue = money(feeRevenue + subscription);
+      const cac = money(r.cac_spend);
+      const contribution = money(revenue - cac);
+      const margin = gmv > 0 ? Number(((contribution / gmv) * 100).toFixed(1)) : null;
+      return {
+        store_id: r.store_id,
+        salon_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+        salon_deleted: r.existing_store_id === null,
+        salon_logo: cleanLogo(r.logo),
+        area: r.area ? String(r.area).trim() : null,
+        city: r.city ? String(r.city).trim() : null,
+        bookings,
+        gmv,
+        platform_fee_revenue: feeRevenue,
+        subscription_revenue: subscription,
+        revenue,
+        cac_spend: cac,
+        contribution,
+        margin_pct: margin,
+        tier: profitTier(margin, contribution),
+      };
+    });
+  },
+
+  getAnalyticsProfitabilityV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
+      const [rows, prevRows] = await Promise.all([
+        adminDbController.app.getAnalyticsProfitRows(win, platformFee),
+        adminDbController.app.getAnalyticsProfitRows(win.previous, platformFee),
+      ]);
+      // Sales = served bookings, grouped by their salon's tier.
+      const stats = (list) => {
+        const sum = (pred) => list.filter(pred).reduce((total, r) => total + r.bookings, 0);
+        const money = (key) => Number(list.reduce((total, r) => total + r[key], 0).toFixed(2));
+        return {
+          total_sales: sum(() => true),
+          profitable_sales: sum((r) => r.tier === "High" || r.tier === "Medium"),
+          low_sales: sum((r) => r.tier === "Low"),
+          negative_sales: sum((r) => r.tier === "Negative"),
+          gmv: money("gmv"),
+          revenue: money("revenue"),
+          cac_spend: money("cac_spend"),
+          contribution: money("contribution"),
+        };
+      };
+      rows.sort((a, b) => b.contribution - a.contribution || b.bookings - a.bookings);
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        platform_fee: platformFee,
+        tiers: PROFIT_TIERS,
+        stats: stats(rows),
+        previous_stats: stats(prevRows),
+        rows,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsProfitabilityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch profitability analytics");
+    }
+  },
+
+  // Switching for one window: per salon, the customers whose first served
+  // booking in the window was there, split by where their NEXT served booking
+  // (any time after) went - same salon / another salon / none yet.
+  getAnalyticsSwitchRows: async (span) => {
+    const replacements = { fromDate: span.from, toEnd: span.end };
+    const [bySalon, switchedTo] = await Promise.all([
+      adminDbController.connection.query(
+        `
+        SELECT anc.store_id, COUNT(*) AS customers,
+               SUM(anc.next_store = anc.store_id) AS stayed,
+               SUM(anc.next_store <> anc.store_id) AS switched,
+               SUM(anc.next_store IS NULL) AS no_return
+        FROM (${SWITCH_ANCHORS_SQL}) anc
+        GROUP BY anc.store_id
+        `,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `
+        SELECT anc.next_store AS store_id, COUNT(*) AS customers
+        FROM (${SWITCH_ANCHORS_SQL}) anc
+        WHERE anc.next_store <> anc.store_id
+        GROUP BY anc.next_store
+        `,
+        { replacements, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+    const num = (v) => Number(v) || 0;
+    return {
+      bySalon: bySalon.map((r) => ({
+        store_id: r.store_id,
+        customers: num(r.customers),
+        stayed: num(r.stayed),
+        switched: num(r.switched),
+        no_return: num(r.no_return),
+      })),
+      switchedTo: switchedTo.map((r) => ({ store_id: r.store_id, customers: num(r.customers) })),
+    };
+  },
+
+  getAnalyticsSwitchingV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 90);
+      const [cur, prev] = await Promise.all([
+        adminDbController.app.getAnalyticsSwitchRows(win),
+        adminDbController.app.getAnalyticsSwitchRows(win.previous),
+      ]);
+      const totals = (list) => ({
+        customers: list.reduce((t, r) => t + r.customers, 0),
+        stayed: list.reduce((t, r) => t + r.stayed, 0),
+        switched: list.reduce((t, r) => t + r.switched, 0),
+        no_return: list.reduce((t, r) => t + r.no_return, 0),
+      });
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+
+      const ids = [...new Set([...cur.bySalon, ...cur.switchedTo].map((r) => r.store_id))];
+      const stores = ids.length
+        ? await adminDbController.connection.query(`SELECT id, name, logo FROM Store WHERE id IN (:ids)`, {
+            replacements: { ids },
+            type: Sequelize.QueryTypes.SELECT,
+          })
+        : [];
+      const storeById = new Map(stores.map((s) => [Number(s.id), s]));
+      const salon = (id) => {
+        const s = storeById.get(Number(id));
+        return {
+          store_id: id,
+          salon_name: s ? s.name : `Deleted salon #${id}`,
+          salon_deleted: !s,
+          salon_logo: s ? cleanLogo(s.logo) : null,
+        };
+      };
+
+      const prevById = new Map(prev.bySalon.map((r) => [Number(r.store_id), r]));
+      const risk = cur.bySalon
+        .filter((r) => r.customers >= SWITCH_RISK_MIN_CUSTOMERS)
+        .map((r) => {
+          const switchingPct = pct(r.switched, r.customers);
+          const before = prevById.get(Number(r.store_id));
+          const prevPct = before && before.customers >= SWITCH_RISK_MIN_CUSTOMERS ? pct(before.switched, before.customers) : null;
+          return {
+            ...salon(r.store_id),
+            ...r,
+            switching_pct: switchingPct,
+            previous_switching_pct: prevPct,
+            // Percentage points vs the previous window.
+            trend_pts: prevPct === null ? null : Number((switchingPct - prevPct).toFixed(1)),
+            risk: switchRiskTier(switchingPct),
+          };
+        })
+        .sort((a, b) => b.switching_pct - a.switching_pct || b.customers - a.customers);
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        stats: totals(cur.bySalon),
+        previous_stats: totals(prev.bySalon),
+        switched_to: cur.switchedTo
+          .sort((a, b) => b.customers - a.customers)
+          .slice(0, 10)
+          .map((r) => ({ ...salon(r.store_id), customers: r.customers })),
+        risk_tiers: SWITCH_RISK_TIERS,
+        risk_min_customers: SWITCH_RISK_MIN_CUSTOMERS,
+        risk,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsSwitchingV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch switching analytics");
+    }
+  },
+
+  // Customer gravity per salon: customers served in the window, repeat
+  // customers (2+ served bookings at that salon up to the window's end) and
+  // retention (previous window's customers who came back in this window).
+  // Where customers live / travel distance are not stored, so not returned.
+  getAnalyticsGravityV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const replacements = { fromDate: win.from, toEnd: win.end, prevFrom: win.previous.from };
+      const servedSql = `${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL`;
+      const pairsSql = (fromKey) => `
+        SELECT DISTINCT a.store_id, a.user_id FROM appointments a
+        WHERE ${servedSql} AND a.booking_date >= :${fromKey} AND a.booking_date < :${fromKey === "fromDate" ? "toEnd" : "fromDate"}`;
+      const [rows, [overall]] = await Promise.all([
+        adminDbController.connection.query(
+          `
+          SELECT base.store_id, s.id AS existing_store_id, s.name, s.logo, pa.area, pa.city,
+                 COALESCE(cur.customers, 0) AS customers, COALESCE(cur.bookings, 0) AS bookings,
+                 COALESCE(rep.repeat_customers, 0) AS repeat_customers,
+                 COALESCE(ret.prev_customers, 0) AS prev_customers, COALESCE(ret.retained, 0) AS retained
+          FROM (
+            SELECT DISTINCT a.store_id FROM appointments a
+            WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :toEnd
+          ) base
+          LEFT JOIN Store s ON s.id = base.store_id
+          LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+          LEFT JOIN (
+            SELECT a.store_id, COUNT(DISTINCT a.user_id) AS customers, COUNT(*) AS bookings
+            FROM appointments a
+            WHERE ${servedSql} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd
+            GROUP BY a.store_id
+          ) cur ON cur.store_id = base.store_id
+          LEFT JOIN (
+            SELECT w.store_id, COUNT(*) AS repeat_customers
+            FROM (${pairsSql("fromDate")}) w
+            INNER JOIN (
+              SELECT a.store_id, a.user_id FROM appointments a
+              WHERE ${servedSql} AND a.booking_date < :toEnd
+              GROUP BY a.store_id, a.user_id HAVING COUNT(*) >= 2
+            ) h ON h.store_id = w.store_id AND h.user_id = w.user_id
+            GROUP BY w.store_id
+          ) rep ON rep.store_id = base.store_id
+          LEFT JOIN (
+            SELECT p.store_id, COUNT(*) AS prev_customers, SUM(c.user_id IS NOT NULL) AS retained
+            FROM (${pairsSql("prevFrom")}) p
+            LEFT JOIN (${pairsSql("fromDate")}) c ON c.store_id = p.store_id AND c.user_id = p.user_id
+            GROUP BY p.store_id
+          ) ret ON ret.store_id = base.store_id
+          ORDER BY customers DESC, repeat_customers DESC, base.store_id ASC
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+        // Platform-wide: same three numbers counted per customer, any salon.
+        adminDbController.connection.query(
+          `
+          SELECT
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :fromDate AND a.booking_date < :toEnd) AS customers,
+            (SELECT COUNT(*) FROM (
+              SELECT a.user_id FROM appointments a
+              WHERE ${servedSql} AND a.booking_date < :toEnd
+                AND a.user_id IN (SELECT a2.user_id FROM appointments a2
+                  WHERE ${servedSql.replace(/\ba\./g, "a2.")} AND a2.booking_date >= :fromDate AND a2.booking_date < :toEnd)
+              GROUP BY a.user_id HAVING COUNT(*) >= 2) r) AS repeat_customers,
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :fromDate) AS prev_customers,
+            (SELECT COUNT(DISTINCT a.user_id) FROM appointments a
+              WHERE ${servedSql} AND a.booking_date >= :prevFrom AND a.booking_date < :fromDate
+                AND a.user_id IN (SELECT a2.user_id FROM appointments a2
+                  WHERE ${servedSql.replace(/\ba\./g, "a2.")} AND a2.booking_date >= :fromDate AND a2.booking_date < :toEnd)) AS retained
+          `,
+          { replacements, type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const shape = (r) => ({
+        customers: num(r.customers),
+        repeat_customers: num(r.repeat_customers),
+        repeat_pct: pct(num(r.repeat_customers), num(r.customers)),
+        previous_customers: num(r.prev_customers),
+        retained_customers: num(r.retained),
+        retention_pct: pct(num(r.retained), num(r.prev_customers)),
+      });
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        overall: shape(overall),
+        salons: rows.map((r) => ({
+          store_id: r.store_id,
+          salon_name: r.existing_store_id === null ? `Deleted salon #${r.store_id}` : r.name,
+          salon_deleted: r.existing_store_id === null,
+          salon_logo: cleanLogo(r.logo),
+          area: r.area ? String(r.area).trim() : null,
+          city: r.city ? String(r.city).trim() : null,
+          bookings: num(r.bookings),
+          ...shape(r),
+        })),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsGravityV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch gravity analytics");
+    }
+  },
+
+  // Users whose app is most likely uninstalled: FCM answered
+  // registration-token-not-registered for their push token and they haven't
+  // registered a working one since (their stored token is gone or is that
+  // same dead token). Only known once a push was attempted. detected_at =
+  // the first failure for that dead token; the window filters on it.
+  getUninstalledUsers: async (win) => {
+    const tokenRows = await adminDbController.connection.query(
+      `
+      SELECT f.user_id, f.token, MIN(f.created_at) AS first_at, MAX(f.created_at) AS last_at
+      FROM FailedNotificationTokens f
+      WHERE f.user_id IS NOT NULL AND f.error_code LIKE '%registration-token-not-registered%'
+      GROUP BY f.user_id, f.token
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const failedByUser = new Map();
+    for (const row of tokenRows) {
+      const list = failedByUser.get(Number(row.user_id)) || [];
+      list.push(row);
+      failedByUser.set(Number(row.user_id), list);
+    }
+    const userIds = [...failedByUser.keys()];
+    if (!userIds.length) return [];
+
+    const [users, bookings, logins] = await Promise.all([
+      adminDbController.connection.query(
+        `SELECT u.id, u.firstname, u.lastname, u.phone, u.email, u.gender, u.device_id, u.status, u.registered_at, u.loyalty_status
+         FROM User u WHERE u.id IN (:userIds) AND u.status <> 'terminated'`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `SELECT a.user_id, SUM(${ACTIVE_BOOKING_SQL}) AS served_bookings, MAX(a.created_at) AS last_booking_at
+         FROM appointments a WHERE a.user_id IN (:userIds) GROUP BY a.user_id`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+      adminDbController.connection.query(
+        `SELECT o.userId AS user_id, MAX(o.createdAt) AS last_login_at
+         FROM OtpLogs o WHERE o.userId IN (:userIds) AND (o.userType = 'user' OR o.userType IS NULL)
+         GROUP BY o.userId`,
+        { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+      ),
+    ]);
+    const bookingsById = new Map(bookings.map((r) => [Number(r.user_id), r]));
+    const loginsById = new Map(logins.map((r) => [Number(r.user_id), r]));
+    // device_id is a JSON array (or a bare token); the last one is current.
+    const currentToken = (raw) => {
+      if (!raw) return null;
+      const text = String(raw).trim();
+      if (!text || text === "null") return null;
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          const tokens = parsed.map((t) => String(t).trim()).filter(Boolean);
+          return tokens.length ? tokens[tokens.length - 1] : null;
+        }
+        return typeof parsed === "string" && parsed.trim() ? parsed.trim() : null;
+      } catch {
+        return text;
+      }
+    };
+    const toMs = (v) => (v ? new Date(v).getTime() : null);
+    const fromMs = Date.parse(`${win.from}T00:00:00+05:30`);
+    const endMs = Date.parse(`${win.end}T00:00:00+05:30`);
+
+    const result = [];
+    for (const user of users) {
+      const failed = failedByUser.get(Number(user.id)) || [];
+      const token = currentToken(user.device_id);
+      let dead;
+      if (token) {
+        dead = failed.find((f) => f.token === token);
+        if (!dead) continue; // registered a new, working token since
+      } else {
+        dead = failed.reduce((latest, f) => (!latest || toMs(f.last_at) > toMs(latest.last_at) ? f : latest), null);
+      }
+      const detectedMs = toMs(dead.first_at);
+      if (win.from && (detectedMs < fromMs || detectedMs >= endMs)) continue;
+
+      const booking = bookingsById.get(Number(user.id));
+      const login = loginsById.get(Number(user.id));
+      const activity = [toMs(user.registered_at), toMs(login?.last_login_at), toMs(booking?.last_booking_at)].filter(Boolean);
+      const lastActiveMs = activity.length ? Math.max(...activity) : null;
+      const phone = user.phone ? String(user.phone) : null;
+      result.push({
+        user_id: user.id,
+        name: [user.firstname, user.lastname].filter(Boolean).join(" ").trim() || null,
+        phone,
+        email: user.email || null,
+        gender: user.gender && String(user.gender).toLowerCase() !== "null" ? String(user.gender).trim() : null,
+        loyalty_status: user.loyalty_status,
+        served_bookings: Number(booking?.served_bookings) || 0,
+        detected_at: new Date(detectedMs).toISOString(),
+        last_active_at: lastActiveMs ? new Date(lastActiveMs).toISOString() : null,
+        // A 10-digit Indian mobile: reachable by SMS / WhatsApp.
+        reachable: Boolean(phone && /^[6-9]\d{9}$/.test(phone)),
+        high_value: (Number(booking?.served_bookings) || 0) >= UNINSTALLED_HIGH_VALUE_BOOKINGS,
+      });
+    }
+    return result;
+  },
+
+  getAnalyticsUninstalledV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const [users, prevUsers] = await Promise.all([
+        adminDbController.app.getUninstalledUsers(win),
+        adminDbController.app.getUninstalledUsers(win.previous),
+      ]);
+      const now = Date.now();
+      const segmentOf = (u) => {
+        if (!u.last_active_at) return "unknown";
+        const days = (now - new Date(u.last_active_at).getTime()) / 864e5;
+        return UNINSTALLED_SEGMENTS.find((s) => days <= s.max_days)?.key || "unknown";
+      };
+      const stats = (list) => ({
+        uninstalled: list.length,
+        reachable: list.filter((u) => u.reachable).length,
+        high_value: list.filter((u) => u.high_value).length,
+        high_value_reachable: list.filter((u) => u.high_value && u.reachable).length,
+      });
+      const counts = {};
+      for (const u of users) counts[segmentOf(u)] = (counts[segmentOf(u)] || 0) + 1;
+
+      if (data.include_users) {
+        return {
+          from: win.from,
+          to: win.to,
+          users: users
+            .map((u) => ({ ...u, segment: segmentOf(u) }))
+            .sort((a, b) => b.served_bookings - a.served_bookings || String(b.detected_at).localeCompare(String(a.detected_at))),
+        };
+      }
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        stats: stats(users),
+        previous_stats: stats(prevUsers),
+        segments: [...UNINSTALLED_SEGMENTS, { key: "unknown", label: "No activity recorded" }].map((s) => ({
+          key: s.key,
+          label: s.label,
+          users: counts[s.key] || 0,
+        })),
+        high_value_min_bookings: UNINSTALLED_HIGH_VALUE_BOOKINGS,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getAnalyticsUninstalledV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
     }
   },
 
@@ -5351,6 +9187,7 @@ verifypartnerdetails: async (data) => {
           a.id AS appointment_id,
           a.booking_date AS appointment_date,
           a.created_at AS order_time,
+          e.\`from\` AS slot_from,
           a.status,
           a.payment_status,
           ai.service_amount AS charged_amount,
@@ -5365,10 +9202,11 @@ verifypartnerdetails: async (data) => {
         INNER JOIN appointment_items ai ON ai.appointment_id = a.id
         LEFT JOIN StoreServices ss ON ai.service_id = ss.id
         LEFT JOIN Combo cb ON ai.combo_id = cb.id
+        LEFT JOIN Slots e ON a.slot_id = e.id
         WHERE a.store_id = :partnerId
           AND DATE(a.booking_date) BETWEEN :fromDate AND :toDate
           AND a.status != 'cancelled'
-        ORDER BY a.booking_date ASC, a.id ASC
+        ORDER BY a.booking_date ASC, e.\`from\` ASC, a.id ASC
         `,
         {
           replacements: {
@@ -5411,8 +9249,12 @@ verifypartnerdetails: async (data) => {
 
           return {
             appointment_id: row.appointment_id,
-            // Keep booking_time for PDF/UI compat; value is appointment day
-            booking_time: row.appointment_date,
+            // booking_date is date-only (it reads as 05:30 IST), so the real
+            // appointment time is the booked slot's start - same as the
+            // partner app. null when the booking has no slot.
+            booking_time: row.slot_from
+              ? buildAppointmentDateTime(row.appointment_date, row.slot_from)
+              : null,
             appointment_date: row.appointment_date,
             order_time: row.order_time,
             status: row.status,
