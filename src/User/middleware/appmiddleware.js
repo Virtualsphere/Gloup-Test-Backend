@@ -34,6 +34,16 @@ const CUSTOMER_NAME_MAX_LENGTH = 100;
 const PHONE_REGEX = /^[6-9]\d{9}$/; // Indian mobile numbers
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+const normalizeGender = (value) => {
+    if (value == null) return null;
+    const g = String(value).trim().toLowerCase();
+    if (g === 'male' || g === 'm' || g === 'men') return 'male';
+    if (g === 'female' || g === 'f' || g === 'women') return 'female';
+    return null;
+};
+
+
+
 const badRequest = (message) => {
     const error = Error.BadRequest(message);
     error.status = 400;
@@ -1226,6 +1236,12 @@ userappmiddleware.user = {
                 customer_phone,
                 customer_email,
             });
+
+            // 0b. Booker gender must be Male or Female on the user profile
+            const profile = await userDbController.app.getProfileV2(user.id);
+            if (!normalizeGender(profile?.gender)) {
+                throw badRequest("Please set your gender (Male or Female) before booking");
+            }
 
             // 1. Validation & Pre-calculations
             const serviceIds = (services || []).map(s => s.service_id);
@@ -2936,8 +2952,13 @@ userappmiddleware.user = {
                 throw Error.SomethingWrong("name, gender, age and phone are required");
             }
 
+            const normalizedGender = normalizeGender(gender);
+            if (!normalizedGender) {
+                throw Error.BadRequest("Guest gender must be Male or Female");
+            }
+
             // const userId = 36; // Constant userId for testing
-            return await userDbController.app.addGuestDetails(body, user.id);
+            return await userDbController.app.addGuestDetails({ ...body, gender: normalizedGender }, user.id);
         } catch (error) {
             throw Error.SomethingWentWrong(error.message);
         }
@@ -2969,7 +2990,16 @@ userappmiddleware.user = {
                 throw Error.BadRequest("At least one field (name, gender, age, phone, status) is required for update");
             }
 
-            return await userDbController.app.updateGuestDetails(guestId, req.body, userId);
+            const updateBody = { ...req.body };
+            if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
+                const normalizedGender = normalizeGender(gender);
+                if (!normalizedGender) {
+                    throw Error.BadRequest("Guest gender must be Male or Female");
+                }
+                updateBody.gender = normalizedGender;
+            }
+
+            return await userDbController.app.updateGuestDetails(guestId, updateBody, userId);
         } catch (error) {
             if (error.status) throw error;
             throw Error.SomethingWentWrong(error.message);
@@ -3005,7 +3035,15 @@ userappmiddleware.user = {
                 throw Error.BadRequest("Invalid email format");
             }
 
-            const updateData = { firstname, lastname, email, phone, age, gender, dob, city, country, profilePic };
+            let normalizedGender = gender;
+            if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
+                normalizedGender = normalizeGender(gender);
+                if (!normalizedGender) {
+                    throw Error.BadRequest("Gender must be Male or Female");
+                }
+            }
+
+            const updateData = { firstname, lastname, email, phone, age, gender: normalizedGender, dob, city, country, profilePic };
 
             const success = await userDbController.app.updateProfileV2(user.id, updateData);
             if (!success) {

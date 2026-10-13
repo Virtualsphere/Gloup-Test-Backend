@@ -2462,7 +2462,7 @@ WHERE S.status = 'active'
     limit = 10,
     page = 1
   }) => {
-    const cacheKey = `nearby_v4_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const cacheKey = `nearby_v5_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2553,10 +2553,39 @@ LEFT JOIN (
 
 LEFT JOIN (
     SELECT ss.store_id, 
-           MIN(ss.discounted_amount) AS servicePrice, 
-           MIN(ss.service_name) AS serviceName,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN ss.important = 1 THEN
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount
+                 )
+               END
+               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
@@ -2626,7 +2655,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     search,
     userId = null
   }) => {
-    const cacheKey = `salons_v6_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const cacheKey = `salons_v7_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2727,10 +2756,39 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   LEFT JOIN (
     SELECT ss.store_id, 
-           MIN(ss.discounted_amount) AS servicePrice, 
-           MIN(ss.service_name) AS serviceName,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN ss.important = 1 THEN
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount
+                 )
+               END
+               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
@@ -3044,7 +3102,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
     IFNULL(R.rating_avg, 0) AS rating,
     IFNULL(R.review_count, 0) AS reviewCount,
-    SS.min_price AS servicePrice,
+    COALESCE(SS.servicePrice, SS.min_price) AS servicePrice,
+    SS.serviceName,
+    SS.servicesList,
     C.categories,
 
     IF(F.store_id IS NULL, 0, 1) AS isFavorite,
@@ -3082,7 +3142,28 @@ END AS distance
 
   LEFT JOIN (
     SELECT store_id,
-           MIN(discounted_amount) AS min_price
+           MIN(discounted_amount) AS min_price,
+           MIN(CASE WHEN important = 1 THEN discounted_amount END) AS servicePrice,
+           SUBSTRING_INDEX(
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN service_name END
+               ORDER BY discounted_amount ASC SEPARATOR '||'
+             ), '||', 1
+           ) AS serviceName,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN
+                 JSON_OBJECT(
+                   'name', service_name,
+                   'price', amount,
+                   'discountedPrice', discounted_amount
+                 )
+               END
+               ORDER BY priority DESC, discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices
     WHERE status = 'active'
     GROUP BY store_id
@@ -3149,7 +3230,28 @@ END AS distance
   ) R ON R.store_id = S.id
   LEFT JOIN (
     SELECT store_id,
-           MIN(discounted_amount) AS min_price
+           MIN(discounted_amount) AS min_price,
+           MIN(CASE WHEN important = 1 THEN discounted_amount END) AS servicePrice,
+           SUBSTRING_INDEX(
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN service_name END
+               ORDER BY discounted_amount ASC SEPARATOR '||'
+             ), '||', 1
+           ) AS serviceName,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN
+                 JSON_OBJECT(
+                   'name', service_name,
+                   'price', amount,
+                   'discountedPrice', discounted_amount
+                 )
+               END
+               ORDER BY priority DESC, discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices
     WHERE status = 'active'
     GROUP BY store_id

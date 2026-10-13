@@ -64,7 +64,7 @@ async function resolveStoreTypeFromServicesProvidedFor(ids = []) {
 async function invalidateSalonListCaches() {
     try {
         if (!redisClient?.isOpen && !redisClient?.isReady) return;
-        const patterns = ["nearby_v4_*", "salons_v6_*"];
+        const patterns = ["nearby_v5_*", "salons_v7_*"];
         for (const pattern of patterns) {
             for await (const key of redisClient.scanIterator({
                 MATCH: pattern,

@@ -658,7 +658,16 @@ export const formatSalonList = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
-        dynamicServices: (function() { try { return store.servicesList ? JSON.parse(store.servicesList) : []; } catch(e) { return []; } })(),
+        dynamicServices: (function() {
+          try {
+            if (!store.servicesList) return [];
+            if (Array.isArray(store.servicesList)) return store.servicesList;
+            const parsed = JSON.parse(store.servicesList);
+            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+          } catch (e) {
+            return [];
+          }
+        })(),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.languageCodes
           ? store.languageCodes.split(",")
@@ -721,7 +730,16 @@ export const formatTopSalons = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
-        dynamicServices: (function() { try { return store.servicesList ? JSON.parse(store.servicesList) : []; } catch(e) { return []; } })(),
+        dynamicServices: (function() {
+          try {
+            if (!store.servicesList) return [];
+            if (Array.isArray(store.servicesList)) return store.servicesList;
+            const parsed = JSON.parse(store.servicesList);
+            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+          } catch (e) {
+            return [];
+          }
+        })(),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.language_codes
           ? store.language_codes.split(",")
