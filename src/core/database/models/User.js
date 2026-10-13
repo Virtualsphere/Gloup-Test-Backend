@@ -398,6 +398,12 @@ appointments.init({
     type: DataTypes.BIGINT,
     allowNull: true,
   },
+  // Platform fee (rupees) charged to the customer on this booking.
+  platform_fee: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: false,
+    defaultValue: 3,
+  },
   status: {
     type: DataTypes.ENUM('booked', 'cancelled', 'completed', 'confirmed', 'refunded', 'pending'),
     allowNull: true,
@@ -457,6 +463,16 @@ appointment_items.init({
   },
   combo_id: {
     type: DataTypes.BIGINT,
+    allowNull: true,
+  },
+  // Service/combo list price and "important" flag at booking time, so CAC
+  // (list_amount - service_amount) doesn't drift when a salon edits prices.
+  list_amount: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+  },
+  is_important: {
+    type: DataTypes.BOOLEAN,
     allowNull: true,
   },
 }, {

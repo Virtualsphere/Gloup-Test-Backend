@@ -921,9 +921,7 @@ export const getPartnerInvoiceDaysV2 = respondV2((req) => Adminappmiddleware.app
 export const setPartnerPayoutFrequencyV2 = respondV2((req) => Adminappmiddleware.app.setPartnerPayoutFrequencyV2(req));
 export const payPartnerInvoicesV2 = respondV2((req) => Adminappmiddleware.app.payPartnerInvoicesV2(req));
 
-// Platform fee setting + monthly report V2.
-export const getPlatformFee = respondV2((req) => Adminappmiddleware.app.getPlatformFee(req));
-export const updatePlatformFee = respondV2((req) => Adminappmiddleware.app.updatePlatformFee(req));
+// Monthly report V2.
 export const getMonthlyReportSummaryV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSummaryV2(req));
 export const getMonthlyReportSalonsV2 = respondV2((req) => Adminappmiddleware.app.getMonthlyReportSalonsV2(req));
 export const getAnalyticsProfitabilityV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsProfitabilityV2(req));

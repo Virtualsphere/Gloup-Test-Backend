@@ -1741,7 +1741,9 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         discount_id: data?.coupon_id || null,
         discounted_amount: total,
         is_discounted: data?.is_discounted || false,
-        gst: 5
+        gst: 5,
+        // The legacy flow charges no platform fee (amount = subtotal + GST).
+        platform_fee: 0
 
       }, { transaction: transaction });
 
@@ -1766,12 +1768,20 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
       throw Error.InternalError();
     }
   },
+  // list_amount / is_important snapshot the list price at booking time (CAC).
   addserviceitems: async (data, id, item, amount, appointment_id, transaction) => {
     try {
+      const service = await userDbController.Models.StoreServices.findOne({
+        where: { id: item },
+        attributes: ["amount", "important"],
+        transaction
+      });
       return await userDbController.Models.appointment_items.create({
         appointment_id: appointment_id,
         service_id: item,
-        service_amount: amount
+        service_amount: amount,
+        list_amount: service ? service.amount : null,
+        is_important: service ? !!service.important : null
       }, { transaction: transaction })
     } catch (error) {
       throw Error.InternalError()
@@ -1779,10 +1789,16 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
   },
   addcomboitems: async (data, id, item, amount, appointment_id, transaction) => {
     try {
+      const combo = await userDbController.Models.Combo.findOne({
+        where: { id: item },
+        attributes: ["amount"],
+        transaction
+      });
       return await userDbController.Models.appointment_items.create({
         appointment_id: appointment_id,
         combo_id: item,
-        service_amount: amount
+        service_amount: amount,
+        list_amount: combo ? combo.amount : null
       }, { transaction: transaction })
     } catch (error) {
       throw Error.InternalError()
@@ -2462,7 +2478,7 @@ WHERE S.status = 'active'
     limit = 10,
     page = 1
   }) => {
-    const cacheKey = `nearby_v4_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const cacheKey = `nearby_v5_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2553,10 +2569,39 @@ LEFT JOIN (
 
 LEFT JOIN (
     SELECT ss.store_id, 
-           MIN(ss.discounted_amount) AS servicePrice, 
-           MIN(ss.service_name) AS serviceName,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN ss.important = 1 THEN
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount
+                 )
+               END
+               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
@@ -2626,7 +2671,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     search,
     userId = null
   }) => {
-    const cacheKey = `salons_v6_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const cacheKey = `salons_v7_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2727,10 +2772,39 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   LEFT JOIN (
     SELECT ss.store_id, 
-           MIN(ss.discounted_amount) AS servicePrice, 
-           MIN(ss.service_name) AS serviceName,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT('[', GROUP_CONCAT(JSON_OBJECT('name', ss.service_name, 'price', ss.amount, 'discountedPrice', ss.discounted_amount)), ']') AS servicesList
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN ss.important = 1 THEN
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount
+                 )
+               END
+               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices ss
     LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
     WHERE ss.status = 'active'
@@ -3044,7 +3118,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
     IFNULL(R.rating_avg, 0) AS rating,
     IFNULL(R.review_count, 0) AS reviewCount,
-    SS.min_price AS servicePrice,
+    COALESCE(SS.servicePrice, SS.min_price) AS servicePrice,
+    SS.serviceName,
+    SS.servicesList,
     C.categories,
 
     IF(F.store_id IS NULL, 0, 1) AS isFavorite,
@@ -3082,7 +3158,28 @@ END AS distance
 
   LEFT JOIN (
     SELECT store_id,
-           MIN(discounted_amount) AS min_price
+           MIN(discounted_amount) AS min_price,
+           MIN(CASE WHEN important = 1 THEN discounted_amount END) AS servicePrice,
+           SUBSTRING_INDEX(
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN service_name END
+               ORDER BY discounted_amount ASC SEPARATOR '||'
+             ), '||', 1
+           ) AS serviceName,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN
+                 JSON_OBJECT(
+                   'name', service_name,
+                   'price', amount,
+                   'discountedPrice', discounted_amount
+                 )
+               END
+               ORDER BY priority DESC, discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices
     WHERE status = 'active'
     GROUP BY store_id
@@ -3149,7 +3246,28 @@ END AS distance
   ) R ON R.store_id = S.id
   LEFT JOIN (
     SELECT store_id,
-           MIN(discounted_amount) AS min_price
+           MIN(discounted_amount) AS min_price,
+           MIN(CASE WHEN important = 1 THEN discounted_amount END) AS servicePrice,
+           SUBSTRING_INDEX(
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN service_name END
+               ORDER BY discounted_amount ASC SEPARATOR '||'
+             ), '||', 1
+           ) AS serviceName,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               CASE WHEN important = 1 THEN
+                 JSON_OBJECT(
+                   'name', service_name,
+                   'price', amount,
+                   'discountedPrice', discounted_amount
+                 )
+               END
+               ORDER BY priority DESC, discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList
     FROM StoreServices
     WHERE status = 'active'
     GROUP BY store_id
@@ -4015,7 +4133,7 @@ END AS distance
       }
       return await userDbController.Models.StoreServices.findAll({
         where,
-        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id", "fake_price"]
+        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id", "fake_price", "important"]
       });
     } catch (error) {
       console.error("getStoreServices ERROR:", error);

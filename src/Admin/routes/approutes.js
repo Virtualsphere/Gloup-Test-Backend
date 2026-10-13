@@ -122,8 +122,6 @@ import {
   getPartnerInvoiceDaysV2,
   setPartnerPayoutFrequencyV2,
   payPartnerInvoicesV2,
-  getPlatformFee,
-  updatePlatformFee,
   getMonthlyReportSummaryV2,
   getMonthlyReportSalonsV2,
   getAnalyticsProfitabilityV2,
@@ -355,8 +353,6 @@ approutes.post("/getInvoicePayoutPartnersV2", verifyadmin, getInvoicePayoutPartn
 approutes.post("/getPartnerInvoiceDaysV2", verifyadmin, getPartnerInvoiceDaysV2); // One salon's invoice days with payout status
 approutes.post("/setPartnerPayoutFrequencyV2", verifyadmin, setPartnerPayoutFrequencyV2); // Body: { store_ids, frequency: daily|weekly|monthly }
 approutes.post("/payPartnerInvoicesV2", verifyadmin, payPartnerInvoicesV2); // Mark a salon's due invoice days paid, oldest first (markInvoicePayout per day)
-approutes.post("/getplatformfee", verifyadmin, getPlatformFee); // Per-booking platform fee used by reports
-approutes.post("/updateplatformfee", verifyadmin, updatePlatformFee); // Body: { platform_fee } - rupees, 0-100000, 2 decimals
 approutes.post("/getMonthlyReportSummaryV2", verifyadmin, getMonthlyReportSummaryV2); // Month vs previous month totals: bookings, invoice value, payout, platform fee, GST, CAC, customers
 approutes.post("/getMonthlyReportSalonsV2", verifyadmin, getMonthlyReportSalonsV2); // Paginated per-salon monthly report: search, city, sort
 approutes.post("/getAnalyticsProfitabilityV2", verifyadmin, getAnalyticsProfitabilityV2); // Body: { from, to } - per-salon GMV, GloUp revenue, contribution, margin tier (+ previous window)

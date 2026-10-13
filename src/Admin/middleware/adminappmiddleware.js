@@ -64,7 +64,7 @@ async function resolveStoreTypeFromServicesProvidedFor(ids = []) {
 async function invalidateSalonListCaches() {
     try {
         if (!redisClient?.isOpen && !redisClient?.isReady) return;
-        const patterns = ["nearby_v4_*", "salons_v6_*"];
+        const patterns = ["nearby_v5_*", "salons_v7_*"];
         for (const pattern of patterns) {
             for await (const key of redisClient.scanIterator({
                 MATCH: pattern,
@@ -1277,24 +1277,6 @@ Adminappmiddleware.app = {
             throw Error.BadRequest("Invalid review request status");
         } catch (error) {
             throw Error.SomethingWentWrong("Failed to update review request");
-        }
-    },
-
-    getPlatformFee: async () => {
-        try {
-            return await adminDbController.app.getPlatformFee();
-        } catch (error) {
-            if (error instanceof ApplicationError) throw error;
-            throw Error.SomethingWentWrong("Failed to fetch platform fee");
-        }
-    },
-
-    updatePlatformFee: async ({ body }) => {
-        try {
-            return await adminDbController.app.updatePlatformFee(body || {});
-        } catch (error) {
-            if (error instanceof ApplicationError) throw error;
-            throw Error.SomethingWentWrong("Failed to update platform fee");
         }
     },
 

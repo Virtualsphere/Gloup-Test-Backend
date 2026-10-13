@@ -34,6 +34,16 @@ const CUSTOMER_NAME_MAX_LENGTH = 100;
 const PHONE_REGEX = /^[6-9]\d{9}$/; // Indian mobile numbers
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
+const normalizeGender = (value) => {
+    if (value == null) return null;
+    const g = String(value).trim().toLowerCase();
+    if (g === 'male' || g === 'm' || g === 'men') return 'male';
+    if (g === 'female' || g === 'f' || g === 'women') return 'female';
+    return null;
+};
+
+
+
 const badRequest = (message) => {
     const error = Error.BadRequest(message);
     error.status = 400;
@@ -1227,6 +1237,12 @@ userappmiddleware.user = {
                 customer_email,
             });
 
+            // 0b. Booker gender must be Male or Female on the user profile
+            const profile = await userDbController.app.getProfileV2(user.id);
+            if (!normalizeGender(profile?.gender)) {
+                throw badRequest("Please set your gender (Male or Female) before booking");
+            }
+
             // 1. Validation & Pre-calculations
             const serviceIds = (services || []).map(s => s.service_id);
             const comboIds = (combos || []).map(c => c.combo_id);
@@ -1355,6 +1371,7 @@ userappmiddleware.user = {
             }
 
             // Server is source of truth for tax/fees — do not trust client gst/platform_fee as rupees.
+            // The app adds the same fixed fee at checkout; it is stored on the booking.
             const GST_RATE = 0.05;
             const PLATFORM_FEE = 3;
             const gstAmount = Math.round(finalTotal * GST_RATE * 100) / 100;
@@ -1402,6 +1419,7 @@ userappmiddleware.user = {
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
                 gst: 5,
+                platform_fee: platformFeeAmount,
                 status: "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
@@ -1420,14 +1438,17 @@ userappmiddleware.user = {
                 items.push({
                     appointment_id: appointment.id,
                     service_id: s.id,
-                    service_amount: (s.discounted_amount > 0 ? s.discounted_amount : s.amount)
+                    service_amount: (s.discounted_amount > 0 ? s.discounted_amount : s.amount),
+                    list_amount: s.amount,
+                    is_important: !!s.important
                 });
             });
             dbCombos.forEach(c => {
                 items.push({
                     appointment_id: appointment.id,
                     combo_id: c.id,
-                    service_amount: c.amount
+                    service_amount: c.amount,
+                    list_amount: c.amount
                 });
             });
 
@@ -2936,8 +2957,13 @@ userappmiddleware.user = {
                 throw Error.SomethingWrong("name, gender, age and phone are required");
             }
 
+            const normalizedGender = normalizeGender(gender);
+            if (!normalizedGender) {
+                throw Error.BadRequest("Guest gender must be Male or Female");
+            }
+
             // const userId = 36; // Constant userId for testing
-            return await userDbController.app.addGuestDetails(body, user.id);
+            return await userDbController.app.addGuestDetails({ ...body, gender: normalizedGender }, user.id);
         } catch (error) {
             throw Error.SomethingWentWrong(error.message);
         }
@@ -2969,7 +2995,16 @@ userappmiddleware.user = {
                 throw Error.BadRequest("At least one field (name, gender, age, phone, status) is required for update");
             }
 
-            return await userDbController.app.updateGuestDetails(guestId, req.body, userId);
+            const updateBody = { ...req.body };
+            if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
+                const normalizedGender = normalizeGender(gender);
+                if (!normalizedGender) {
+                    throw Error.BadRequest("Guest gender must be Male or Female");
+                }
+                updateBody.gender = normalizedGender;
+            }
+
+            return await userDbController.app.updateGuestDetails(guestId, updateBody, userId);
         } catch (error) {
             if (error.status) throw error;
             throw Error.SomethingWentWrong(error.message);
@@ -3005,7 +3040,15 @@ userappmiddleware.user = {
                 throw Error.BadRequest("Invalid email format");
             }
 
-            const updateData = { firstname, lastname, email, phone, age, gender, dob, city, country, profilePic };
+            let normalizedGender = gender;
+            if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
+                normalizedGender = normalizeGender(gender);
+                if (!normalizedGender) {
+                    throw Error.BadRequest("Gender must be Male or Female");
+                }
+            }
+
+            const updateData = { firstname, lastname, email, phone, age, gender: normalizedGender, dob, city, country, profilePic };
 
             const success = await userDbController.app.updateProfileV2(user.id, updateData);
             if (!success) {
