@@ -1741,7 +1741,9 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
         discount_id: data?.coupon_id || null,
         discounted_amount: total,
         is_discounted: data?.is_discounted || false,
-        gst: 5
+        gst: 5,
+        // The legacy flow charges no platform fee (amount = subtotal + GST).
+        platform_fee: 0
 
       }, { transaction: transaction });
 
@@ -1766,12 +1768,20 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
       throw Error.InternalError();
     }
   },
+  // list_amount / is_important snapshot the list price at booking time (CAC).
   addserviceitems: async (data, id, item, amount, appointment_id, transaction) => {
     try {
+      const service = await userDbController.Models.StoreServices.findOne({
+        where: { id: item },
+        attributes: ["amount", "important"],
+        transaction
+      });
       return await userDbController.Models.appointment_items.create({
         appointment_id: appointment_id,
         service_id: item,
-        service_amount: amount
+        service_amount: amount,
+        list_amount: service ? service.amount : null,
+        is_important: service ? !!service.important : null
       }, { transaction: transaction })
     } catch (error) {
       throw Error.InternalError()
@@ -1779,10 +1789,16 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
   },
   addcomboitems: async (data, id, item, amount, appointment_id, transaction) => {
     try {
+      const combo = await userDbController.Models.Combo.findOne({
+        where: { id: item },
+        attributes: ["amount"],
+        transaction
+      });
       return await userDbController.Models.appointment_items.create({
         appointment_id: appointment_id,
         combo_id: item,
-        service_amount: amount
+        service_amount: amount,
+        list_amount: combo ? combo.amount : null
       }, { transaction: transaction })
     } catch (error) {
       throw Error.InternalError()
@@ -4117,7 +4133,7 @@ END AS distance
       }
       return await userDbController.Models.StoreServices.findAll({
         where,
-        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id", "fake_price"]
+        attributes: ["id", "service_name", "amount", "discounted_amount", "tier_discounts", "duration", "service_category", "store_id", "fake_price", "important"]
       });
     } catch (error) {
       console.error("getStoreServices ERROR:", error);

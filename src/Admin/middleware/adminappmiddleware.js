@@ -1280,24 +1280,6 @@ Adminappmiddleware.app = {
         }
     },
 
-    getPlatformFee: async () => {
-        try {
-            return await adminDbController.app.getPlatformFee();
-        } catch (error) {
-            if (error instanceof ApplicationError) throw error;
-            throw Error.SomethingWentWrong("Failed to fetch platform fee");
-        }
-    },
-
-    updatePlatformFee: async ({ body }) => {
-        try {
-            return await adminDbController.app.updatePlatformFee(body || {});
-        } catch (error) {
-            if (error instanceof ApplicationError) throw error;
-            throw Error.SomethingWentWrong("Failed to update platform fee");
-        }
-    },
-
     getMonthlyReportSummaryV2: async ({ body }) => {
         try {
             return await adminDbController.app.getMonthlyReportSummaryV2(body || {});

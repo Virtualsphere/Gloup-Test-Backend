@@ -22,10 +22,13 @@ import {
 } from "../../utils/excelParser.js";
 import { buildAppointmentDateTime, toIstDatePart } from "../../schema/formats.js";
 import {
-  accrueDue,
+  CYCLE_WAITING,
+  cycleAfterPayout,
   cycleFee,
+  deductibleOnDay,
   DEFAULT_FREE_BOOKING_LIMIT,
   MAX_FREE_BOOKING_LIMIT,
+  resolveCycle,
 } from "../../utils/partnerSubscriptionBilling.js";
 import { addDays, isValidDate, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 
@@ -84,10 +87,19 @@ const USER_LOGIN_METHOD_SQL = `
   END`;
 // Referral = signed up with someone's invite code (User.used_code).
 const USER_SOURCE_SQL = "CASE WHEN u.used_code IS NOT NULL AND u.used_code <> '' THEN 'referral' ELSE 'organic' END";
+// A booking counts toward a user's "total bookings" (users pages) when it was
+// paid, wasn't cancelled or refunded, and was placed on/after this date -
+// earlier bookings are left out of user totals on purpose (business rule).
+// `p` is the appointments alias prefix ("a." or "" for an unaliased table).
+const USER_BOOKINGS_COUNTED_FROM = "2026-06-11";
+const userCountedBookingSql = (p = "") =>
+  `${p}status NOT IN ('cancelled', 'refunded') AND ${p}created_at >= '${USER_BOOKINGS_COUNTED_FROM}'`;
 // Per-user paid-booking stats / session activity, joined as derived tables.
+// total_bookings follows userCountedBookingSql; completed_bookings and
+// last_booking_at stay all-time (Reviews V2's customer tag uses them).
 const USER_BOOKING_STATS_SQL = `
   SELECT user_id,
-    COUNT(*) AS total_bookings,
+    COALESCE(SUM(${userCountedBookingSql()}), 0) AS total_bookings,
     SUM(status = 'completed') AS completed_bookings,
     MAX(created_at) AS last_booking_at
   FROM appointments
@@ -161,13 +173,81 @@ const requireReviewIds = (data) => {
 // so no salon is listed twice.
 const SUB_LIST_MAX_LIMIT = 10000;
 const SUB_STATUSES = ["active", "due", "inactive", "pending"];
-// Status from stored columns: "due" = owes something now - a stored balance
-// or a due date that has passed (accrueDue would add a cycle for it).
+// Columns resolveCycle (partnerSubscriptionBilling.js) needs from a
+// PartnerManualSubscriptions row.
+const SUB_CYCLE_COLUMNS = `plan_amount, status, outstanding_due, next_due_date, activated_at,
+  renewal_booking_limit, cycle_state, cycle_start_date, charged_on, charged_from_appointment_id`;
+// A booking that counts toward a salon's renewal limit: paid and not
+// cancelled/refunded, by appointment day after the cycle started.
+// Expects aliases a (appointments) and p (PartnerManualSubscriptions).
+const SUB_COUNTED_BOOKING_SQL = `
+  a.payment_status IN ${PAID_PAYMENT_SQL}
+  AND a.status NOT IN ('cancelled', 'refunded')
+  AND DATE(a.booking_date) > p.cycle_start_date`;
+// Per waiting salon, its counted bookings up to :today: how many and the
+// latest appointment day. The fee is owed once count > renewal limit and
+// the latest is on/after the renewal date (the latest booking then always
+// meets both - see resolveCycle).
+const SUB_CYCLE_STATS_SQL = `
+  SELECT p.store_id, COUNT(a.id) AS cycle_bookings, MAX(DATE(a.booking_date)) AS cycle_last_booking
+  FROM PartnerManualSubscriptions p
+  INNER JOIN appointments a ON a.store_id = p.store_id
+    AND ${SUB_COUNTED_BOOKING_SQL}
+    AND DATE(a.booking_date) <= :today
+  WHERE p.status = 'active' AND p.cycle_state = 'waiting'
+  GROUP BY p.store_id`;
+// renewal_booking_limit from a request: undefined when not given, else a
+// whole number 0..MAX_FREE_BOOKING_LIMIT.
+const parseRenewalBookingLimit = (value) => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 0 || limit > MAX_FREE_BOOKING_LIMIT) {
+    throw Error.BadRequest(`renewal_booking_limit must be a whole number between 0 and ${MAX_FREE_BOOKING_LIMIT}`);
+  }
+  return limit;
+};
+// The billing-cycle columns a payout can change; snapshotted on each payout
+// (InvoicePayouts.subscription_state_before) so Undo restores them exactly.
+const SUB_CYCLE_STATE_FIELDS = [
+  "cycle_state", "outstanding_due", "next_due_date", "cycle_start_date",
+  "charged_on", "charged_from_appointment_id",
+];
+// A cycle column as stored, with DATE columns as "YYYY-MM-DD".
+const subStateValue = (sub, field) => {
+  const value = sub[field] ?? null;
+  return value !== null && ["next_due_date", "cycle_start_date", "charged_on"].includes(field)
+    ? dayString(value)
+    : value;
+};
+// An invoice's lines summed per appointment, in invoice order - the shape
+// deductibleOnDay takes: [{ appointment_id, amount }].
+const invoiceAppointments = (items) => {
+  const byId = new Map();
+  for (const item of items) {
+    const id = Number(item.appointment_id);
+    byId.set(id, (byId.get(id) || 0) + (Number(item.amount) || 0));
+  }
+  return [...byId].map(([appointment_id, amount]) => ({ appointment_id, amount }));
+};
+// What the pages are told about a subscription's billing cycle.
+const subscriptionCycleView = (cycle) => (cycle ? {
+  state: cycle.state, // "collecting" | "waiting"
+  renewal_booking_limit: cycle.limit,
+  bookings_in_cycle: cycle.counted, // counted bookings so far, while waiting
+  renewal_date: cycle.state === CYCLE_WAITING ? cycle.renewalDate : null,
+  charged_on: cycle.chargedOn,
+  newly_charged: cycle.newlyCharged,
+} : null);
+// Status: "due" = owes something now - a balance being collected, or a
+// waiting cycle whose limit and renewal date have both been reached.
 const SUB_STATUS_SQL = `
   CASE
     WHEN x.kind = 'pending' THEN 'pending'
     WHEN x.sub_status <> 'active' THEN 'inactive'
-    WHEN x.outstanding_due > 0 OR x.next_due_date <= :today THEN 'due'
+    WHEN x.outstanding_due > 0
+      OR (x.cycle_state = 'waiting'
+        AND COALESCE(cy.cycle_bookings, 0) > x.renewal_booking_limit
+        AND cy.cycle_last_booking >= x.next_due_date) THEN 'due'
     ELSE 'active'
   END`;
 const SUB_LIST_SORTS = {
@@ -247,22 +327,28 @@ const INVOICE_DAY_STATUS_SQL = `
   END`;
 
 // ── Monthly report V2 (MonthlyReportV2 page) ──
-// Per-booking platform fee customers pay (AdminSettings.platform_fee). The
-// fallback matches what createOrderV2 charges today.
-const DEFAULT_PLATFORM_FEE = 3;
-const MAX_PLATFORM_FEE = 100000;
 const REPORT_MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
 const MONTHLY_REPORT_MAX_LIMIT = 10000;
 // A booking counts once it's paid; "active" = paid and not cancelled/refunded
 // (what the customer was actually served and charged for).
 const PAID_BOOKING_SQL = `a.payment_status IN ${PAID_PAYMENT_SQL}`;
+// Platform fee the customer paid on appointment `a`, as stored at booking
+// time (bookings before the column existed were set to Rs 3).
+const PLATFORM_FEE_SQL = "COALESCE(a.platform_fee, 0)";
 const ACTIVE_BOOKING_SQL = `${PAID_BOOKING_SQL} AND a.status NOT IN ('cancelled', 'refunded')`;
-// Discount Gloup funds on an item - the invoice's "Acquisition Cost" and the
-// dashboard's CAC (0 for important services).
+// Discount Gloup funds on an item - the dashboard / monthly report / analytics
+// CAC (0 for important services). List price and important flag come from the
+// booking-time snapshot on appointment_items, so later price edits don't
+// rewrite past CAC; the live StoreServices / Combo values are only a fallback
+// for rows the snapshot couldn't fill. (The invoice page's "Acquisition Cost"
+// still uses live prices - see getInvoiceDetailsForPartner.)
 const ITEM_CAC_SQL = `
   CASE
-    WHEN ss.id IS NOT NULL THEN IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
-    WHEN cb.id IS NOT NULL THEN GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
+    WHEN ss.id IS NOT NULL THEN
+      IF(COALESCE(ai.is_important, ss.important) = 1, 0,
+        GREATEST(0, COALESCE(ai.list_amount, ss.amount) - COALESCE(ai.service_amount, 0)))
+    WHEN cb.id IS NOT NULL THEN
+      GREATEST(0, COALESCE(ai.list_amount, cb.amount) - COALESCE(ai.service_amount, 0))
     ELSE 0
   END`;
 const MONTHLY_REPORT_SORTS = {
@@ -305,6 +391,8 @@ const MONTHLY_BOOKINGS_SQL = `
     SUM(a.status = 'completed') AS completed,
     SUM(a.status IN ('cancelled', 'refunded')) AS cancelled,
     SUM(a.status NOT IN ('cancelled', 'refunded')) AS active_bookings,
+    COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
+      THEN ${PLATFORM_FEE_SQL} END), 0) AS platform_fee,
     COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded')
       THEN ROUND(a.discounted_amount * COALESCE(a.gst, 0) / 100, 2) END), 0) AS gst,
     COUNT(DISTINCT CASE WHEN a.status NOT IN ('cancelled', 'refunded') THEN a.user_id END) AS customers,
@@ -864,7 +952,8 @@ adminDbController.app = {
               COALESCE(SUM(u.registered_at IS NULL), 0) AS unknown_join_date
             FROM User u
           `),
-          run(`SELECT COUNT(DISTINCT user_id) AS booked_users FROM appointments WHERE payment_status IN ${PAID_PAYMENT_SQL}`),
+          run(`SELECT COUNT(DISTINCT user_id) AS booked_users FROM appointments
+               WHERE payment_status IN ${PAID_PAYMENT_SQL} AND ${userCountedBookingSql()}`),
           run(
             `SELECT DATE_FORMAT(registered_at, '%Y-%m-%d') AS day, COUNT(*) AS users
              FROM User WHERE registered_at >= :dailyFrom
@@ -982,6 +1071,7 @@ adminDbController.app = {
             a.id, a.created_at,
             DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS booking_date,
             a.status, a.payment_status, a.is_wallet,
+            (${userCountedBookingSql("a.")}) AS counted,
             a.amount AS list_price,
             a.discounted_amount AS amount,
             ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
@@ -1041,6 +1131,8 @@ adminDbController.app = {
           amount_paid: money(row.amount_paid),
           savings: money(row.savings),
           is_wallet: !!row.is_wallet,
+          // Counts toward the user's total bookings (userCountedBookingSql).
+          counted: !!Number(row.counted),
           salon_image: firstImage(images),
           services: split(row.services),
           service_categories: split(row.service_categories),
@@ -1063,7 +1155,9 @@ adminDbController.app = {
           last_active_at: sessions?.last_active_at || null,
         },
         summary: {
-          total_bookings: bookings.length,
+          // Paid, not cancelled/refunded, placed from 2026-06-11; the bookings
+          // list below still holds every paid booking.
+          total_bookings: count((b) => b.counted),
           upcoming: count((b) => b.upcoming),
           completed: completed.length,
           cancelled: count((b) => b.status === "cancelled"),
@@ -1596,12 +1690,21 @@ adminDbController.app = {
   //   bookings        paid appointments (payment_status success/sucssess —
   //                   same rule as Store.total_booking_count), by booking_date
   //   cancellations   of those, the ones later cancelled or refunded
-  //   revenue         SUM(discounted_amount) of completed appointments —
-  //                   same basis as the V1 dashboard's total_sales
-  //   cac_spend       the discount Gloup funds per booking: StoreServices
-  //                   price minus what the customer was charged, 0 for
-  //                   "important" services — exactly the invoice's
-  //                   "Acquisition Cost" column (getInvoiceDetailsForPartner)
+  //   revenue         Gloup's own revenue = platform_fee_revenue +
+  //                   subscription_revenue
+  //   platform_fee_revenue  the platform fee customers paid on bookings that
+  //                   weren't cancelled/refunded (refunds return the fee), by
+  //                   booking_date (appointments.platform_fee)
+  //   subscription_revenue  manual subscription fees (incl. 18% GST) actually
+  //                   collected, i.e. deducted from payouts, by when the
+  //                   payout was marked paid — the subscriptions page's
+  //                   "collected"
+  //   gmv             SUM(discounted_amount) of completed appointments —
+  //                   same basis as the V1 dashboard's total_sales (what
+  //                   `revenue` used to be; not shown until GMV is defined)
+  //   cac_spend       the discount Gloup funds per booking: list price at
+  //                   booking time minus what the customer was charged, 0
+  //                   for "important" services (ITEM_CAC_SQL)
   //   checkout_dropoffs  appointments whose payment failed/expired
   //                   (payment_status 'failed'), by created_at
   //   total_users / total_partners / active_subscriptions
@@ -1621,13 +1724,14 @@ adminDbController.app = {
           type: Sequelize.QueryTypes.SELECT,
         });
 
-      const [bookingRows, cacRows, dropoffRows, userRows, partnerRows, subscriptionRows] =
+      const [bookingRows, cacRows, dropoffRows, userRows, partnerRows, subscriptionRows, collectedRows] =
         await Promise.all([
           run(`
             SELECT r.k,
               COUNT(a.id) AS bookings,
               COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancellations,
-              COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS revenue
+              COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS gmv,
+              COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded') THEN ${PLATFORM_FEE_SQL} END), 0) AS platform_fee_revenue
             FROM (${rangesSql}) r
             LEFT JOIN appointments a
               ON a.booking_date >= r.f AND a.booking_date < r.e
@@ -1637,15 +1741,7 @@ adminDbController.app = {
           run(`
             SELECT r.k,
               COUNT(DISTINCT a.id) AS cac_bookings,
-              COALESCE(SUM(
-                CASE
-                  WHEN ss.id IS NOT NULL THEN
-                    IF(ss.important = 1, 0, GREATEST(0, ss.amount - COALESCE(ai.service_amount, 0)))
-                  WHEN cb.id IS NOT NULL THEN
-                    GREATEST(0, cb.amount - COALESCE(ai.service_amount, 0))
-                  ELSE 0
-                END
-              ), 0) AS cac_spend
+              COALESCE(SUM(${ITEM_CAC_SQL}), 0) AS cac_spend
             FROM (${rangesSql}) r
             LEFT JOIN appointments a
               ON a.booking_date >= r.f AND a.booking_date < r.e
@@ -1699,6 +1795,17 @@ adminDbController.app = {
                 WHERE pms.activated_at >= DATE(r.fr) AND pms.activated_at <= r.d) AS new_subscriptions
             FROM (${rangesSql}) r
           `),
+          // Subscription fees collected (deducted from payouts), by paid_at -
+          // same rule as getManualSubscriptionsSummaryV2's "collected", but
+          // from the go-live cutoff like the rest of revenue.
+          run(`
+            SELECT r.k,
+              COALESCE(SUM(ip.subscription_deducted), 0) AS subscription_revenue
+            FROM (${rangesSql}) r
+            LEFT JOIN InvoicePayouts ip
+              ON ip.paid_at >= r.f AND ip.paid_at < r.e AND ip.subscription_deducted > 0
+            GROUP BY r.k
+          `),
         ]);
 
       const byKey = (rows) => new Map(rows.map((row) => [row.k, row]));
@@ -1708,6 +1815,7 @@ adminDbController.app = {
       const users = byKey(userRows);
       const partners = byKey(partnerRows);
       const subscriptions = byKey(subscriptionRows);
+      const collected = byKey(collectedRows);
       const num = (v) => Number(v) || 0;
       const money = (v) => Number(num(v).toFixed(2));
 
@@ -1719,10 +1827,13 @@ adminDbController.app = {
         const u = users.get(r.key) || {};
         const p = partners.get(r.key) || {};
         const s = subscriptions.get(r.key) || {};
+        const sc = collected.get(r.key) || {};
         // Appointment/store metrics for a range wholly before go-live are
         // unknown, not zero.
         const gated = (v) => (r.beforeDataStart ? null : v);
         const cacBookings = num(c.cac_bookings);
+        const feeRevenue = money(b.platform_fee_revenue);
+        const subscriptionRevenue = money(sc.subscription_revenue);
 
         result[r.key] = {
           from: r.from,
@@ -1730,7 +1841,10 @@ adminDbController.app = {
           data_from: r.beforeDataStart ? null : r.dataFrom,
           bookings: gated(num(b.bookings)),
           cancellations: gated(num(b.cancellations)),
-          revenue: gated(money(b.revenue)),
+          revenue: gated(money(feeRevenue + subscriptionRevenue)),
+          platform_fee_revenue: gated(feeRevenue),
+          subscription_revenue: gated(subscriptionRevenue),
+          gmv: gated(money(b.gmv)),
           cac_spend: gated(money(c.cac_spend)),
           cac_bookings: gated(cacBookings),
           cac_per_booking: gated(cacBookings ? money(num(c.cac_spend) / cacBookings) : null),
@@ -1764,7 +1878,7 @@ adminDbController.app = {
   //                      cutoff. Amount is the invoice gross, before any
   //                      subscription deduction.
   //   subscription_dues  what active manual subscriptions owe right now
-  //                      (same accrueDue maths as the invoice page)
+  //                      (resolveSubscriptionCycles, as on the invoice page)
   //   checkout_dropoffs  failed/expired payments created today
   getDashboardV2Alerts: async (data = {}) => {
     try {
@@ -1832,7 +1946,7 @@ adminDbController.app = {
           ),
         adminDbController.connection.query(
           `
-          SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
+          SELECT store_id, ${SUB_CYCLE_COLUMNS}
           FROM PartnerManualSubscriptions
           WHERE status = 'active'
           `,
@@ -1849,7 +1963,8 @@ adminDbController.app = {
       ]);
 
       const overdueAmount = overdueRows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
-      const dues = subs.map((sub) => accrueDue(sub, today).due).filter((due) => due > 0);
+      const cycles = await adminDbController.app.resolveSubscriptionCycles(subs, today);
+      const dues = [...cycles.values()].map((cycle) => cycle.due).filter((due) => due > 0);
 
       return {
         date: today,
@@ -3917,13 +4032,17 @@ getBookingsDetailsById: async (data) => {
           a.razorpay_id,
           a.payment_status,
           a.payment_id,
+          a.amount AS booking_amount,
+          a.discounted_amount AS booking_subtotal,
+          a.platform_fee AS booking_platform_fee,
 
           ai.id AS appointment_item_id,
-          ss.id AS service_id,
-          ss.service_name,
-          ss.amount,
-          ss.discounted_amount,
-          (ss.amount - ss.discounted_amount) AS subtotal
+          ai.service_amount AS item_charged,
+          ai.service_id,
+          COALESCE(ss.service_name, 'Deleted service') AS service_name,
+          ai.combo_id,
+          COALESCE(cb.combo, 'Deleted combo') AS combo_name,
+          COALESCE(ai.list_amount, ss.amount, cb.amount, ai.service_amount) AS item_list_price
 
       FROM appointments a
       INNER JOIN User c ON a.user_id = c.id
@@ -3932,7 +4051,9 @@ getBookingsDetailsById: async (data) => {
       INNER JOIN PartnerAddress f ON d.address_id = f.id
       LEFT JOIN appointment_items ai ON a.id = ai.appointment_id
       LEFT JOIN StoreServices ss ON ai.service_id = ss.id
+      LEFT JOIN Combo cb ON ai.combo_id = cb.id
       WHERE a.id = :id
+      ORDER BY ai.id
     `;
 
     const rows = await adminDbController.connection.query(query, {
@@ -3961,50 +4082,45 @@ getBookingsDetailsById: async (data) => {
       appointment_items: [],
     };
 
-    let totalAmount = 0;
-    let totalDiscount = 0;
+    // Billing comes only from what the booking stored, never from the
+    // service's current prices (those change later and would rewrite old
+    // bookings):
+    //   items_total      sum of what each item was charged (pre-coupon)
+    //   coupon_discount  items_total - appointments.discounted_amount
+    //   taxable_amount   appointments.discounted_amount (after coupon)
+    //   gst_amount       taxable_amount x appointments.gst % (always 5)
+    //   platform_fee     appointments.platform_fee
+    //   payable_amount   appointments.amount - what Razorpay charged
+    const money = (v) => Number((Number(v) || 0).toFixed(2));
+    let itemsTotal = 0;
 
     rows.forEach((row) => {
-      if (row.service_id) {
-        const serviceSubtotal =
-          Number(row.amount) - Number(row.discounted_amount);
+      if (!row.service_id && !row.combo_id) return;
+      const listPrice = money(row.item_list_price);
+      const charged = money(row.item_charged);
+      itemsTotal += charged;
 
-        totalAmount += serviceSubtotal;
-        totalDiscount += Number(row.discounted_amount);
-
-        booking.appointment_items.push({
-          appointment_item_id: row.appointment_item_id,
-          service_id: row.service_id,
-          service_name: row.service_name,
-          service_amount: Number(row.amount),
-          service_discount_amount: Number(row.discounted_amount),
-          service_subtotal: serviceSubtotal,
-        });
-      }
+      booking.appointment_items.push({
+        appointment_item_id: row.appointment_item_id,
+        service_id: row.service_id || null,
+        combo_id: row.service_id ? null : row.combo_id,
+        service_name: row.service_id ? row.service_name : row.combo_name,
+        list_amount: listPrice,
+        item_discount: money(Math.max(0, listPrice - charged)),
+        charged_amount: charged,
+      });
     });
 
-    // Use 5% GST when gst is 0 or null
-    const gstRate =
-      rows[0].gst && Number(rows[0].gst) > 0
-        ? Number(rows[0].gst)
-        : 5;
+    const gstRate = Number(rows[0].gst) > 0 ? Number(rows[0].gst) : 5;
+    const taxable = money(rows[0].booking_subtotal);
 
-    // GST on total service amount after discounts
-    const gstAmount = Number(
-      ((totalAmount * gstRate) / 100).toFixed(2)
-    );
-
-    // Total amount + GST
-    const subtotalAmount = Number(
-      (totalAmount + gstAmount).toFixed(2)
-    );
-
+    booking.items_total = money(itemsTotal);
+    booking.coupon_discount = money(Math.max(0, itemsTotal - taxable));
+    booking.taxable_amount = taxable;
     booking.gst_rate = gstRate;
-    booking.total_amount = Number(totalAmount.toFixed(2));
-    booking.discount_amount = Number(totalDiscount.toFixed(2));
-    booking.gst_amount = gstAmount;
-    booking.subtotal_amount = Number(rows[0].amount || 0);
-    booking.payable_amount = subtotalAmount;
+    booking.gst_amount = money((taxable * gstRate) / 100);
+    booking.platform_fee = money(rows[0].booking_platform_fee);
+    booking.payable_amount = money(rows[0].booking_amount);
 
     return booking;
   } catch (error) {
@@ -6963,29 +7079,32 @@ verifypartnerdetails: async (data) => {
 
       // Read-only preview of what a manual subscription deduction WOULD be
       // if this day's payout were marked paid right now. Nothing is
-      // mutated here — markInvoicePayout does the actual accrual commit.
+      // mutated here — markInvoicePayout commits the same calculation.
       //
-      // totalDue is EVERYTHING currently owed (can span multiple stacked
-      // cycles, see accrueDue) — it is NOT what comes out of this one
-      // invoice. Only min(totalDue, thisInvoiceGross) can ever be deducted
-      // from a single day; whatever's left over is remainingDebt, carried
-      // forward to be deducted from future invoices.
+      // totalDue is everything owed on this day (the fee being collected,
+      // or one just charged by this cycle's bookings - see resolveCycle);
+      // only the part of this day's invoice the fee may come from
+      // (deductibleOnDay) can be deducted, the rest is remainingDebt.
+      const grossAmount = Number(total.toFixed(2));
       let totalDue = 0;
+      let deductionToday = 0;
       let subscriptionPlanAmount = null;
       let subscriptionGstAmount = null;
+      let subscriptionCycle = null;
       const sub = await adminDbController.app.getActiveManualSubscription(data.partner_id);
       if (sub) {
-        totalDue = accrueDue(sub, invoiceDate).due;
-        // Per-cycle breakdown (plan + GST), for display next to the
-        // deduction — totalDue can be a multiple of this if more than one
-        // cycle stacked up (see accrueDue).
+        const cycle = (await adminDbController.app.resolveSubscriptionCycles([sub], invoiceDate)).get(sub.store_id);
+        totalDue = cycle.due;
+        deductionToday = Number(
+          Math.min(totalDue, deductibleOnDay(cycle, invoiceDate, invoiceAppointments(items))).toFixed(2)
+        );
+        subscriptionCycle = subscriptionCycleView(cycle);
+        // One cycle's fee (plan + GST), for display next to the deduction.
         subscriptionPlanAmount = Number(sub.plan_amount);
         subscriptionGstAmount = Number(
           (cycleFee(sub.plan_amount) - subscriptionPlanAmount).toFixed(2)
         );
       }
-      const grossAmount = Number(total.toFixed(2));
-      const deductionToday = Number(Math.min(totalDue, grossAmount).toFixed(2));
       const remainingDebt = Number((totalDue - deductionToday).toFixed(2));
 
       return {
@@ -7011,6 +7130,7 @@ verifypartnerdetails: async (data) => {
         subscription_remaining_debt: remainingDebt,
         subscription_plan_amount: subscriptionPlanAmount,
         subscription_gst_amount: subscriptionGstAmount,
+        subscription_cycle: subscriptionCycle,
         net_payout_preview: Number((grossAmount - deductionToday).toFixed(2)),
         payout_status: payout ? "completed" : "pending",
         payout_amount: payout ? Number(payout.amount || 0) : null,
@@ -7031,7 +7151,7 @@ verifypartnerdetails: async (data) => {
     try {
       const rows = await adminDbController.connection.query(
         `
-        SELECT id, store_id, plan_amount, status, outstanding_due, next_due_date, activated_at
+        SELECT id, store_id, ${SUB_CYCLE_COLUMNS}
         FROM PartnerManualSubscriptions
         WHERE store_id = :storeId AND status = 'active'
         LIMIT 1
@@ -7046,6 +7166,40 @@ verifypartnerdetails: async (data) => {
       console.log("🚀 ~ getActiveManualSubscription error:", error);
       throw Error.SomethingWentWrong("Failed to fetch partner subscription");
     }
+  },
+
+  // Counted bookings (SUB_COUNTED_BOOKING_SQL) of the given salons' WAITING
+  // cycles, up to `day`, in invoice order: store_id -> [{ id, date }].
+  getSubscriptionCycleBookings: async (storeIds, day) => {
+    const map = new Map();
+    if (!storeIds.length) return map;
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT a.store_id, a.id, DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS day
+      FROM appointments a
+      INNER JOIN PartnerManualSubscriptions p ON p.store_id = a.store_id
+      LEFT JOIN Slots sl ON sl.id = a.slot_id
+      WHERE p.store_id IN (:storeIds) AND p.cycle_state = 'waiting'
+        AND ${SUB_COUNTED_BOOKING_SQL}
+        AND DATE(a.booking_date) <= :day
+      ORDER BY a.store_id, a.booking_date ASC, sl.\`from\` ASC, a.id ASC
+      `,
+      { replacements: { storeIds, day }, type: Sequelize.QueryTypes.SELECT }
+    );
+    for (const row of rows) {
+      if (!map.has(row.store_id)) map.set(row.store_id, []);
+      map.get(row.store_id).push({ id: row.id, date: row.day });
+    }
+    return map;
+  },
+
+  // Where each active subscription's billing cycle stands on `day`
+  // (resolveCycle): store_id -> cycle. One bookings query for all of them.
+  resolveSubscriptionCycles: async (subs, day) => {
+    const active = subs.filter((sub) => sub.status === undefined || sub.status === "active");
+    const waitingIds = active.filter((sub) => sub.cycle_state === CYCLE_WAITING).map((sub) => sub.store_id);
+    const bookings = await adminDbController.app.getSubscriptionCycleBookings(waitingIds, day);
+    return new Map(active.map((sub) => [sub.store_id, resolveCycle(sub, bookings.get(sub.store_id) || [])]));
   },
 
   // Mark a partner's daily invoice as paid out. Idempotent upsert keyed on
@@ -7074,39 +7228,46 @@ verifypartnerdetails: async (data) => {
       let subscriptionDeducted = 0;
       let outstandingBefore = null;
       let nextDueBefore = null;
+      let stateBefore = null;
 
+      // Same calculation as the preview in getInvoiceDetailsForPartner, then
+      // the cycle moves on (cycleAfterPayout): still collecting, or paid off
+      // on this invoice day and waiting for the next renewal.
       const sub = await adminDbController.app.getActiveManualSubscription(data.partner_id);
       if (sub) {
         outstandingBefore = Number(sub.outstanding_due) || 0;
         nextDueBefore = sub.next_due_date;
+        stateBefore = JSON.stringify(Object.fromEntries(
+          SUB_CYCLE_STATE_FIELDS.map((field) => [field, subStateValue(sub, field)])
+        ));
 
-        const { due, nextDue } = accrueDue(sub, invoiceDate);
-        subscriptionDeducted = Number(Math.min(due, invoice.total_amount).toFixed(2));
-        const remainingDue = Number((due - subscriptionDeducted).toFixed(2));
+        const cycle = (await adminDbController.app.resolveSubscriptionCycles([sub], invoiceDate)).get(sub.store_id);
+        const deductible = deductibleOnDay(cycle, invoiceDate, invoiceAppointments(invoice.items));
+        subscriptionDeducted = Number(Math.min(cycle.due, deductible).toFixed(2));
         payoutAmount = Number((invoice.total_amount - subscriptionDeducted).toFixed(2));
 
-        await adminDbController.connection.query(
-          `UPDATE PartnerManualSubscriptions SET outstanding_due = :remainingDue, next_due_date = :nextDue WHERE id = :id`,
-          {
-            replacements: { remainingDue, nextDue, id: sub.id },
-            type: Sequelize.QueryTypes.UPDATE,
-          }
-        );
+        const next = cycleAfterPayout(cycle, invoiceDate, subscriptionDeducted);
+        if (next) {
+          await adminDbController.app.setSubscriptionCycleState(sub.id, next);
+        }
       }
 
       await adminDbController.connection.query(
         `
         INSERT INTO InvoicePayouts
-          (store_id, invoice_date, amount, marked_by, paid_at, subscription_deducted, subscription_outstanding_before, subscription_next_due_before)
+          (store_id, invoice_date, amount, marked_by, paid_at, subscription_deducted,
+           subscription_outstanding_before, subscription_next_due_before, subscription_state_before)
         VALUES
-          (:partnerId, :invoiceDate, :amount, :markedBy, NOW(), :subscriptionDeducted, :outstandingBefore, :nextDueBefore)
+          (:partnerId, :invoiceDate, :amount, :markedBy, NOW(), :subscriptionDeducted,
+           :outstandingBefore, :nextDueBefore, :stateBefore)
         ON DUPLICATE KEY UPDATE
           amount = VALUES(amount),
           marked_by = VALUES(marked_by),
           paid_at = NOW(),
           subscription_deducted = VALUES(subscription_deducted),
           subscription_outstanding_before = VALUES(subscription_outstanding_before),
-          subscription_next_due_before = VALUES(subscription_next_due_before)
+          subscription_next_due_before = VALUES(subscription_next_due_before),
+          subscription_state_before = VALUES(subscription_state_before)
         `,
         {
           replacements: {
@@ -7117,6 +7278,7 @@ verifypartnerdetails: async (data) => {
             subscriptionDeducted,
             outstandingBefore,
             nextDueBefore,
+            stateBefore,
           },
           type: Sequelize.QueryTypes.INSERT,
         }
@@ -7133,13 +7295,25 @@ verifypartnerdetails: async (data) => {
     }
   },
 
+  // Writes a subscription's billing-cycle columns (only the SUB_CYCLE_STATE_FIELDS
+  // present in `state`).
+  setSubscriptionCycleState: async (subscriptionId, state) => {
+    const fields = SUB_CYCLE_STATE_FIELDS.filter((field) => field in state);
+    if (!fields.length) return;
+    await adminDbController.connection.query(
+      `UPDATE PartnerManualSubscriptions SET ${fields.map((f) => `${f} = :${f}`).join(", ")} WHERE id = :id`,
+      { replacements: { ...state, id: subscriptionId }, type: Sequelize.QueryTypes.UPDATE }
+    );
+  },
+
   // Revert a payout (admin mis-click). Deleting a non-existent row is a
-  // no-op, so this is safe to call idempotently. If that payout had
-  // deducted a manual subscription fee, restores the subscription's
-  // outstanding_due/next_due_date back to their exact pre-deduction
-  // snapshot — correct as long as this is undoing the most recent
-  // subscription-affecting payout for that partner (the normal "oops,
-  // undo my last click" use case this button serves).
+  // no-op, so this is safe to call idempotently. If the partner has a
+  // subscription, puts its billing cycle back exactly as it was before this
+  // payout (subscription_state_before) — correct as long as this is undoing
+  // the most recent subscription-affecting payout for that partner (the
+  // normal "oops, undo my last click" use case this button serves).
+  // Payouts marked before booking cycles existed have no snapshot; for those
+  // the deducted amount is simply owed again.
   undoInvoicePayout: async (data) => {
     try {
       if (!data.partner_id) {
@@ -7150,7 +7324,7 @@ verifypartnerdetails: async (data) => {
 
       const existingRows = await adminDbController.connection.query(
         `
-        SELECT subscription_deducted, subscription_outstanding_before, subscription_next_due_before
+        SELECT subscription_deducted, subscription_state_before
         FROM InvoicePayouts
         WHERE store_id = :partnerId AND invoice_date = :invoiceDate
         LIMIT 1
@@ -7161,16 +7335,25 @@ verifypartnerdetails: async (data) => {
         }
       );
       const existing = existingRows[0];
+      const subRows = existing
+        ? await adminDbController.connection.query(
+          `SELECT id FROM PartnerManualSubscriptions WHERE store_id = :partnerId LIMIT 1`,
+          { replacements: { partnerId: data.partner_id }, type: Sequelize.QueryTypes.SELECT }
+        )
+        : [];
 
-      if (existing && Number(existing.subscription_deducted) > 0) {
+      if (subRows[0] && existing.subscription_state_before) {
+        await adminDbController.app.setSubscriptionCycleState(
+          subRows[0].id,
+          JSON.parse(existing.subscription_state_before)
+        );
+      } else if (subRows[0] && Number(existing.subscription_deducted) > 0) {
         await adminDbController.connection.query(
-          `UPDATE PartnerManualSubscriptions SET outstanding_due = :outstandingBefore, next_due_date = :nextDueBefore WHERE store_id = :partnerId`,
+          `UPDATE PartnerManualSubscriptions
+           SET outstanding_due = outstanding_due + :deducted, cycle_state = 'collecting'
+           WHERE id = :id`,
           {
-            replacements: {
-              outstandingBefore: existing.subscription_outstanding_before,
-              nextDueBefore: existing.subscription_next_due_before,
-              partnerId: data.partner_id,
-            },
+            replacements: { deducted: Number(existing.subscription_deducted), id: subRows[0].id },
             type: Sequelize.QueryTypes.UPDATE,
           }
         );
@@ -7229,7 +7412,8 @@ verifypartnerdetails: async (data) => {
       return await adminDbController.connection.query(
         `
         SELECT pms.id, pms.store_id, d.name AS partner_name, d.phone AS partner_phone,
-               pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date, pms.activated_at
+               pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date, pms.activated_at,
+               pms.renewal_booking_limit, pms.cycle_state, pms.cycle_start_date
         FROM PartnerManualSubscriptions pms
         INNER JOIN Store d ON d.id = pms.store_id
         ORDER BY pms.status ASC, pms.activated_at DESC
@@ -7242,12 +7426,13 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // Creates (or reactivates) a partner's manual subscription. The first
-  // cycle's fee becomes due immediately — next_due_date = today, so the very
-  // next accrueDue() call (preview or a Payout click) picks it up.
-  // Reactivating keeps outstanding_due: whatever the partner still owed when
-  // it was deactivated is carried over on top of the new cycle (until
-  // 2026-10 it was reset to 0, silently writing the debt off).
+  // Creates (or reactivates / renews) a partner's manual subscription. The
+  // first fee is charged immediately: it is added to outstanding_due and
+  // deducted from invoice days from today on, then the booking cycles take
+  // over (partnerSubscriptionBilling.js). Reactivating keeps outstanding_due:
+  // whatever the partner still owed is carried over on top of the new fee.
+  // renewal_booking_limit (free bookings per cycle) defaults to the salon's
+  // current one, else the free_booking_limit setting.
   assignManualPartnerSubscription: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
@@ -7255,22 +7440,43 @@ verifypartnerdetails: async (data) => {
       if (!planAmount || planAmount <= 0) {
         throw Error.BadRequest("plan_amount must be a positive number");
       }
+      let renewalLimit = parseRenewalBookingLimit(data.renewal_booking_limit);
+      if (renewalLimit === undefined) {
+        const [existing] = await adminDbController.connection.query(
+          `SELECT renewal_booking_limit FROM PartnerManualSubscriptions WHERE store_id = :storeId LIMIT 1`,
+          { replacements: { storeId: data.store_id }, type: Sequelize.QueryTypes.SELECT }
+        );
+        renewalLimit = existing
+          ? Number(existing.renewal_booking_limit)
+          : (await adminDbController.app.getFreeBookingLimit()).free_booking_limit;
+      }
 
       const today = toIstDatePart(new Date());
+      const fee = cycleFee(planAmount);
 
       await adminDbController.connection.query(
         `
-        INSERT INTO PartnerManualSubscriptions (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at, deactivated_at)
-        VALUES (:storeId, :planAmount, 'active', 0, :today, :today, NULL)
+        INSERT INTO PartnerManualSubscriptions
+          (store_id, plan_amount, status, outstanding_due, next_due_date, activated_at, deactivated_at,
+           renewal_booking_limit, cycle_state, cycle_start_date, charged_on, charged_from_appointment_id)
+        VALUES
+          (:storeId, :planAmount, 'active', :fee, :today, :today, NULL,
+           :renewalLimit, 'collecting', NULL, :today, NULL)
         ON DUPLICATE KEY UPDATE
           plan_amount = VALUES(plan_amount),
           status = 'active',
+          outstanding_due = outstanding_due + VALUES(outstanding_due),
           next_due_date = VALUES(next_due_date),
           activated_at = VALUES(activated_at),
-          deactivated_at = NULL
+          deactivated_at = NULL,
+          renewal_booking_limit = VALUES(renewal_booking_limit),
+          cycle_state = 'collecting',
+          cycle_start_date = NULL,
+          charged_on = VALUES(charged_on),
+          charged_from_appointment_id = NULL
         `,
         {
-          replacements: { storeId: data.store_id, planAmount, today },
+          replacements: { storeId: data.store_id, planAmount, fee, today, renewalLimit },
           type: Sequelize.QueryTypes.INSERT,
         }
       );
@@ -7283,14 +7489,24 @@ verifypartnerdetails: async (data) => {
     }
   },
 
-  // Updates only the plan amount — applies from the next accrual onward,
-  // not retroactively to the current cycle's already-accrued due amount.
+  // Updates the plan amount and/or the renewal booking limit (free bookings
+  // per cycle). A new plan amount applies to the next fee charged, not to
+  // one already being collected; a new limit applies to the current cycle.
   updateManualPartnerSubscription: async (data) => {
     try {
       if (!data.store_id) throw Error.BadRequest("store_id is required");
-      const planAmount = Number(data.plan_amount);
-      if (!planAmount || planAmount <= 0) {
-        throw Error.BadRequest("plan_amount must be a positive number");
+      const updates = {};
+      if (data.plan_amount !== undefined && data.plan_amount !== null && data.plan_amount !== "") {
+        const planAmount = Number(data.plan_amount);
+        if (!planAmount || planAmount <= 0) {
+          throw Error.BadRequest("plan_amount must be a positive number");
+        }
+        updates.plan_amount = planAmount;
+      }
+      const renewalLimit = parseRenewalBookingLimit(data.renewal_booking_limit);
+      if (renewalLimit !== undefined) updates.renewal_booking_limit = renewalLimit;
+      if (!Object.keys(updates).length) {
+        throw Error.BadRequest("plan_amount or renewal_booking_limit is required");
       }
 
       const existing = await adminDbController.app.getActiveManualSubscription(data.store_id);
@@ -7299,9 +7515,11 @@ verifypartnerdetails: async (data) => {
       }
 
       await adminDbController.connection.query(
-        `UPDATE PartnerManualSubscriptions SET plan_amount = :planAmount WHERE store_id = :storeId`,
+        `UPDATE PartnerManualSubscriptions
+         SET ${Object.keys(updates).map((field) => `${field} = :${field}`).join(", ")}
+         WHERE store_id = :storeId`,
         {
-          replacements: { planAmount, storeId: data.store_id },
+          replacements: { ...updates, storeId: data.store_id },
           type: Sequelize.QueryTypes.UPDATE,
         }
       );
@@ -7343,8 +7561,9 @@ verifypartnerdetails: async (data) => {
 
   // Paginated subscriptions + pending salons, every filter in SQL. Adds what
   // the V1 list never returned: email, city, logo, lifetime bookings, what
-  // the salon owes today (accrueDue, not the stale stored balance), the next
-  // due date after accrual, and how much has been collected from payouts.
+  // the salon owes today (resolveSubscriptionCycles), its billing cycle
+  // (free bookings used / renewal date while waiting), and how much has
+  // been collected from payouts.
   getManualSubscriptionsListV2: async (data = {}) => {
     try {
       const today = toIstDatePart(new Date());
@@ -7390,14 +7609,18 @@ verifypartnerdetails: async (data) => {
         addWhere("LOWER(TRIM(pa.city)) = LOWER(TRIM(:city))", { city: String(data.city) });
       }
 
-      // Active subscriptions that owe now or fall due within N days.
+      // Active subscriptions that owe now, or whose free bookings are used up
+      // and whose renewal date falls within N days.
       if (data.due_within !== undefined && data.due_within !== null && data.due_within !== "") {
         const days = Number(data.due_within);
         if (!Number.isInteger(days) || days < 0 || days > 366) {
           throw Error.BadRequest("due_within must be a whole number of days (0-366)");
         }
         addWhere(
-          "(x.sub_status = 'active' AND (x.outstanding_due > 0 OR x.next_due_date <= :dueBy))",
+          `(x.sub_status = 'active' AND (${SUB_STATUS_SQL} = 'due'
+            OR (x.cycle_state = 'waiting'
+              AND COALESCE(cy.cycle_bookings, 0) >= x.renewal_booking_limit
+              AND x.next_due_date <= :dueBy)))`,
           { dueBy: addDays(today, days) }
         );
       }
@@ -7413,16 +7636,20 @@ verifypartnerdetails: async (data) => {
         FROM (
           SELECT 'subscription' AS kind, pms.id AS subscription_id, pms.store_id,
                  pms.plan_amount, pms.status AS sub_status, pms.outstanding_due,
-                 pms.next_due_date, pms.activated_at, pms.deactivated_at
+                 pms.next_due_date, pms.activated_at, pms.deactivated_at,
+                 pms.renewal_booking_limit, pms.cycle_state, pms.cycle_start_date,
+                 pms.charged_on, pms.charged_from_appointment_id
           FROM PartnerManualSubscriptions pms
           UNION ALL
-          SELECT 'pending', NULL, st.id, NULL, NULL, NULL, NULL, NULL, NULL
+          SELECT 'pending', NULL, st.id, NULL, NULL, NULL, NULL, NULL, NULL,
+                 NULL, NULL, NULL, NULL, NULL
           FROM Store st
           WHERE st.total_booking_count >= :limit
             AND NOT EXISTS (SELECT 1 FROM PartnerManualSubscriptions p WHERE p.store_id = st.id)
         ) x
         INNER JOIN Store s ON s.id = x.store_id
         LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        LEFT JOIN (${SUB_CYCLE_STATS_SQL}) cy ON cy.store_id = x.store_id
         LEFT JOIN (
           SELECT store_id,
                  SUM(subscription_deducted) AS collected_total,
@@ -7443,6 +7670,8 @@ verifypartnerdetails: async (data) => {
             s.total_booking_count,
             x.plan_amount, x.sub_status, x.outstanding_due, x.next_due_date,
             x.activated_at, x.deactivated_at,
+            x.renewal_booking_limit, x.cycle_state, x.cycle_start_date,
+            x.charged_on, x.charged_from_appointment_id,
             COALESCE(ip.collected_total, 0) AS collected_total, ip.last_deducted_on,
             ${SUB_STATUS_SQL} AS row_status
           ${fromSql}
@@ -7460,10 +7689,14 @@ verifypartnerdetails: async (data) => {
         }),
       ]);
 
+      const cycles = await adminDbController.app.resolveSubscriptionCycles(
+        rows.filter((row) => row.sub_status === "active").map((row) => ({ ...row, status: row.sub_status })),
+        today
+      );
+
       return {
         rows: rows.map((row) => {
-          const active = row.sub_status === "active";
-          const accrued = active ? accrueDue(row, today) : null;
+          const cycle = row.sub_status === "active" ? cycles.get(row.store_id) : null;
           const bookings = Number(row.total_booking_count) || 0;
           return {
             kind: row.kind,
@@ -7481,8 +7714,12 @@ verifypartnerdetails: async (data) => {
             cycle_fee: row.plan_amount === null ? null : cycleFee(row.plan_amount),
             // Balance as stored (only moves when a payout is marked paid).
             stored_outstanding: row.outstanding_due === null ? null : Number(row.outstanding_due),
-            owed_now: accrued ? accrued.due : 0,
-            next_due_date: accrued ? accrued.nextDue : null,
+            owed_now: cycle ? cycle.due : 0,
+            // Renewal date of a waiting cycle (the next fee needs this date
+            // AND the renewal booking limit); null while a fee is owed.
+            next_due_date: cycle && cycle.state === CYCLE_WAITING ? cycle.renewalDate : null,
+            renewal_booking_limit: row.renewal_booking_limit === null ? null : Number(row.renewal_booking_limit),
+            cycle: subscriptionCycleView(cycle),
             activated_at: dayString(row.activated_at),
             deactivated_at: dayString(row.deactivated_at),
             collected_total: Number(Number(row.collected_total).toFixed(2)),
@@ -7538,8 +7775,7 @@ verifypartnerdetails: async (data) => {
         ),
         adminDbController.connection.query(
           `
-          SELECT pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due, pms.next_due_date,
-                 pms.activated_at, s.total_booking_count
+          SELECT pms.store_id, ${SUB_CYCLE_COLUMNS.replace(/(\w+)/g, "pms.$1")}, s.total_booking_count
           FROM PartnerManualSubscriptions pms
           INNER JOIN Store s ON s.id = pms.store_id
           `,
@@ -7610,6 +7846,7 @@ verifypartnerdetails: async (data) => {
       let owingPartners = 0;
       let dueSoon = 0;
       let needsSubscription = 0;
+      const cycles = await adminDbController.app.resolveSubscriptionCycles(subs, today);
       for (const sub of subs) {
         const amount = Number(sub.plan_amount);
         if (sub.status !== "active") {
@@ -7618,7 +7855,13 @@ verifypartnerdetails: async (data) => {
           if (num(sub.total_booking_count) >= limit) needsSubscription += 1;
           continue;
         }
-        const { due, nextDue } = accrueDue(sub, today);
+        const cycle = cycles.get(sub.store_id);
+        const due = cycle.due;
+        // Due soon: owes now, or free bookings used up with the renewal
+        // date within 7 days.
+        const renewsSoon = cycle.state === CYCLE_WAITING
+          && cycle.counted >= cycle.limit
+          && Boolean(cycle.renewalDate) && cycle.renewalDate <= dueBy;
         if (due > 0) {
           counts.due += 1;
           bump(amount, "due");
@@ -7628,7 +7871,7 @@ verifypartnerdetails: async (data) => {
           counts.active += 1;
           bump(amount, "active");
         }
-        if (due > 0 || nextDue <= dueBy) dueSoon += 1;
+        if (due > 0 || renewsSoon) dueSoon += 1;
         plans.set(amount, (plans.get(amount) || 0) + 1);
       }
 
@@ -7678,9 +7921,8 @@ verifypartnerdetails: async (data) => {
       const [subRows, rows, totals] = await Promise.all([
         adminDbController.connection.query(
           `
-          SELECT pms.id, pms.store_id, pms.plan_amount, pms.status, pms.outstanding_due,
-                 pms.next_due_date, pms.activated_at, pms.deactivated_at,
-                 s.name AS partner_name
+          SELECT pms.id, pms.store_id, ${SUB_CYCLE_COLUMNS.replace(/(\w+)/g, "pms.$1")},
+                 pms.deactivated_at, s.name AS partner_name
           FROM PartnerManualSubscriptions pms
           INNER JOIN Store s ON s.id = pms.store_id
           WHERE pms.store_id = :storeId
@@ -7716,7 +7958,9 @@ verifypartnerdetails: async (data) => {
       if (!sub) {
         throw Error.NotFound("Subscription");
       }
-      const accrued = sub.status === "active" ? accrueDue(sub, today) : null;
+      const cycle = sub.status === "active"
+        ? (await adminDbController.app.resolveSubscriptionCycles([sub], today)).get(sub.store_id)
+        : null;
 
       return {
         subscription: {
@@ -7727,8 +7971,10 @@ verifypartnerdetails: async (data) => {
           plan_amount: Number(sub.plan_amount),
           cycle_fee: cycleFee(sub.plan_amount),
           stored_outstanding: Number(sub.outstanding_due),
-          owed_now: accrued ? accrued.due : 0,
-          next_due_date: accrued ? accrued.nextDue : null,
+          owed_now: cycle ? cycle.due : 0,
+          next_due_date: cycle && cycle.state === CYCLE_WAITING ? cycle.renewalDate : null,
+          renewal_booking_limit: Number(sub.renewal_booking_limit),
+          cycle: subscriptionCycleView(cycle),
           activated_at: dayString(sub.activated_at),
           deactivated_at: dayString(sub.deactivated_at),
         },
@@ -7790,19 +8036,21 @@ verifypartnerdetails: async (data) => {
     return { today, start, from, to };
   },
 
-  // What each salon's active subscription owes today (store_id -> amount).
+  // What each salon's active subscription owes today (store_id -> amount):
+  // the fee being collected, or one this cycle's bookings have just charged.
   getSubscriptionOwedByStore: async (storeIds = null) => {
     if (Array.isArray(storeIds) && storeIds.length === 0) return new Map();
     const today = toIstDatePart(new Date());
     const subs = await adminDbController.connection.query(
       `
-      SELECT store_id, plan_amount, outstanding_due, next_due_date, activated_at
+      SELECT store_id, ${SUB_CYCLE_COLUMNS}
       FROM PartnerManualSubscriptions
       WHERE status = 'active' ${storeIds ? "AND store_id IN (:storeIds)" : ""}
       `,
       { replacements: { storeIds }, type: Sequelize.QueryTypes.SELECT }
     );
-    return new Map(subs.map((sub) => [sub.store_id, accrueDue(sub, today).due]));
+    const cycles = await adminDbController.app.resolveSubscriptionCycles(subs, today);
+    return new Map([...cycles].map(([storeId, cycle]) => [storeId, cycle.due]));
   },
 
   // Paginated payout queue, one row per salon with invoices in the window:
@@ -8297,55 +8545,8 @@ verifypartnerdetails: async (data) => {
 
   // ── Monthly report V2 (MonthlyReportV2 page) ────────────────────────────
 
-  // Per-booking platform fee (AdminSettings.platform_fee). Raw SQL on purpose,
-  // like free_booking_limit: the column isn't on the AdminSettings model.
-  getPlatformFee: async () => {
-    try {
-      const rows = await adminDbController.connection.query(
-        `SELECT platform_fee FROM AdminSettings WHERE id = 1 LIMIT 1`,
-        { type: Sequelize.QueryTypes.SELECT }
-      );
-      const fee = rows[0]?.platform_fee;
-      return {
-        platform_fee: fee === null || fee === undefined ? DEFAULT_PLATFORM_FEE : Number(fee),
-      };
-    } catch (error) {
-      console.log("🚀 ~ getPlatformFee error:", error);
-      throw Error.SomethingWentWrong("Failed to fetch platform fee");
-    }
-  },
-  updatePlatformFee: async (data = {}) => {
-    try {
-      const raw = data.platform_fee;
-      const fee = Number(raw);
-      const numeric = typeof raw === "number" || (typeof raw === "string" && raw.trim() !== "");
-      if (!numeric || !Number.isFinite(fee)) {
-        throw Error.BadRequest("platform_fee must be a number");
-      }
-      if (fee < 0 || fee > MAX_PLATFORM_FEE) {
-        throw Error.BadRequest(`platform_fee must be between 0 and ${MAX_PLATFORM_FEE}`);
-      }
-      if (Math.round(fee * 100) !== fee * 100) {
-        throw Error.BadRequest("platform_fee can have at most 2 decimals");
-      }
-      await adminDbController.connection.query(
-        `
-        INSERT INTO AdminSettings (id, platform_fee, updated_at)
-        VALUES (1, :fee, NOW())
-        ON DUPLICATE KEY UPDATE platform_fee = VALUES(platform_fee), updated_at = NOW()
-        `,
-        { replacements: { fee }, type: Sequelize.QueryTypes.INSERT }
-      );
-      return await adminDbController.app.getPlatformFee();
-    } catch (error) {
-      if (error instanceof ApplicationError) throw error;
-      console.log("🚀 ~ updatePlatformFee error:", error);
-      throw Error.SomethingWentWrong("Failed to update platform fee");
-    }
-  },
-
   // Totals for one month span ({ from, end }) across every salon.
-  getMonthlyReportTotals: async (span, platformFee) => {
+  getMonthlyReportTotals: async (span) => {
     const replacements = { fromDate: span.from, toEnd: span.end };
     const run = (sql, extra = {}) =>
       adminDbController.connection.query(sql, {
@@ -8356,7 +8557,7 @@ verifypartnerdetails: async (data) => {
       run(`
         SELECT COALESCE(SUM(total_bookings), 0) AS total_bookings, COALESCE(SUM(completed), 0) AS completed,
                COALESCE(SUM(cancelled), 0) AS cancelled, COALESCE(SUM(active_bookings), 0) AS active_bookings,
-               COALESCE(SUM(gst), 0) AS gst
+               COALESCE(SUM(gst), 0) AS gst, COALESCE(SUM(platform_fee), 0) AS platform_fee
         FROM (${MONTHLY_BOOKINGS_SQL}) b`),
       run(`
         SELECT COALESCE(SUM(gross), 0) AS gross, COALESCE(SUM(orders), 0) AS orders,
@@ -8400,7 +8601,7 @@ verifypartnerdetails: async (data) => {
       gross: money(items.gross),
       orders: num(items.orders),
       gst: money(bookings.gst),
-      platform_fee_total: money(active * platformFee),
+      platform_fee_total: money(bookings.platform_fee),
       payout: money(payouts.payout),
       subscription_deducted: money(payouts.subscription_deducted),
       cac_spend: money(items.cac_spend),
@@ -8412,15 +8613,13 @@ verifypartnerdetails: async (data) => {
     };
   },
 
-  // The month's totals next to the month before's, the platform fee used,
-  // and the cities with bookings (for the filter).
+  // The month's totals next to the month before's, and the cities with bookings (for the filter).
   getMonthlyReportSummaryV2: async (data = {}) => {
     try {
       const { current, previous } = resolveReportMonths(data.month);
-      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
       const [cur, prev, cityRows] = await Promise.all([
-        adminDbController.app.getMonthlyReportTotals(current, platformFee),
-        adminDbController.app.getMonthlyReportTotals(previous, platformFee),
+        adminDbController.app.getMonthlyReportTotals(current),
+        adminDbController.app.getMonthlyReportTotals(previous),
         adminDbController.connection.query(
           `
           SELECT DISTINCT TRIM(pa.city) AS city
@@ -8438,7 +8637,6 @@ verifypartnerdetails: async (data) => {
       ]);
       return {
         month: current.month,
-        platform_fee: platformFee,
         current: cur,
         previous: prev,
         cities: cityRows.map((row) => row.city),
@@ -8452,12 +8650,11 @@ verifypartnerdetails: async (data) => {
 
   // One row per salon with activity in the month: bookings (total /
   // completed / cancelled), invoice value, payout, subscription deducted,
-  // platform fee (served bookings x the fee setting), GST, CAC, average order
+  // platform fee (stored per booking, served bookings), GST, CAC, average order
   // value, rating, last booking. Filters: search, city; sorts per the page.
   getMonthlyReportSalonsV2: async (data = {}) => {
     try {
       const { current } = resolveReportMonths(data.month);
-      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
       const where = [];
       const replacements = { fromDate: current.from, toEnd: current.end };
       const addWhere = (sql, values = {}) => {
@@ -8510,7 +8707,7 @@ verifypartnerdetails: async (data) => {
           SELECT base.store_id, s.id AS existing_store_id, s.name, s.store_type, s.phone, s.email, s.logo,
                  s.status AS store_status,
                  pa.area, pa.city, pa.state,
-                 b.total_bookings, b.completed, b.cancelled, b.active_bookings, b.gst, b.customers, b.last_booking,
+                 b.total_bookings, b.completed, b.cancelled, b.active_bookings, b.gst, b.platform_fee, b.customers, b.last_booking,
                  g.gross, g.orders, g.cac_spend, g.cac_bookings,
                  p.payout, p.subscription_deducted, p.payouts,
                  r.average_rating, r.review_count
@@ -8563,7 +8760,7 @@ verifypartnerdetails: async (data) => {
             payout: money(r.payout),
             payouts: num(r.payouts),
             subscription_deducted: money(r.subscription_deducted),
-            platform_fee: money(active * platformFee),
+            platform_fee: money(r.platform_fee),
             gst: money(r.gst),
             cac_spend: money(r.cac_spend),
             cac_per_booking: cacBookings ? money(num(r.cac_spend) / cacBookings) : null,
@@ -8578,7 +8775,6 @@ verifypartnerdetails: async (data) => {
         page,
         limit: pageSize,
         month: current.month,
-        platform_fee: platformFee,
       };
     } catch (error) {
       if (error instanceof ApplicationError) throw error;
@@ -8592,14 +8788,14 @@ verifypartnerdetails: async (data) => {
   // returns the equal-length window just before it for the Compare toggle.
 
   // Per-salon profitability for one window ({ from, end }). Same money as
-  // the monthly report: GMV = invoice value, GloUp revenue = served bookings
-  // x platform fee + subscription fees deducted from payouts, contribution =
+  // the monthly report: GMV = invoice value, GloUp revenue = platform fees
+  // paid on served bookings + subscription fees deducted from payouts, contribution =
   // revenue - CAC (Gloup-funded discounts), margin = contribution / GMV.
-  getAnalyticsProfitRows: async (span, platformFee) => {
+  getAnalyticsProfitRows: async (span) => {
     const rows = await adminDbController.connection.query(
       `
       SELECT base.store_id, s.id AS existing_store_id, s.name, s.logo, pa.area, pa.city,
-             b.active_bookings, g.gross, g.cac_spend, p.subscription_deducted
+             b.active_bookings, b.platform_fee, g.gross, g.cac_spend, p.subscription_deducted
       FROM (${MONTHLY_SALONS_SQL}) base
       LEFT JOIN Store s ON s.id = base.store_id
       LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
@@ -8617,7 +8813,7 @@ verifypartnerdetails: async (data) => {
     return rows.map((r) => {
       const bookings = num(r.active_bookings);
       const gmv = money(r.gross);
-      const feeRevenue = money(bookings * platformFee);
+      const feeRevenue = money(r.platform_fee);
       const subscription = money(r.subscription_deducted);
       const revenue = money(feeRevenue + subscription);
       const cac = money(r.cac_spend);
@@ -8646,10 +8842,9 @@ verifypartnerdetails: async (data) => {
   getAnalyticsProfitabilityV2: async (data = {}) => {
     try {
       const win = resolveAnalyticsWindow(data, 30);
-      const { platform_fee: platformFee } = await adminDbController.app.getPlatformFee();
       const [rows, prevRows] = await Promise.all([
-        adminDbController.app.getAnalyticsProfitRows(win, platformFee),
-        adminDbController.app.getAnalyticsProfitRows(win.previous, platformFee),
+        adminDbController.app.getAnalyticsProfitRows(win),
+        adminDbController.app.getAnalyticsProfitRows(win.previous),
       ]);
       // Sales = served bookings, grouped by their salon's tier.
       const stats = (list) => {
@@ -8671,7 +8866,6 @@ verifypartnerdetails: async (data) => {
         from: win.from,
         to: win.to,
         previous: { from: win.previous.from, to: win.previous.to },
-        platform_fee: platformFee,
         tiers: PROFIT_TIERS,
         stats: stats(rows),
         previous_stats: stats(prevRows),

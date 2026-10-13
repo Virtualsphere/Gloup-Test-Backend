@@ -1371,6 +1371,7 @@ userappmiddleware.user = {
             }
 
             // Server is source of truth for tax/fees — do not trust client gst/platform_fee as rupees.
+            // The app adds the same fixed fee at checkout; it is stored on the booking.
             const GST_RATE = 0.05;
             const PLATFORM_FEE = 3;
             const gstAmount = Math.round(finalTotal * GST_RATE * 100) / 100;
@@ -1418,6 +1419,7 @@ userappmiddleware.user = {
                 discounted_amount: finalTotal,
                 discount_id: discount_id,
                 gst: 5,
+                platform_fee: platformFeeAmount,
                 status: "booked",
                 booking_for: booking_for || "myself",
                 guest_id: actualGuestId,
@@ -1436,14 +1438,17 @@ userappmiddleware.user = {
                 items.push({
                     appointment_id: appointment.id,
                     service_id: s.id,
-                    service_amount: (s.discounted_amount > 0 ? s.discounted_amount : s.amount)
+                    service_amount: (s.discounted_amount > 0 ? s.discounted_amount : s.amount),
+                    list_amount: s.amount,
+                    is_important: !!s.important
                 });
             });
             dbCombos.forEach(c => {
                 items.push({
                     appointment_id: appointment.id,
                     combo_id: c.id,
-                    service_amount: c.amount
+                    service_amount: c.amount,
+                    list_amount: c.amount
                 });
             });
 

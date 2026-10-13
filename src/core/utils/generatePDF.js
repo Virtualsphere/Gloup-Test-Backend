@@ -4,18 +4,8 @@ const generatePDF = async (booking) => {
   try {
 
     const items = booking.appointment_items || [];
-
-    // ✅ Sum of discounted service amounts
-    const totalServiceAmount = items.reduce(
-      (sum, item) => sum + Number(item.service_discount_amount || 0),
-      0
-    );
-
-    const gstAmount = Number(booking.gst_amount || 0);
-
-    const totalAmount = Number(
-      (totalServiceAmount + gstAmount).toFixed(2)
-    );
+    // All amounts come from what the booking stored (getBookingsDetailsById).
+    const rupees = (v) => `₹${Number(v || 0).toFixed(2)}`;
 
 
     const [fromTime, toTime] = booking.slot_timing.split('-');
@@ -40,20 +30,24 @@ const to12Hour = (date) =>
     const slotTiming = `${to12Hour(fromDate)} – ${to12Hour(toDate)}`;
 
     // 🔹 Build services HTML
-    const servicesHTML = booking.appointment_items
+    const servicesHTML = items
       .map(
         (item) => `
         <tr>
           <td style="padding:6px 0;">${item.service_name}</td>
           <td style="padding:6px 0;" align="right">
-            ₹${item.service_amount}
-            − ₹${item.service_subtotal}
-            = <b>₹${item.service_discount_amount}</b>
+            ${item.item_discount > 0
+              ? `${rupees(item.list_amount)} − ${rupees(item.item_discount)} = <b>${rupees(item.charged_amount)}</b>`
+              : `<b>${rupees(item.charged_amount)}</b>`}
           </td>
         </tr>
       `
       )
       .join("");
+
+    const couponRow = booking.coupon_discount > 0
+      ? `<tr><td>Coupon Discount</td><td align="right">− ${rupees(booking.coupon_discount)}</td></tr>`
+      : "";
 
     // 🔹 HTML template
     const html = `
@@ -116,22 +110,27 @@ const to12Hour = (date) =>
 
       <table class="summary">
         <tr>
-          <td>Total</td>
-          <td align="right">₹${totalServiceAmount}</td>
+          <td>Services Total</td>
+          <td align="right">${rupees(booking.items_total)}</td>
+        </tr>
+        ${couponRow}
+        <tr>
+          <td>Sub Total</td>
+          <td align="right">${rupees(booking.taxable_amount)}</td>
         </tr>
         <tr>
-          <td>GST (5%)</td>
-          <td align="right">₹${booking.gst_amount}</td>
+          <td>GST (${booking.gst_rate}%)</td>
+          <td align="right">${rupees(booking.gst_amount)}</td>
         </tr>
-         <tr>
-          <td>Sub Total</td>
-          <td align="right">₹${totalAmount}</td>
+        <tr>
+          <td>Platform Fee</td>
+          <td align="right">${rupees(booking.platform_fee)}</td>
         </tr>
       </table>
 
       <div class="payable">
         <span>Payable Amount</span>
-        <span>₹${booking.subtotal_amount}</span>
+        <span>${rupees(booking.payable_amount)}</span>
       </div>
 
     </body>
