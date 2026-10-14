@@ -716,10 +716,24 @@ export const formatSalonList = ({
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
         dynamicServices: (function() {
           try {
-            if (!store.servicesList) return [];
-            if (Array.isArray(store.servicesList)) return store.servicesList;
-            const parsed = JSON.parse(store.servicesList);
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            let list = [];
+            if (!store.servicesList) list = [];
+            else if (Array.isArray(store.servicesList)) list = store.servicesList;
+            else {
+              const parsed = JSON.parse(store.servicesList);
+              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            }
+            // Keep highlighted first (already ordered), max 5 for card ticker.
+            return list.slice(0, 5).map((s) => ({
+              name: s.name,
+              price: s.price != null ? Number(s.price) : null,
+              discountedPrice:
+                s.discountedPrice != null
+                  ? Number(s.discountedPrice)
+                  : s.price != null
+                    ? Number(s.price)
+                    : null,
+            }));
           } catch (e) {
             return [];
           }
@@ -786,10 +800,24 @@ export const formatTopSalons = ({
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
         dynamicServices: (function() {
           try {
-            if (!store.servicesList) return [];
-            if (Array.isArray(store.servicesList)) return store.servicesList;
-            const parsed = JSON.parse(store.servicesList);
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            let list = [];
+            if (!store.servicesList) list = [];
+            else if (Array.isArray(store.servicesList)) list = store.servicesList;
+            else {
+              const parsed = JSON.parse(store.servicesList);
+              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            }
+            // Keep highlighted first (already ordered), max 5 for card ticker.
+            return list.slice(0, 5).map((s) => ({
+              name: s.name,
+              price: s.price != null ? Number(s.price) : null,
+              discountedPrice:
+                s.discountedPrice != null
+                  ? Number(s.discountedPrice)
+                  : s.price != null
+                    ? Number(s.price)
+                    : null,
+            }));
           } catch (e) {
             return [];
           }
