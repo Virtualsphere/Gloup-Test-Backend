@@ -2478,7 +2478,7 @@ WHERE S.status = 'active'
     limit = 10,
     page = 1
   }) => {
-    const cacheKey = `nearby_v5_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const cacheKey = `nearby_v6_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2591,14 +2591,13 @@ LEFT JOIN (
            CONCAT(
              '[',
              GROUP_CONCAT(
-               CASE WHEN ss.important = 1 THEN
-                 JSON_OBJECT(
-                   'name', ss.service_name,
-                   'price', ss.amount,
-                   'discountedPrice', ss.discounted_amount
-                 )
-               END
-               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+               JSON_OBJECT(
+                 'name', ss.service_name,
+                 'price', ss.amount,
+                 'discountedPrice', ss.discounted_amount,
+                 'important', ss.important
+               )
+               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
              ),
              ']'
            ) AS servicesList
@@ -2671,7 +2670,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     search,
     userId = null
   }) => {
-    const cacheKey = `salons_v7_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const cacheKey = `salons_v8_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2794,14 +2793,13 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
            CONCAT(
              '[',
              GROUP_CONCAT(
-               CASE WHEN ss.important = 1 THEN
-                 JSON_OBJECT(
-                   'name', ss.service_name,
-                   'price', ss.amount,
-                   'discountedPrice', ss.discounted_amount
-                 )
-               END
-               ORDER BY ss.priority DESC, ss.discounted_amount ASC
+               JSON_OBJECT(
+                 'name', ss.service_name,
+                 'price', ss.amount,
+                 'discountedPrice', ss.discounted_amount,
+                 'important', ss.important
+               )
+               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
              ),
              ']'
            ) AS servicesList
@@ -3169,14 +3167,13 @@ END AS distance
            CONCAT(
              '[',
              GROUP_CONCAT(
-               CASE WHEN important = 1 THEN
-                 JSON_OBJECT(
-                   'name', service_name,
-                   'price', amount,
-                   'discountedPrice', discounted_amount
-                 )
-               END
-               ORDER BY priority DESC, discounted_amount ASC
+               JSON_OBJECT(
+                 'name', service_name,
+                 'price', amount,
+                 'discountedPrice', discounted_amount,
+                 'important', important
+               )
+               ORDER BY important DESC, priority DESC, discounted_amount ASC
              ),
              ']'
            ) AS servicesList
@@ -3257,14 +3254,13 @@ END AS distance
            CONCAT(
              '[',
              GROUP_CONCAT(
-               CASE WHEN important = 1 THEN
-                 JSON_OBJECT(
-                   'name', service_name,
-                   'price', amount,
-                   'discountedPrice', discounted_amount
-                 )
-               END
-               ORDER BY priority DESC, discounted_amount ASC
+               JSON_OBJECT(
+                 'name', service_name,
+                 'price', amount,
+                 'discountedPrice', discounted_amount,
+                 'important', important
+               )
+               ORDER BY important DESC, priority DESC, discounted_amount ASC
              ),
              ']'
            ) AS servicesList

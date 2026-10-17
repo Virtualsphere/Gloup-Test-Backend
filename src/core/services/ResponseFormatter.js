@@ -131,6 +131,60 @@ export function updateFormatSalonResponseV2({
     }),
   };
 }
+
+/**
+ * Build a salon address without repeating area/city when they are already
+ * present in addressLine1 / addressLine2.
+ */
+function buildSalonAddress({
+  addressLine1,
+  addressLine2,
+  area,
+  city,
+  zipcode,
+} = {}) {
+  const parts = [];
+  const seen = new Set();
+
+  const normalizeKey = (value) =>
+    value.toLowerCase().replace(/\s+/g, " ").trim();
+
+  const pushValue = (value) => {
+    if (value == null) return;
+    String(value)
+      .split(",")
+      .forEach((raw) => {
+        let part = raw.replace(/\s+/g, " ").trim();
+        if (!part) return;
+        // Drop a trailing pin code from a segment (kept separately below).
+        part = part.replace(/[-–]?\s*\d{5,6}\s*$/u, "").trim();
+        if (!part) return;
+        const key = normalizeKey(part);
+        if (!key || seen.has(key)) return;
+        seen.add(key);
+        parts.push(part);
+      });
+  };
+
+  pushValue(addressLine1);
+  pushValue(addressLine2);
+  pushValue(area);
+  pushValue(city);
+
+  let address = parts.join(", ");
+  const zip = String(zipcode || "").trim();
+  if (zip) {
+    const zipKey = normalizeKey(zip);
+    const alreadyHasZip = parts.some((p) => normalizeKey(p).includes(zipKey)) ||
+      normalizeKey(address).includes(zipKey);
+    if (!alreadyHasZip) {
+      address = address ? `${address} - ${zip}` : zip;
+    }
+  }
+
+  return address.replace(/,\s*,+/g, ", ").replace(/^,\s*|\s*,$/g, "").trim();
+}
+
 export function formatSalonResponse({
   store,
   services,
@@ -145,7 +199,13 @@ export function formatSalonResponse({
   const images = resolveStoreImages(store);
   const salonimage = pickSalonCoverUrl(store, images);
   const logo = pickSalonLogoUrl(store, images);
-  const address = `${store.addressLine1 || ""}, ${store.area || ""}, ${store.city || ""} - ${store.zipcode || ""}`;
+  const address = buildSalonAddress({
+    addressLine1: store.addressLine1,
+    addressLine2: store.addressLine2,
+    area: store.area,
+    city: store.city,
+    zipcode: store.zipcode,
+  });
   return {
     id: store.id,
     name: store.name,
@@ -571,12 +631,10 @@ export function formatNearbyStores(stores = []) {
     // Build address only if at least one field has a value
     let address = null;
     if (store.area || store.city) {
-      const parts = [];
-      if (store.area) parts.push(store.area);
-      if (store.city) parts.push(store.city);
-
-      let addressStr = parts.join(", ");
-      address = addressStr;
+      address = buildSalonAddress({
+        area: store.area,
+        city: store.city,
+      }) || null;
     }
 
     return {
@@ -628,14 +686,12 @@ export const formatSalonList = ({
 
       // Build address only if at least one field has a value
       let address = null;
-      if (store.area || store.city) {
-        const parts = [];
-        if (store.area) parts.push(store.area);
-        if (store.city) parts.push(store.city);
-
-        let addressStr = parts.join(", ");
-        address = addressStr;
-      }
+    if (store.area || store.city) {
+      address = buildSalonAddress({
+        area: store.area,
+        city: store.city,
+      }) || null;
+    }
 
       // Calculate distance if lat/lng provided and store has coordinates
       let distance = null;
@@ -660,10 +716,24 @@ export const formatSalonList = ({
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
         dynamicServices: (function() {
           try {
-            if (!store.servicesList) return [];
-            if (Array.isArray(store.servicesList)) return store.servicesList;
-            const parsed = JSON.parse(store.servicesList);
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            let list = [];
+            if (!store.servicesList) list = [];
+            else if (Array.isArray(store.servicesList)) list = store.servicesList;
+            else {
+              const parsed = JSON.parse(store.servicesList);
+              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            }
+            // Keep highlighted first (already ordered), max 5 for card ticker.
+            return list.slice(0, 5).map((s) => ({
+              name: s.name,
+              price: s.price != null ? Number(s.price) : null,
+              discountedPrice:
+                s.discountedPrice != null
+                  ? Number(s.discountedPrice)
+                  : s.price != null
+                    ? Number(s.price)
+                    : null,
+            }));
           } catch (e) {
             return [];
           }
@@ -700,14 +770,12 @@ export const formatTopSalons = ({
 
       // Build address only if at least one field has a value
       let address = null;
-      if (store.area || store.city) {
-        const parts = [];
-        if (store.area) parts.push(store.area);
-        if (store.city) parts.push(store.city);
-
-        let addressStr = parts.join(", ");
-        address = addressStr;
-      }
+    if (store.area || store.city) {
+      address = buildSalonAddress({
+        area: store.area,
+        city: store.city,
+      }) || null;
+    }
 
       // Calculate distance if lat/lng provided and store has coordinates
       let distance = null;
@@ -732,10 +800,24 @@ export const formatTopSalons = ({
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
         dynamicServices: (function() {
           try {
-            if (!store.servicesList) return [];
-            if (Array.isArray(store.servicesList)) return store.servicesList;
-            const parsed = JSON.parse(store.servicesList);
-            return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            let list = [];
+            if (!store.servicesList) list = [];
+            else if (Array.isArray(store.servicesList)) list = store.servicesList;
+            else {
+              const parsed = JSON.parse(store.servicesList);
+              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+            }
+            // Keep highlighted first (already ordered), max 5 for card ticker.
+            return list.slice(0, 5).map((s) => ({
+              name: s.name,
+              price: s.price != null ? Number(s.price) : null,
+              discountedPrice:
+                s.discountedPrice != null
+                  ? Number(s.discountedPrice)
+                  : s.price != null
+                    ? Number(s.price)
+                    : null,
+            }));
           } catch (e) {
             return [];
           }
