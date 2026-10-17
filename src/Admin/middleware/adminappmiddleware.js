@@ -1120,8 +1120,8 @@ Adminappmiddleware.app = {
     // and which of the two templates (partner vs user) changes.
     sendMarketingSMS: async ({ body, files }) => {
         try {
-            const PARTNER_SMS_TEMPLATE_ID = "6a92d076c536940c01035502";
-            const USER_SMS_TEMPLATE_ID = "6a92c074ff9d6606370da395";
+            const PARTNER_SMS_TEMPLATE_ID = "6ad32beca323f527a50501f4";
+            const USER_SMS_TEMPLATE_ID = "6ad3176fc90604d384027d94";
 
             const excelFile = files?.excel?.[0];
             if (!excelFile) {
