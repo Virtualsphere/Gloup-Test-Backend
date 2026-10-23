@@ -351,6 +351,19 @@ const ITEM_CAC_SQL = `
       GREATEST(0, COALESCE(ai.list_amount, cb.amount) - COALESCE(ai.service_amount, 0))
     ELSE 0
   END`;
+// What one item adds to GMV (dashboard V2): normal services and combos at
+// what the customer was charged (after the service discount, before any
+// coupon), "important" services at their original price. Both come from the
+// booking-time snapshot - the same numbers as the booking details' service
+// lines - with the live StoreServices values only as a fallback. GST and the
+// platform fee are never part of it.
+const ITEM_GMV_SQL = `
+  CASE
+    WHEN ai.service_id IS NULL AND ai.combo_id IS NULL THEN 0
+    WHEN ai.service_id IS NOT NULL AND COALESCE(ai.is_important, ss.important, 0) = 1
+      THEN COALESCE(ai.list_amount, ss.amount, ai.service_amount, 0)
+    ELSE COALESCE(ai.service_amount, 0)
+  END`;
 const MONTHLY_REPORT_SORTS = {
   bookings_desc: "COALESCE(b.total_bookings, 0) DESC, s.name ASC",
   bookings_asc: "COALESCE(b.total_bookings, 0) ASC, s.name ASC",
@@ -952,7 +965,7 @@ adminDbController.app = {
               COALESCE(SUM(u.registered_at IS NULL), 0) AS unknown_join_date
             FROM User u
           `),
-          run(`SELECT COUNT(DISTINCT user_id) AS booked_users FROM appointments
+          run(`SELECT COUNT(DISTINCT user_id) AS booked_users, COUNT(*) AS total_bookings FROM appointments
                WHERE payment_status IN ${PAID_PAYMENT_SQL} AND ${userCountedBookingSql()}`),
           run(
             `SELECT DATE_FORMAT(registered_at, '%Y-%m-%d') AS day, COUNT(*) AS users
@@ -1019,6 +1032,8 @@ adminDbController.app = {
         referral_users: Number(totals?.referral) || 0,
         unknown_join_date: Number(totals?.unknown_join_date) || 0,
         booked_users: Number(booked?.booked_users) || 0,
+        // Every counted booking (a user with 2 bookings adds 2).
+        total_bookings: Number(booked?.total_bookings) || 0,
         new_this_month: sumMonth(thisMonth),
         new_last_month: sumMonth(lastMonth),
         new_month_before: sumMonth(monthBefore),
@@ -1699,9 +1714,11 @@ adminDbController.app = {
   //                   collected, i.e. deducted from payouts, by when the
   //                   payout was marked paid — the subscriptions page's
   //                   "collected"
-  //   gmv             SUM(discounted_amount) of completed appointments —
-  //                   same basis as the V1 dashboard's total_sales (what
-  //                   `revenue` used to be; not shown until GMV is defined)
+  //   gmv             value of what customers booked, on paid bookings
+  //                   that weren't cancelled/refunded, by booking_date:
+  //                   per item, normal services / combos at the charged
+  //                   price, "important" services at their original price
+  //                   (ITEM_GMV_SQL). No coupons, GST or platform fee.
   //   cac_spend       the discount Gloup funds per booking: list price at
   //                   booking time minus what the customer was charged, 0
   //                   for "important" services (ITEM_CAC_SQL)
@@ -1730,7 +1747,6 @@ adminDbController.app = {
             SELECT r.k,
               COUNT(a.id) AS bookings,
               COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancellations,
-              COALESCE(SUM(CASE WHEN a.status = 'completed' THEN a.discounted_amount END), 0) AS gmv,
               COALESCE(SUM(CASE WHEN a.status NOT IN ('cancelled', 'refunded') THEN ${PLATFORM_FEE_SQL} END), 0) AS platform_fee_revenue
             FROM (${rangesSql}) r
             LEFT JOIN appointments a
@@ -1741,7 +1757,8 @@ adminDbController.app = {
           run(`
             SELECT r.k,
               COUNT(DISTINCT a.id) AS cac_bookings,
-              COALESCE(SUM(${ITEM_CAC_SQL}), 0) AS cac_spend
+              COALESCE(SUM(${ITEM_CAC_SQL}), 0) AS cac_spend,
+              COALESCE(SUM(${ITEM_GMV_SQL}), 0) AS gmv
             FROM (${rangesSql}) r
             LEFT JOIN appointments a
               ON a.booking_date >= r.f AND a.booking_date < r.e
@@ -1844,7 +1861,7 @@ adminDbController.app = {
           revenue: gated(money(feeRevenue + subscriptionRevenue)),
           platform_fee_revenue: gated(feeRevenue),
           subscription_revenue: gated(subscriptionRevenue),
-          gmv: gated(money(b.gmv)),
+          gmv: gated(money(c.gmv)),
           cac_spend: gated(money(c.cac_spend)),
           cac_bookings: gated(cacBookings),
           cac_per_booking: gated(cacBookings ? money(num(c.cac_spend) / cacBookings) : null),
