@@ -928,6 +928,11 @@ export const getAnalyticsProfitabilityV2 = respondV2((req) => Adminappmiddleware
 export const getAnalyticsSwitchingV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsSwitchingV2(req));
 export const getAnalyticsGravityV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsGravityV2(req));
 export const getAnalyticsUninstalledV2 = respondV2((req) => Adminappmiddleware.app.getAnalyticsUninstalledV2(req));
+export const getUserAnalyticsOverviewV2 = respondV2((req) => Adminappmiddleware.app.getUserAnalyticsOverviewV2(req));
+export const getUserRetentionV2 = respondV2((req) => Adminappmiddleware.app.getUserRetentionV2(req));
+export const getDeepUserInsightsV2 = respondV2((req) => Adminappmiddleware.app.getDeepUserInsightsV2(req));
+export const getGrowthDashboardV2 = respondV2((req) => Adminappmiddleware.app.getGrowthDashboardV2(req));
+export const sendBulkUserPushV2 = respondV2((req) => Adminappmiddleware.app.sendBulkUserPushV2(req));
 
 export const getManualSubscriptionsListV2 = async (req, res) => {
     Adminappmiddleware.app.getManualSubscriptionsListV2(req)

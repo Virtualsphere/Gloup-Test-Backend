@@ -1450,9 +1450,24 @@ export const cancelPendingOrderV2 = async (req, res) => {
   }
 };
 
+export const saveLocationV2 = async (req, res) => {
+  try {
+    const data = await userappmiddleware.user.saveLocationV2({ user: req.user, body: req.body });
+    return res.status(200).json({
+      success: true,
+      data
+    });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
 export const userHeartbeat = async (req, res) => {
   userappmiddleware.user
-    .heartbeat({ user: req.user, body: req.body })
+    .heartbeat({ user: req.user, body: req.body, userAgent: req.get("User-Agent") })
     .then((data) => {
       const response = ApplicationResult.forCreated();
       let statuscode = 0;

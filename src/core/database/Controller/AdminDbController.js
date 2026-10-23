@@ -31,6 +31,7 @@ import {
   resolveCycle,
 } from "../../utils/partnerSubscriptionBilling.js";
 import { addDays, isValidDate, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
+import { haversineKm } from "../../utils/userLocation.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -105,11 +106,19 @@ const USER_BOOKING_STATS_SQL = `
   FROM appointments
   WHERE payment_status IN ${PAID_PAYMENT_SQL}
   GROUP BY user_id`;
+// Last active = latest of a session touch and an app-usage session. The
+// heartbeat sets UserSession.updated_at to epoch 0 when the app goes to the
+// background, so those values are skipped; UserAppSessions.last_seen_at is
+// the heartbeat's own record of when the user was last in the app.
 const USER_SESSION_STATS_SQL = `
-  SELECT user_id, MAX(updated_at) AS last_active_at
-  FROM UserSession
-  WHERE user_id IS NOT NULL
-  GROUP BY user_id`;
+  SELECT x.user_id, MAX(x.seen_at) AS last_active_at
+  FROM (
+    SELECT user_id, updated_at AS seen_at FROM UserSession
+    WHERE user_id IS NOT NULL AND updated_at > '2000-01-01'
+    UNION ALL
+    SELECT user_id, last_seen_at AS seen_at FROM UserAppSessions
+  ) x
+  GROUP BY x.user_id`;
 const USER_LIST_SORTS = {
   newest: "u.registered_at IS NULL, u.registered_at DESC, u.id DESC",
   last_active: "ss.last_active_at IS NULL, ss.last_active_at DESC, u.id DESC",
@@ -466,6 +475,134 @@ const UNINSTALLED_SEGMENTS = [
   { key: "d60", label: "Active 31–60 days ago", max_days: 60 },
   { key: "d60plus", label: "Active 60+ days ago", max_days: Infinity },
 ];
+
+// ── User analytics V2 (UserAnalyticsV2 page) ──
+// App activity comes from UserAppSessions (heartbeat) and in-app actions from
+// UserEvents; both start empty on the day they were deployed, so their
+// metrics are null for windows before the first row (activity_since /
+// events_since). Everything booking-based reads appointments.
+const USER_ANALYTICS_PLATFORMS = ["android", "ios", "web", "app"];
+// MAU = distinct users active in the 30 days ending on the day.
+const USER_ANALYTICS_MAU_DAYS = 30;
+// Heatmaps: 4-hour parts of the (IST) day x Mon..Sun.
+const USER_ANALYTICS_DAY_PARTS = ["12 AM", "4 AM", "8 AM", "12 PM", "4 PM", "8 PM"];
+// Retention: share of a cohort still coming back N+ days after joining.
+const USER_RETENTION_DAYS = [1, 7, 14, 30, 60, 90];
+const USER_RETENTION_MAX_WEEKS = 12;
+const SESSION_SECONDS_SQL = "TIMESTAMPDIFF(SECOND, s.started_at, COALESCE(s.ended_at, s.last_seen_at))";
+// The customer paid at some point: a refund turns payment_status into
+// 'refunded', so funnels must not read a refunded booking as "didn't pay".
+const PAYMENT_MADE_SQL = "a.payment_status IN ('success', 'sucssess', 'refunded')";
+// Bookings from the go-live cutoff on (AdminSettings.dashboard_data_start_date
+// as :cutoff, NULL = all time), so pre-launch test bookings don't count -
+// e.g. a test booking must not stop a later real one being a "first booking".
+const bookingFloorSql = (alias = "a") => `(:cutoff IS NULL OR ${alias}.created_at >= :cutoff)`;
+// Salon area / city are free text ("K.K.Nagar" / "K. K. Nagar", "Chennai" /
+// "chennai"): group on letters and digits only, show a title-cased label.
+const placeKey = (value) => {
+  const key = String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return key === "null" ? "" : key;
+};
+const placeLabel = (value) => {
+  const text = String(value ?? "").trim().replace(/\s+/g, " ");
+  if (!text || text.toLowerCase() === "null") return null;
+  return text.toLowerCase().replace(/(^|[\s(/.-])([a-z])/g, (m, sep, ch) => sep + ch.toUpperCase());
+};
+// SQL twin of placeKey for a salon's city: `district` is the cleanest field
+// ("Chennai" where city reads "Chennai Tamil Nadu"), city the fallback.
+const salonCityKeySql = (alias) =>
+  `LOWER(REGEXP_REPLACE(COALESCE(NULLIF(TRIM(${alias}.district), ''), ${alias}.city, ''), '[^A-Za-z0-9]', ''))`;
+
+// ── Deep user insights V2 (DeepUserInsightsV2 page) ──
+// Distance = appointments.distance_km, the straight line from where the
+// customer was when booking (userLocation.js) to the salon. Bookings placed
+// before location capture have none and are left out of distance numbers.
+// Travel time is an estimate: 20 km/h city average = 3 min per km.
+const TRAVEL_MINUTES_PER_KM = 3;
+const DISTANCE_BUCKETS = [
+  { key: "0-2", label: "0 – 2 km", max: 2 },
+  { key: "2-5", label: "2 – 5 km", max: 5 },
+  { key: "5-10", label: "5 – 10 km", max: 10 },
+  { key: "10-20", label: "10 – 20 km", max: 20 },
+  { key: "20+", label: "20+ km", max: Infinity },
+];
+const TRAVEL_TIME_BUCKETS = [
+  { key: "0-10", label: "0 – 10 min", max: 10 },
+  { key: "10-20", label: "10 – 20 min", max: 20 },
+  { key: "20-30", label: "20 – 30 min", max: 30 },
+  { key: "30-45", label: "30 – 45 min", max: 45 },
+  { key: "45+", label: "45+ min", max: Infinity },
+];
+const FREQUENCY_BUCKETS = [
+  { key: "1", label: "1 Time", max: 1 },
+  { key: "2-3", label: "2 - 3 Times", max: 3 },
+  { key: "4-6", label: "4 - 6 Times", max: 6 },
+  { key: "7+", label: "7+ Times", max: Infinity },
+];
+// Time preference columns: 2-hour blocks of the slot start (Slots.from).
+const TIME_PREFERENCE_START_HOURS = [8, 10, 12, 14, 16, 18, 20, 22];
+// KPI thresholds: a long trip, and the "far travelling users" list.
+const LONG_TRIP_KM = 10;
+const FAR_USER_KM = 20;
+// "Why users travel": bookings this far with a closer salon available get
+// one inferred reason, the first that matches in this order.
+const FAR_BOOKING_KM = 5;
+const TRAVEL_REASONS = [
+  { key: "regular", label: "Regular at this Salon" },
+  { key: "stylist", label: "Preferred Stylist" },
+  { key: "price", label: "Better Price / Offers" },
+  { key: "rating", label: "Better Salon Rating" },
+  { key: "other", label: "Other / No clear reason" },
+];
+// Rating reason: booked salon vs the average of this many salons nearest
+// to the customer.
+const NEAREST_SALONS_FOR_RATING = 3;
+// Heat map cells: booking origins rounded to 2 decimals (~1.1 km).
+const HEATMAP_CELL_DECIMALS = 2;
+const HEATMAP_MAX_CELLS = 60;
+const SCATTER_MAX_POINTS = 400;
+const FAR_USERS_PREVIEW = 5;
+
+// ── Growth dashboard V2 (GrowthDashboardV2 page) ──
+// A slot seat is taken by the same rule the app uses for availability
+// (userDbController SLOT_OCCUPANCY_SQL): confirmed / completed, booked and
+// paid, or a checkout still inside its 5-minute payment hold.
+const SLOT_OCCUPIED_SQL = `(
+  a.status IN ('confirmed', 'completed')
+  OR (a.status = 'booked' AND a.payment_status IN ${PAID_PAYMENT_SQL})
+  OR (a.payment_status = 'pending' AND a.created_at >= NOW() - INTERVAL 5 MINUTE)
+)`;
+const SLOT_WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+// First-time booker tracker: no activity for this long = churn risk.
+const CHURN_RISK_DAYS = 21;
+// Lifetime booking-count buckets and the level-to-level conversions.
+const BOOKING_FREQUENCY_BUCKETS = [
+  { key: "never", label: "Never Booked", min: 0, max: 0 },
+  { key: "1", label: "1 Booking", min: 1, max: 1 },
+  { key: "2", label: "2 Bookings", min: 2, max: 2 },
+  { key: "3-4", label: "3 – 4 Bookings", min: 3, max: 4 },
+  { key: "5-9", label: "5 – 9 Bookings", min: 5, max: 9 },
+  { key: "10+", label: "10+ Bookings", min: 10, max: Infinity },
+];
+const BOOKING_LEVELS = [
+  { from: 1, to: 2, label: "1st → 2nd Booking" },
+  { from: 2, to: 3, label: "2nd → 3rd Booking" },
+  { from: 3, to: 5, label: "3rd → 5th Booking" },
+  { from: 5, to: 10, label: "5th → 10th Booking" },
+];
+const DAYS_TO_SECOND_BUCKETS = [
+  { key: "0-7", label: "0 – 7 Days", max: 7 },
+  { key: "8-15", label: "8 – 15 Days", max: 15 },
+  { key: "16-30", label: "16 – 30 Days", max: 30 },
+  { key: "31+", label: "31+ Days", max: Infinity },
+];
+// A salon "unusually empty" today: at least this many seats, this share free.
+const EMPTY_SALON_MIN_SEATS = 4;
+const EMPTY_SALON_FREE_SHARE = 0.8;
+// Average booking value for potential revenue: the salon's last 30 days.
+const BOOKING_VALUE_LOOKBACK_DAYS = 30;
+const GROWTH_PREVIEW_ROWS = 5;
+const GROWTH_LISTS = ["high_intent", "checkout_dropoff", "first_time", "second_booking", "empty_slots", "locations", "days_to_second"];
 
 // { from, to } (YYYY-MM-DD, inclusive, default the last `defaultDays` days)
 // plus `end` (exclusive) and the equal-length previous window.
@@ -1751,7 +1888,9 @@ adminDbController.app = {
             FROM (${rangesSql}) r
             LEFT JOIN appointments a
               ON a.booking_date >= r.f AND a.booking_date < r.e
-              AND a.payment_status IN ('success', 'sucssess')
+              -- Paid, including bookings refunded later (payment_status
+              -- 'refunded'), so refunds count as bookings and cancellations.
+              AND ${PAYMENT_MADE_SQL}
             GROUP BY r.k
           `),
           run(`
@@ -9264,6 +9403,1577 @@ verifypartnerdetails: async (data) => {
       if (error instanceof ApplicationError) throw error;
       console.log("🚀 ~ getAnalyticsUninstalledV2 error:", error);
       throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
+    }
+  },
+
+  // ── User analytics V2 ──
+  // city = salon city (district, else city - see salonCityKeySql): narrows
+  // booking stages and salon views. platform = app platform: narrows app
+  // activity, sessions and logins. `cutoff` (the go-live date) rides along
+  // in the replacements for bookingFloorSql.
+  getUserAnalyticsFilters: (data = {}, cutoff = null) => {
+    const city = data.city ? String(data.city).trim() : "";
+    const cityKey = placeKey(city);
+    const requested = String(data.platform || "").trim().toLowerCase();
+    const platform = USER_ANALYTICS_PLATFORMS.includes(requested) ? requested : null;
+    return {
+      city: cityKey ? placeLabel(city) : null,
+      platform,
+      cityJoin: (alias) =>
+        cityKey ? `LEFT JOIN Store cs ON cs.id = ${alias}.store_id LEFT JOIN PartnerAddress cpa ON cpa.id = cs.address_id` : "",
+      cityWhere: cityKey ? `AND ${salonCityKeySql("cpa")} = :cityKey` : "",
+      platformWhere: (alias) => (platform ? `AND ${alias}.platform = :platform` : ""),
+      replacements: { cityKey, platform, cutoff: cutoff || null },
+    };
+  },
+
+  // Cities that have live salons, for the city filters: grouped by
+  // placeKey, labelled with the most common spelling (title-cased).
+  getSalonCities: async () => {
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT COALESCE(NULLIF(TRIM(pa.district), ''), pa.city) AS city, COUNT(*) AS salons
+      FROM Store s INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+      WHERE s.status = 'active' AND s.completion_status = 'completed'
+      GROUP BY COALESCE(NULLIF(TRIM(pa.district), ''), pa.city)
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const byKey = new Map();
+    for (const row of rows) {
+      const key = placeKey(row.city);
+      const label = placeLabel(row.city);
+      if (!key || !label) continue;
+      const entry = byKey.get(key) || { label, salons: 0, best: 0 };
+      entry.salons += Number(row.salons) || 0;
+      if ((Number(row.salons) || 0) > entry.best) {
+        entry.best = Number(row.salons) || 0;
+        entry.label = label;
+      }
+      byKey.set(key, entry);
+    }
+    return [...byKey.values()].map((e) => e.label).sort((a, b) => a.localeCompare(b));
+  },
+
+  // Distinct users with app activity per IST day, fromDate .. end
+  // (exclusive). A session counts on the day it started and the day it was
+  // last seen. Returns Map(day -> [user_id]).
+  getUserActiveDays: async (fromDate, end, f) => {
+    const pf = f.platformWhere("s");
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT DISTINCT x.user_id, x.d FROM (
+        SELECT s.user_id, DATE_FORMAT(s.started_at, '%Y-%m-%d') AS d FROM UserAppSessions s
+        WHERE s.started_at < :end AND s.last_seen_at >= :fromDate ${pf}
+        UNION ALL
+        SELECT s.user_id, DATE_FORMAT(s.last_seen_at, '%Y-%m-%d') AS d FROM UserAppSessions s
+        WHERE s.started_at < :end AND s.last_seen_at >= :fromDate ${pf}
+      ) x
+      WHERE x.d >= :fromDate AND x.d < :end
+      `,
+      { replacements: { ...f.replacements, fromDate, end }, type: Sequelize.QueryTypes.SELECT }
+    );
+    const byDay = new Map();
+    for (const row of rows) {
+      const list = byDay.get(row.d) || [];
+      list.push(Number(row.user_id));
+      byDay.set(row.d, list);
+    }
+    return byDay;
+  },
+
+  // Every per-window number the page compares with the previous window
+  // (everything except app activity, which comes from getUserActiveDays).
+  getUserAnalyticsWindowStats: async (win, f, today) => {
+    const replacements = { ...f.replacements, from: win.from, end: win.end, today };
+    const run = (sql) =>
+      adminDbController.connection.query(sql, { replacements, type: Sequelize.QueryTypes.SELECT });
+    const created = (alias) => `${alias}.created_at >= :from AND ${alias}.created_at < :end`;
+    // Bookings in the window, from the go-live cutoff on.
+    const booked = (alias) => `${created(alias)} AND ${bookingFloorSql(alias)}`;
+    const [[signups], [logins], [sessions], [views], [coupons], [bookings], [first], [customers], uninstalled] =
+      await Promise.all([
+        run(`SELECT COUNT(*) AS c FROM User u WHERE u.registered_at >= :from AND u.registered_at < :end`),
+        run(`
+          SELECT COUNT(*) AS logins, COUNT(DISTINCT s.user_id) AS users FROM UserSession s
+          WHERE s.user_id IS NOT NULL AND ${created("s")} ${f.platformWhere("s")}`),
+        run(`
+          SELECT COUNT(*) AS sessions, AVG(${SESSION_SECONDS_SQL}) AS avg_seconds FROM UserAppSessions s
+          WHERE s.started_at >= :from AND s.started_at < :end ${f.platformWhere("s")}`),
+        // Viewers who then started no checkout at all in the window.
+        run(`
+          SELECT COUNT(*) AS views, COUNT(DISTINCT e.user_id) AS viewers,
+            COUNT(DISTINCT CASE WHEN ap.user_id IS NULL THEN e.user_id END) AS no_checkout
+          FROM UserEvents e ${f.cityJoin("e")}
+          LEFT JOIN (
+            SELECT DISTINCT a.user_id FROM appointments a WHERE a.user_id IS NOT NULL AND ${booked("a")}
+          ) ap ON ap.user_id = e.user_id
+          WHERE e.event = 'salon_view' AND ${created("e")} ${f.cityWhere}`),
+        // Applied a coupon in the app, or placed a booking with one.
+        run(`
+          SELECT COUNT(DISTINCT x.user_id) AS users FROM (
+            SELECT e.user_id FROM UserEvents e WHERE e.event = 'coupon_apply' AND ${created("e")}
+            UNION
+            SELECT a.user_id FROM appointments a ${f.cityJoin("a")}
+            WHERE a.user_id IS NOT NULL AND a.discount_id IS NOT NULL AND a.discount_id <> 0
+              AND ${booked("a")} ${f.cityWhere}
+          ) x`),
+        // Checkout = an appointment row, created (payment pending) before the
+        // customer pays. Paid includes bookings refunded later. "Due" = paid
+        // bookings whose date has passed.
+        run(`
+          SELECT COUNT(DISTINCT a.user_id) AS checkout_users,
+            COUNT(DISTINCT CASE WHEN ${PAYMENT_MADE_SQL} THEN a.user_id END) AS paid_users,
+            COALESCE(SUM(${PAYMENT_MADE_SQL} AND a.booking_date < :today), 0) AS paid_due,
+            COALESCE(SUM(${PAYMENT_MADE_SQL} AND a.booking_date < :today AND a.status <> 'completed'), 0) AS paid_not_completed
+          FROM appointments a ${f.cityJoin("a")}
+          WHERE a.user_id IS NOT NULL AND ${booked("a")} ${f.cityWhere}`),
+        // Customers whose first served booking since go-live was placed in
+        // the window.
+        run(`
+          SELECT COUNT(*) AS first_bookings, COALESCE(SUM(a.status = 'completed'), 0) AS first_completed
+          FROM (
+            SELECT a.user_id, MIN(a.id) AS first_id FROM appointments a
+            WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+            GROUP BY a.user_id
+          ) fb
+          INNER JOIN appointments a ON a.id = fb.first_id ${f.cityJoin("a")}
+          WHERE ${created("a")} ${f.cityWhere}`),
+        // Booking customers in the window; "new" = their first served booking
+        // since go-live is in it.
+        run(`
+          SELECT COUNT(*) AS customers, COALESCE(SUM(fb.first_at >= :from), 0) AS new_customers
+          FROM (
+            SELECT DISTINCT a.user_id FROM appointments a ${f.cityJoin("a")}
+            WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${booked("a")} ${f.cityWhere}
+          ) c
+          INNER JOIN (
+            SELECT a.user_id, MIN(a.created_at) AS first_at FROM appointments a
+            WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+            GROUP BY a.user_id
+          ) fb ON fb.user_id = c.user_id`),
+        adminDbController.app.getUninstalledUsers(win),
+      ]);
+    const num = (v) => Number(v) || 0;
+    return {
+      signups: num(signups?.c),
+      logins: num(logins?.logins),
+      login_users: num(logins?.users),
+      sessions: num(sessions?.sessions),
+      avg_session_seconds: num(sessions?.sessions) ? Math.round(num(sessions.avg_seconds)) : null,
+      salon_views: num(views?.views),
+      salon_viewers: num(views?.viewers),
+      viewers_no_checkout: num(views?.no_checkout),
+      coupon_users: num(coupons?.users),
+      checkout_users: num(bookings?.checkout_users),
+      paid_users: num(bookings?.paid_users),
+      paid_due: num(bookings?.paid_due),
+      paid_not_completed: num(bookings?.paid_not_completed),
+      first_bookings: num(first?.first_bookings),
+      first_completed: num(first?.first_completed),
+      customers: num(customers?.customers),
+      new_customers: num(customers?.new_customers),
+      uninstalled,
+    };
+  },
+
+  getUserAnalyticsOverviewV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 7);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const today = toIstDatePart(new Date());
+      const pairsFrom = addDays(win.previous.from, -(USER_ANALYTICS_MAU_DAYS - 1));
+      const replacements = { ...f.replacements, from: win.from, end: win.end };
+      const run = (sql) =>
+        adminDbController.connection.query(sql, { replacements, type: Sequelize.QueryTypes.SELECT });
+      const pf = f.platformWhere("s");
+
+      const [
+        [since],
+        cur,
+        prev,
+        byDay,
+        signupRows,
+        loginRows,
+        firstRows,
+        sessionRows,
+        heatRows,
+        platformRows,
+        [tokens],
+        cities,
+      ] = await Promise.all([
+        // Logins are dated by UserSession.created_at, which older sessions
+        // don't have - logins_since is the first one that does.
+        run(`
+          SELECT (SELECT DATE_FORMAT(MIN(started_at), '%Y-%m-%d') FROM UserAppSessions) AS activity_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents) AS events_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserSession WHERE user_id IS NOT NULL) AS logins_since`),
+        adminDbController.app.getUserAnalyticsWindowStats(win, f, today),
+        adminDbController.app.getUserAnalyticsWindowStats(win.previous, f, today),
+        adminDbController.app.getUserActiveDays(pairsFrom, win.end, f),
+        run(`
+          SELECT DATE_FORMAT(u.registered_at, '%Y-%m-%d') AS d, COUNT(*) AS c FROM User u
+          WHERE u.registered_at >= :from AND u.registered_at < :end GROUP BY d`),
+        run(`
+          SELECT DATE_FORMAT(s.created_at, '%Y-%m-%d') AS d, COUNT(*) AS c FROM UserSession s
+          WHERE s.user_id IS NOT NULL AND s.created_at >= :from AND s.created_at < :end ${pf} GROUP BY d`),
+        run(`
+          SELECT DATE_FORMAT(a.created_at, '%Y-%m-%d') AS d, COUNT(*) AS c
+          FROM (
+            SELECT a.user_id, MIN(a.id) AS first_id FROM appointments a
+            WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+            GROUP BY a.user_id
+          ) fb
+          INNER JOIN appointments a ON a.id = fb.first_id ${f.cityJoin("a")}
+          WHERE a.created_at >= :from AND a.created_at < :end ${f.cityWhere} GROUP BY d`),
+        run(`
+          SELECT DATE_FORMAT(s.started_at, '%Y-%m-%d') AS d, AVG(${SESSION_SECONDS_SQL}) AS avg_seconds
+          FROM UserAppSessions s
+          WHERE s.started_at >= :from AND s.started_at < :end ${pf} GROUP BY d`),
+        // WEEKDAY(): 0 = Monday.
+        run(`
+          SELECT WEEKDAY(s.started_at) AS wd, FLOOR(HOUR(s.started_at) / 4) AS part,
+            COUNT(DISTINCT s.user_id) AS users, AVG(${SESSION_SECONDS_SQL}) AS avg_seconds
+          FROM UserAppSessions s
+          WHERE s.started_at >= :from AND s.started_at < :end ${pf} GROUP BY wd, part`),
+        // Each active user once, on the platform of their latest session.
+        run(`
+          SELECT x.platform, COUNT(*) AS users FROM (
+            SELECT s.user_id,
+              SUBSTRING_INDEX(GROUP_CONCAT(COALESCE(s.platform, 'unknown') ORDER BY s.last_seen_at DESC), ',', 1) AS platform
+            FROM UserAppSessions s
+            WHERE s.started_at < :end AND s.last_seen_at >= :from
+            GROUP BY s.user_id
+          ) x GROUP BY x.platform`),
+        // Uninstall-rate base: users with a push token on file.
+        run(`
+          SELECT COUNT(*) AS c FROM User u
+          WHERE u.status <> 'terminated' AND u.device_id IS NOT NULL AND TRIM(u.device_id) NOT IN ('', 'null', '[]')`),
+        adminDbController.app.getSalonCities(),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const activitySince = since?.activity_since || null;
+      const loginsSince = since?.logins_since || null;
+      const hasLogins = (w) => Boolean(loginsSince && loginsSince <= w.to);
+      const eventsSince = since?.events_since || null;
+      const hasActivity = (w) => Boolean(activitySince && activitySince <= w.to);
+      const hasEvents = (w) => Boolean(eventsSince && eventsSince <= w.to);
+      const tokenBase = num(tokens?.c);
+      const uninstallRate = (n) => (tokenBase ? Number(((n / tokenBase) * 100).toFixed(2)) : null);
+
+      // DAU and rolling MAU per day, sliding a 30-day window over byDay.
+      const daily = new Map();
+      const seen = new Map();
+      let distinct = 0;
+      const step = (id, delta) => {
+        const n = (seen.get(id) || 0) + delta;
+        if (n > 0) seen.set(id, n);
+        else seen.delete(id);
+        if (delta > 0 && n === 1) distinct += 1;
+        if (delta < 0 && n === 0) distinct -= 1;
+      };
+      for (let d = pairsFrom; d < win.end; d = addDays(d, 1)) {
+        for (const id of byDay.get(d) || []) step(id, 1);
+        for (const id of byDay.get(addDays(d, -USER_ANALYTICS_MAU_DAYS)) || []) step(id, -1);
+        daily.set(d, { dau: (byDay.get(d) || []).length, mau: distinct });
+      }
+      const tracked = (d) => Boolean(activitySince && d >= activitySince && d <= today);
+
+      // Unique users, average DAU (over tracked days only) and MAU on the
+      // window's last tracked day.
+      const activityOf = (w) => {
+        if (!hasActivity(w)) return { unique_users: null, dau: null, mau: null, partial: false };
+        const start = activitySince > w.from ? activitySince : w.from;
+        const last = w.to < today ? w.to : today;
+        const users = new Set();
+        let sum = 0;
+        let days = 0;
+        for (let d = start; d <= last; d = addDays(d, 1)) {
+          const ids = byDay.get(d) || [];
+          ids.forEach((id) => users.add(id));
+          sum += ids.length;
+          days += 1;
+        }
+        return {
+          unique_users: users.size,
+          dau: days ? Number((sum / days).toFixed(1)) : null,
+          mau: daily.get(last)?.mau ?? null,
+          partial: activitySince > w.from,
+        };
+      };
+
+      const metricsOf = (w, s) => {
+        const act = activityOf(w);
+        const events = hasEvents(w);
+        return {
+          signups: s.signups,
+          // Unknown (not 0) for windows before sessions carried a date.
+          logins: hasLogins(w) ? s.logins : null,
+          login_users: hasLogins(w) ? s.login_users : null,
+          logins_partial: Boolean(loginsSince && loginsSince > w.from),
+          unique_users: act.unique_users,
+          dau: act.dau,
+          mau: act.mau,
+          activity_partial: act.partial,
+          sessions: hasActivity(w) ? s.sessions : null,
+          avg_session_seconds: hasActivity(w) ? s.avg_session_seconds : null,
+          salon_views: events ? s.salon_views : null,
+          salon_viewers: events ? s.salon_viewers : null,
+          coupon_users: s.coupon_users,
+          checkout_users: s.checkout_users,
+          paid_users: s.paid_users,
+          first_bookings: s.first_bookings,
+          first_completed: s.first_completed,
+          uninstalls: s.uninstalled.length,
+          uninstall_rate: uninstallRate(s.uninstalled.length),
+        };
+      };
+      const metrics = metricsOf(win, cur);
+      const previousMetrics = metricsOf(win.previous, prev);
+
+      const byDate = (rows, key = "c") => new Map(rows.map((r) => [r.d, r[key]]));
+      const signupsByDay = byDate(signupRows);
+      const loginsByDay = byDate(loginRows);
+      const firstByDay = byDate(firstRows);
+      const sessionByDay = byDate(sessionRows, "avg_seconds");
+      const uninstallsByDay = new Map();
+      for (const u of cur.uninstalled) {
+        const d = toIstDatePart(new Date(u.detected_at));
+        uninstallsByDay.set(d, (uninstallsByDay.get(d) || 0) + 1);
+      }
+      const series = [];
+      for (let d = win.from; d <= win.to; d = addDays(d, 1)) {
+        const avg = sessionByDay.get(d);
+        series.push({
+          day: d,
+          signups: num(signupsByDay.get(d)),
+          logins: num(loginsByDay.get(d)),
+          first_bookings: num(firstByDay.get(d)),
+          dau: tracked(d) ? daily.get(d)?.dau ?? 0 : null,
+          mau: tracked(d) ? daily.get(d)?.mau ?? 0 : null,
+          avg_session_seconds: avg === undefined || avg === null ? null : Math.round(num(avg)),
+          uninstalls: uninstallsByDay.get(d) || 0,
+          uninstall_rate: uninstallRate(uninstallsByDay.get(d) || 0),
+        });
+      }
+
+      const heat = (fill) => USER_ANALYTICS_DAY_PARTS.map(() => Array(7).fill(fill));
+      const heatUsers = heat(0);
+      const heatSeconds = heat(null);
+      for (const r of heatRows) {
+        const part = num(r.part);
+        const wd = num(r.wd);
+        if (!heatUsers[part] || wd > 6) continue;
+        heatUsers[part][wd] = num(r.users);
+        heatSeconds[part][wd] = Math.round(num(r.avg_seconds));
+      }
+
+      const activityBase = metrics.unique_users;
+      const action = (key, label, users) => ({ key, label, users, pct: users === null ? null : pct(users, activityBase) });
+      const dropOff = (key, label, note, dropped, of) => ({
+        key,
+        label,
+        note,
+        dropped,
+        of,
+        pct: of === null || dropped === null ? null : pct(dropped, of),
+      });
+      const events = hasEvents(win);
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { city: f.city, platform: f.platform },
+        activity_since: activitySince,
+        events_since: eventsSince,
+        logins_since: loginsSince,
+        data_start_date: cutoff || null,
+        metrics,
+        previous_metrics: previousMetrics,
+        series,
+        funnel: [
+          { key: "signups", label: "Sign-ups", users: metrics.signups },
+          { key: "logins", label: "Logins", users: metrics.login_users },
+          { key: "salon_views", label: "Salon Views", users: metrics.salon_viewers },
+          { key: "checkout_started", label: "Checkout Started", users: metrics.checkout_users },
+          { key: "first_booking", label: "1st Booking", users: metrics.first_bookings },
+          { key: "first_completed", label: "Completed Booking", users: metrics.first_completed },
+        ],
+        platforms: hasActivity(win)
+          ? platformRows
+              .map((r) => ({ key: r.platform, users: num(r.users) }))
+              .sort((a, b) => b.users - a.users)
+          : null,
+        new_vs_returning: {
+          customers: cur.customers,
+          new: cur.new_customers,
+          returning: cur.customers - cur.new_customers,
+        },
+        uninstall: { base: tokenBase },
+        heatmap: hasActivity(win)
+          ? { day_parts: USER_ANALYTICS_DAY_PARTS, users: heatUsers, avg_seconds: heatSeconds }
+          : null,
+        top_actions: [
+          action("salon_view", "View Salon Details", metrics.salon_viewers),
+          action("apply_coupon", "Apply Coupon", metrics.coupon_users),
+          action("start_checkout", "Start Checkout", metrics.checkout_users),
+          action("make_payment", "Make Payment", metrics.paid_users),
+        ],
+        drop_offs: [
+          dropOff(
+            "after_salon_details",
+            "After Salon Details",
+            "didn't start checkout",
+            events ? cur.viewers_no_checkout : null,
+            events ? cur.salon_viewers : null
+          ),
+          dropOff(
+            "during_checkout",
+            "During Checkout",
+            "payment failed/exit",
+            cur.checkout_users - cur.paid_users,
+            cur.checkout_users
+          ),
+          dropOff("after_payment", "After Payment", "booking not completed", cur.paid_not_completed, cur.paid_due),
+        ],
+        cities,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getUserAnalyticsOverviewV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user analytics");
+    }
+  },
+
+  // Weekly cohorts (7-day blocks ending on `to`) and the share of each still
+  // coming back N+ days after joining. signup: joined = registered_at, came
+  // back = app activity or any booking placed. first_booking: joined = first
+  // served booking, came back = another served booking. A cell is null until
+  // every member of the cohort has had N days.
+  getUserRetentionV2: async (data = {}) => {
+    try {
+      const mode = data.mode === "first_booking" ? "first_booking" : "signup";
+      const today = toIstDatePart(new Date());
+      let to = data.to ? String(data.to) : today;
+      if (!isValidDate(to)) throw Error.BadRequest("to must be YYYY-MM-DD");
+      if (to > today) to = today;
+      const weeks = Math.min(Math.max(Number(data.weeks) || 5, 1), USER_RETENTION_MAX_WEEKS);
+      const firstFrom = addDays(to, -(7 * weeks - 1));
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const replacements = { firstFrom, end: addDays(to, 1), cutoff: cutoff || null };
+
+      const [rows, [since]] = await Promise.all([
+        mode === "signup"
+          ? adminDbController.connection.query(
+              `
+              SELECT u.id AS user_id, DATE_FORMAT(u.registered_at, '%Y-%m-%d') AS d0,
+                GREATEST(
+                  COALESCE((SELECT DATE_FORMAT(MAX(s.last_seen_at), '%Y-%m-%d') FROM UserAppSessions s WHERE s.user_id = u.id), ''),
+                  COALESCE((SELECT DATE_FORMAT(MAX(a.created_at), '%Y-%m-%d') FROM appointments a WHERE a.user_id = u.id), '')
+                ) AS last_d
+              FROM User u
+              WHERE u.registered_at >= :firstFrom AND u.registered_at < :end
+              `,
+              { replacements, type: Sequelize.QueryTypes.SELECT }
+            )
+          : adminDbController.connection.query(
+              `
+              SELECT a.user_id, DATE_FORMAT(MIN(a.created_at), '%Y-%m-%d') AS d0,
+                DATE_FORMAT(MAX(a.created_at), '%Y-%m-%d') AS last_d
+              FROM appointments a
+              WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+              GROUP BY a.user_id
+              HAVING MIN(a.created_at) >= :firstFrom AND MIN(a.created_at) < :end
+              `,
+              { replacements, type: Sequelize.QueryTypes.SELECT }
+            ),
+        adminDbController.connection.query(
+          `SELECT DATE_FORMAT(MIN(started_at), '%Y-%m-%d') AS activity_since FROM UserAppSessions`,
+          { type: Sequelize.QueryTypes.SELECT }
+        ),
+      ]);
+
+      const cohorts = Array.from({ length: weeks }, (_, i) => {
+        const cohortTo = addDays(to, -7 * i);
+        const cohortFrom = addDays(cohortTo, -6);
+        const members = rows.filter((r) => r.d0 >= cohortFrom && r.d0 <= cohortTo);
+        return {
+          from: cohortFrom,
+          to: cohortTo,
+          users: members.length,
+          retention: USER_RETENTION_DAYS.map((n) => {
+            if (addDays(cohortTo, n) > today || !members.length) return null;
+            const back = members.filter((r) => r.last_d && r.last_d >= addDays(r.d0, n)).length;
+            return Number(((back / members.length) * 100).toFixed(1));
+          }),
+        };
+      });
+
+      return {
+        mode,
+        to,
+        days: USER_RETENTION_DAYS,
+        activity_since: since?.activity_since || null,
+        cohorts,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getUserRetentionV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user retention");
+    }
+  },
+
+  // ── Deep user insights V2 ──
+  // Served bookings placed in the window (city = salon city), one row each.
+  getDeepInsightBookings: async (win, f) =>
+    adminDbController.connection.query(
+      `
+      SELECT a.id, a.user_id, a.store_id, a.profesional_id, a.discount_id, a.created_at,
+        a.distance_km, a.user_lat, a.user_lng,
+        ${AMOUNT_PAID_SQL} AS paid,
+        HOUR(sl.\`from\`) AS slot_hour
+      FROM appointments a
+      LEFT JOIN Slots sl ON sl.id = a.slot_id
+      ${f.cityJoin("a")}
+      WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+        AND a.created_at >= :from AND a.created_at < :end ${f.cityWhere}
+      `,
+      { replacements: { ...f.replacements, from: win.from, end: win.end }, type: Sequelize.QueryTypes.SELECT }
+    ),
+
+  // Repeat users (30D), the Analytics Intelligence gravity rule: of the
+  // customers served in the 30 days ending `to`, the share with 2+ served
+  // bookings up to then - counting bookings from go-live on.
+  getRepeatUsers30d: async (to, f) => {
+    const [row] = await adminDbController.connection.query(
+      `
+      SELECT COUNT(*) AS customers, COALESCE(SUM(h.n >= 2), 0) AS repeaters
+      FROM (
+        SELECT DISTINCT a.user_id FROM appointments a ${f.cityJoin("a")}
+        WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+          AND a.booking_date >= :from30 AND a.booking_date < :end ${f.cityWhere}
+      ) c
+      INNER JOIN (
+        SELECT a.user_id, COUNT(*) AS n FROM appointments a
+        WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${bookingFloorSql("a")}
+          AND a.booking_date < :end
+        GROUP BY a.user_id
+      ) h ON h.user_id = c.user_id
+      `,
+      {
+        replacements: { ...f.replacements, from30: addDays(to, -29), end: addDays(to, 1) },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    );
+    const customers = Number(row?.customers) || 0;
+    return customers ? Number(((Number(row.repeaters) / customers) * 100).toFixed(1)) : null;
+  },
+
+  getDeepUserInsightsV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 7);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { ...f.replacements, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+
+      const [rows, prevRows, repeat, prevRepeat, [since], salonRows, cities] = await Promise.all([
+        adminDbController.app.getDeepInsightBookings(win, f),
+        adminDbController.app.getDeepInsightBookings(win.previous, f),
+        adminDbController.app.getRepeatUsers30d(win.to, f),
+        adminDbController.app.getRepeatUsers30d(win.previous.to, f),
+        run(`SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') AS location_since FROM UserLocations`),
+        // Every salon with coordinates; `live` ones are the alternatives a
+        // customer could have picked instead.
+        run(`
+          SELECT s.id, pa.area, pa.latitude, pa.longitude, r.rating,
+            (s.status = 'active' AND s.completion_status = 'completed') AS live
+          FROM Store s
+          INNER JOIN PartnerAddress pa ON pa.id = s.address_id
+          LEFT JOIN (
+            SELECT store_id, AVG(rating) AS rating FROM Reviews
+            WHERE status = 'active' AND rating BETWEEN 1 AND 5
+            GROUP BY store_id
+          ) r ON r.store_id = s.id`),
+        adminDbController.app.getSalonCities(),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const round = (v, digits = 1) => (v === null ? null : Number(v.toFixed(digits)));
+      const avg = (list) => (list.length ? list.reduce((t, v) => t + v, 0) / list.length : null);
+      const distanceOf = (r) => (r.distance_km === null || r.distance_km === undefined ? null : Number(r.distance_km));
+      const bucketIndex = (buckets, v) => buckets.findIndex((b) => v < b.max);
+      const countIndex = (buckets, n) => buckets.findIndex((b) => n <= b.max);
+      const grid = (cols) => DISTANCE_BUCKETS.map(() => Array(cols).fill(0));
+
+      const salons = salonRows
+        .map((s) => ({
+          id: Number(s.id),
+          area: placeLabel(s.area),
+          lat: Number(s.latitude),
+          lng: Number(s.longitude),
+          rating: s.rating === null ? null : Number(s.rating),
+          live: Boolean(Number(s.live)),
+        }))
+        .filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng) && (s.lat || s.lng));
+      const salonById = new Map(salons.map((s) => [s.id, s]));
+      const liveSalons = salons.filter((s) => s.live);
+      const nearestArea = (lat, lng) => {
+        let best = null;
+        for (const s of salons) {
+          const d = haversineKm(lat, lng, s.lat, s.lng);
+          if (s.area && (!best || d < best.d)) best = { d, area: s.area };
+        }
+        return best?.area || null;
+      };
+
+      const kpisOf = (list, repeatPct) => {
+        const located = list.map(distanceOf).filter((d) => d !== null);
+        const avgKm = avg(located);
+        return {
+          total_users: new Set(list.map((r) => r.user_id)).size,
+          bookings_total: list.length,
+          bookings_with_distance: located.length,
+          avg_distance_km: round(avgKm),
+          max_distance_km: located.length ? round(Math.max(...located)) : null,
+          avg_travel_min: avgKm === null ? null : round(avgKm * TRAVEL_MINUTES_PER_KM),
+          users_over_10km: located.length
+            ? new Set(list.filter((r) => distanceOf(r) >= LONG_TRIP_KM).map((r) => r.user_id)).size
+            : null,
+          bookings_over_10km_pct: located.length
+            ? round((located.filter((d) => d >= LONG_TRIP_KM).length / located.length) * 100)
+            : null,
+          repeat_users_30d_pct: repeatPct,
+        };
+      };
+
+      // Per customer: bookings and spend in the window, average distance
+      // over the bookings that have one (the "By Users" basis).
+      const byUser = new Map();
+      for (const r of rows) {
+        const u = byUser.get(r.user_id) || { user_id: r.user_id, bookings: 0, spent: 0, distances: [], paid: [] };
+        u.bookings += 1;
+        u.spent += num(r.paid);
+        const d = distanceOf(r);
+        if (d !== null) {
+          u.distances.push(d);
+          u.paid.push(num(r.paid));
+        }
+        byUser.set(r.user_id, u);
+      }
+      const users = [...byUser.values()].map((u) => ({ ...u, avg_km: avg(u.distances) }));
+      const locatedUsers = users.filter((u) => u.avg_km !== null);
+      const located = rows.filter((r) => distanceOf(r) !== null);
+
+      const distanceBuckets = DISTANCE_BUCKETS.map((b, i) => ({
+        key: b.key,
+        label: b.label,
+        bookings: located.filter((r) => bucketIndex(DISTANCE_BUCKETS, distanceOf(r)) === i).length,
+        users: locatedUsers.filter((u) => bucketIndex(DISTANCE_BUCKETS, u.avg_km) === i).length,
+      }));
+      const travelTimeBuckets = TRAVEL_TIME_BUCKETS.map((b, i) => ({
+        key: b.key,
+        label: b.label,
+        bookings: located.filter((r) => bucketIndex(TRAVEL_TIME_BUCKETS, distanceOf(r) * TRAVEL_MINUTES_PER_KM) === i)
+          .length,
+        users: locatedUsers.filter((u) => bucketIndex(TRAVEL_TIME_BUCKETS, u.avg_km * TRAVEL_MINUTES_PER_KM) === i).length,
+      }));
+
+      // Distance vs booking value, with a least-squares trend line.
+      const trendOf = (points) => {
+        if (points.length < 2) return null;
+        const mx = avg(points.map((p) => p.x));
+        const my = avg(points.map((p) => p.y));
+        const sxx = points.reduce((t, p) => t + (p.x - mx) ** 2, 0);
+        if (!sxx) return null;
+        const slope = points.reduce((t, p) => t + (p.x - mx) * (p.y - my), 0) / sxx;
+        return { slope: round(slope, 2), intercept: round(my - slope * mx, 2) };
+      };
+      const sample = (points) => {
+        if (points.length <= SCATTER_MAX_POINTS) return points;
+        const stride = points.length / SCATTER_MAX_POINTS;
+        return Array.from({ length: SCATTER_MAX_POINTS }, (_, i) => points[Math.floor(i * stride)]);
+      };
+      const bookingPoints = located.map((r) => ({ x: round(distanceOf(r)), y: round(num(r.paid), 2) }));
+      const userPoints = locatedUsers.map((u) => ({ x: round(u.avg_km), y: round(avg(u.paid), 2) }));
+
+      // Heat map: where customers booked from, or - until bookings carry a
+      // location - where the booked salons are, by area.
+      const cells = new Map();
+      const addCell = (key, lat, lng, area, userId) => {
+        const c = cells.get(key) || { lat, lng, area, bookings: 0, users: new Set() };
+        c.bookings += 1;
+        c.users.add(userId);
+        cells.set(key, c);
+      };
+      const originRows = located.filter((r) => r.user_lat !== null && r.user_lng !== null);
+      const heatBasis = originRows.length ? "user" : "salon";
+      if (heatBasis === "user") {
+        for (const r of originRows) {
+          const lat = Number(Number(r.user_lat).toFixed(HEATMAP_CELL_DECIMALS));
+          const lng = Number(Number(r.user_lng).toFixed(HEATMAP_CELL_DECIMALS));
+          addCell(`${lat},${lng}`, lat, lng, null, r.user_id);
+        }
+      } else {
+        for (const r of rows) {
+          const s = salonById.get(Number(r.store_id));
+          if (!s) continue;
+          const key = placeKey(s.area) || `salon-${s.id}`;
+          if (!cells.has(key)) {
+            addCell(key, s.lat, s.lng, s.area, r.user_id);
+          } else {
+            const c = cells.get(key);
+            // Centre the area's hotspot on its salons, weighted by bookings.
+            c.lat = (c.lat * c.bookings + s.lat) / (c.bookings + 1);
+            c.lng = (c.lng * c.bookings + s.lng) / (c.bookings + 1);
+            addCell(key, c.lat, c.lng, c.area, r.user_id);
+          }
+        }
+      }
+      const heatTotal = [...cells.values()].reduce((t, c) => t + c.bookings, 0);
+      const heatCells = [...cells.values()]
+        .sort((a, b) => b.bookings - a.bookings)
+        .slice(0, HEATMAP_MAX_CELLS)
+        .map((c) => ({
+          lat: round(c.lat, 4),
+          lng: round(c.lng, 4),
+          area: c.area || nearestArea(c.lat, c.lng),
+          bookings: c.bookings,
+          users: c.users.size,
+        }));
+
+      // Why users travel: far bookings with a closer live salon available.
+      const far = originRows.filter((r) => {
+        const d = distanceOf(r);
+        if (d < FAR_BOOKING_KM) return false;
+        return liveSalons.some(
+          (s) => s.id !== Number(r.store_id) && haversineKm(r.user_lat, r.user_lng, s.lat, s.lng) < d
+        );
+      });
+      const farUserIds = [...new Set(far.map((r) => r.user_id))];
+      const farIds = far.map((r) => r.id);
+      const [history, discountedItems] = await Promise.all([
+        farUserIds.length
+          ? run(
+              `SELECT a.id, a.user_id, a.store_id, a.profesional_id, a.created_at FROM appointments a
+               WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")} AND a.user_id IN (:farUserIds)`,
+              { farUserIds }
+            )
+          : [],
+        farIds.length
+          ? run(
+              `SELECT ai.appointment_id FROM appointment_items ai
+               WHERE ai.appointment_id IN (:farIds)
+                 AND COALESCE(ai.list_amount, 0) > COALESCE(ai.service_amount, 0)
+               GROUP BY ai.appointment_id`,
+              { farIds }
+            )
+          : [],
+      ]);
+      const discountedSet = new Set(discountedItems.map((r) => Number(r.appointment_id)));
+      const historyByUser = new Map();
+      for (const h of history) {
+        const list = historyByUser.get(h.user_id) || [];
+        list.push(h);
+        historyByUser.set(h.user_id, list);
+      }
+      const reasonCounts = Object.fromEntries(TRAVEL_REASONS.map((r) => [r.key, 0]));
+      for (const r of far) {
+        const before = (historyByUser.get(r.user_id) || []).filter(
+          (h) => h.id !== r.id && new Date(h.created_at) < new Date(r.created_at)
+        );
+        const booked = salonById.get(Number(r.store_id));
+        const nearestRated = liveSalons
+          .filter((s) => s.id !== Number(r.store_id) && s.rating !== null)
+          .map((s) => ({ rating: s.rating, d: haversineKm(r.user_lat, r.user_lng, s.lat, s.lng) }))
+          .sort((a, b) => a.d - b.d)
+          .slice(0, NEAREST_SALONS_FOR_RATING);
+        const nearbyRating = avg(nearestRated.map((s) => s.rating));
+        let reason = "other";
+        if (before.some((h) => Number(h.store_id) === Number(r.store_id))) reason = "regular";
+        else if (r.profesional_id && before.some((h) => Number(h.profesional_id) === Number(r.profesional_id))) reason = "stylist";
+        else if (num(r.discount_id) > 0 || discountedSet.has(Number(r.id))) reason = "price";
+        else if (booked?.rating !== null && booked?.rating !== undefined && nearbyRating !== null && booked.rating > nearbyRating) reason = "rating";
+        reasonCounts[reason] += 1;
+      }
+
+      // Far travelling users (average distance 20+ km).
+      const farUsersAll = locatedUsers
+        .filter((u) => u.avg_km >= FAR_USER_KM)
+        .sort((a, b) => b.avg_km - a.avg_km);
+      const nameIds = (data.include_far_users ? farUsersAll : farUsersAll.slice(0, FAR_USERS_PREVIEW)).map((u) => u.user_id);
+      const names = nameIds.length
+        ? await run(`SELECT id, firstname, lastname, phone FROM User WHERE id IN (:nameIds)`, { nameIds })
+        : [];
+      const nameById = new Map(names.map((n) => [Number(n.id), n]));
+      const farUserRow = (u) => {
+        const n = nameById.get(Number(u.user_id));
+        return {
+          user_id: u.user_id,
+          name: n ? [n.firstname, n.lastname].filter(Boolean).join(" ").trim() || null : null,
+          phone: n?.phone ? String(n.phone) : null,
+          avg_distance_km: round(u.avg_km),
+          avg_travel_min: round(u.avg_km * TRAVEL_MINUTES_PER_KM),
+          bookings: u.bookings,
+          spent: round(u.spent, 2),
+        };
+      };
+      if (data.include_far_users) {
+        return { from: win.from, to: win.to, far_users: farUsersAll.map(farUserRow) };
+      }
+
+      // Frequency, time preference and new vs returning, by distance bucket.
+      const frequencyUsers = grid(FREQUENCY_BUCKETS.length);
+      const frequencyBookings = grid(FREQUENCY_BUCKETS.length);
+      for (const u of locatedUsers) {
+        const r = bucketIndex(DISTANCE_BUCKETS, u.avg_km);
+        const c = countIndex(FREQUENCY_BUCKETS, u.bookings);
+        frequencyUsers[r][c] += 1;
+        frequencyBookings[r][c] += u.bookings;
+      }
+      const timeBookings = grid(TIME_PREFERENCE_START_HOURS.length);
+      const timeUserSets = DISTANCE_BUCKETS.map(() => TIME_PREFERENCE_START_HOURS.map(() => new Set()));
+      for (const r of located) {
+        if (r.slot_hour === null || r.slot_hour === undefined) continue;
+        const row = bucketIndex(DISTANCE_BUCKETS, distanceOf(r));
+        const col = Math.min(
+          TIME_PREFERENCE_START_HOURS.length - 1,
+          Math.max(0, Math.floor((Number(r.slot_hour) - TIME_PREFERENCE_START_HOURS[0]) / 2))
+        );
+        timeBookings[row][col] += 1;
+        timeUserSets[row][col].add(r.user_id);
+      }
+      const locatedIds = locatedUsers.map((u) => u.user_id);
+      const firsts = locatedIds.length
+        ? await run(
+            `SELECT a.user_id, MIN(a.created_at) AS first_at FROM appointments a
+             WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")} AND a.user_id IN (:locatedIds) GROUP BY a.user_id`,
+            { locatedIds }
+          )
+        : [];
+      const firstById = new Map(firsts.map((r) => [r.user_id, new Date(r.first_at).getTime()]));
+      const windowStartMs = Date.parse(`${win.from}T00:00:00+05:30`);
+      const newVsReturning = DISTANCE_BUCKETS.map((b) => ({ key: b.key, label: b.label, new: 0, returning: 0 }));
+      for (const u of locatedUsers) {
+        const row = newVsReturning[bucketIndex(DISTANCE_BUCKETS, u.avg_km)];
+        if ((firstById.get(u.user_id) || 0) >= windowStartMs) row.new += 1;
+        else row.returning += 1;
+      }
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { city: f.city },
+        location_since: since?.location_since || null,
+        travel_minutes_per_km: TRAVEL_MINUTES_PER_KM,
+        kpis: kpisOf(rows, repeat),
+        previous_kpis: kpisOf(prevRows, prevRepeat),
+        heatmap: { basis: heatBasis, total_bookings: heatTotal, cells: heatCells },
+        distance_buckets: distanceBuckets,
+        travel_time_buckets: travelTimeBuckets,
+        scatter: {
+          bookings: { points: sample(bookingPoints), total: bookingPoints.length, trend: trendOf(bookingPoints) },
+          users: { points: sample(userPoints), total: userPoints.length, trend: trendOf(userPoints) },
+        },
+        reasons: {
+          far_booking_km: FAR_BOOKING_KM,
+          far_bookings: far.length,
+          rows: TRAVEL_REASONS.map((r) => ({ key: r.key, label: r.label, bookings: reasonCounts[r.key] })),
+        },
+        far_user_km: FAR_USER_KM,
+        far_users: farUsersAll.slice(0, FAR_USERS_PREVIEW).map(farUserRow),
+        far_users_total: farUsersAll.length,
+        distance_rows: DISTANCE_BUCKETS.map((b) => ({ key: b.key, label: b.label })),
+        frequency: {
+          cols: FREQUENCY_BUCKETS.map((b) => ({ key: b.key, label: b.label })),
+          users: frequencyUsers,
+          bookings: frequencyBookings,
+        },
+        time_preference: {
+          start_hours: TIME_PREFERENCE_START_HOURS,
+          bookings: timeBookings,
+          users: timeUserSets.map((row) => row.map((set) => set.size)),
+        },
+        new_vs_returning: newVsReturning,
+        cities,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getDeepUserInsightsV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch deep user insights");
+    }
+  },
+
+  // ── Growth dashboard V2 ──
+  // Free slot seats per live salon per day, fromDate .. end (exclusive), by
+  // the app's availability rule (getSlotStatusV2): the weekday's active
+  // slots, nothing on a one-off or weekly holiday, blocked slots out, `chairs`
+  // seats per slot (1 without a chair subscription), minus occupied seats.
+  // `upcoming` = free seats in slots that haven't started yet (differs from
+  // `free` only today). Returns Map(store_id -> { ...salon, days: Map }).
+  getSlotCapacity: async (fromDate, end) => {
+    const run = (sql) =>
+      adminDbController.connection.query(sql, {
+        replacements: { fromDate, end },
+        type: Sequelize.QueryTypes.SELECT,
+      });
+    const live = "s.status = 'active' AND s.completion_status = 'completed'";
+    const [stores, slots, blocked, holidays, weekly, chairs, occupied] = await Promise.all([
+      run(`
+        SELECT s.id, s.name, pa.area, pa.city, pa.district, pa.latitude, pa.longitude
+        FROM Store s LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+        WHERE ${live}`),
+      run(`
+        SELECT sl.id, sl.store_id, sl.day, TIME_FORMAT(sl.\`from\`, '%H:%i') AS start
+        FROM Slots sl INNER JOIN Store s ON s.id = sl.store_id
+        WHERE sl.status = 'active' AND ${live}`),
+      run(`
+        SELECT slot_id, DATE_FORMAT(blocked_date, '%Y-%m-%d') AS d FROM SlotBlockedDates
+        WHERE blocked_date >= :fromDate AND blocked_date < :end`),
+      run(`
+        SELECT store_id, DATE_FORMAT(holiday_date, '%Y-%m-%d') AS d FROM StoreHolidays
+        WHERE holiday_date >= :fromDate AND holiday_date < :end`),
+      run(`SELECT store_id, weekday FROM StoreWeeklyHolidays`),
+      run(`
+        SELECT store_id, MAX(quantity) AS quantity FROM StoreSubscription
+        WHERE status = 'active' AND type = 'chairs' GROUP BY store_id`),
+      run(`
+        SELECT a.slot_id, DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS d, COUNT(*) AS n
+        FROM appointments a
+        WHERE a.slot_id IS NOT NULL AND a.booking_date >= :fromDate AND a.booking_date < :end
+          AND ${SLOT_OCCUPIED_SQL}
+        GROUP BY a.slot_id, d`),
+    ]);
+
+    const today = toIstDatePart(new Date());
+    const nowHm = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).format(new Date());
+    const blockedSet = new Set(blocked.map((b) => `${b.slot_id}|${b.d}`));
+    const holidaySet = new Set(holidays.map((h) => `${h.store_id}|${h.d}`));
+    const weeklySet = new Set(weekly.map((w) => `${w.store_id}|${Number(w.weekday)}`));
+    const seats = new Map(chairs.map((c) => [Number(c.store_id), Math.max(1, Number(c.quantity) || 1)]));
+    const taken = new Map(occupied.map((o) => [`${o.slot_id}|${o.d}`, Number(o.n) || 0]));
+    const slotsByStore = new Map();
+    for (const sl of slots) {
+      const list = slotsByStore.get(Number(sl.store_id)) || [];
+      list.push(sl);
+      slotsByStore.set(Number(sl.store_id), list);
+    }
+
+    const byStore = new Map();
+    for (const s of stores) {
+      const id = Number(s.id);
+      const perSlot = seats.get(id) || 1;
+      const days = new Map();
+      for (let d = fromDate; d < end; d = addDays(d, 1)) {
+        const weekday = new Date(`${d}T00:00:00Z`).getUTCDay();
+        const cell = { total: 0, free: 0, upcoming: 0, closed: false };
+        if (holidaySet.has(`${id}|${d}`) || weeklySet.has(`${id}|${weekday}`)) {
+          cell.closed = true;
+        } else {
+          for (const sl of slotsByStore.get(id) || []) {
+            if (sl.day && sl.day !== SLOT_WEEKDAYS[weekday]) continue;
+            if (blockedSet.has(`${sl.id}|${d}`)) continue;
+            const free = Math.max(0, perSlot - (taken.get(`${sl.id}|${d}`) || 0));
+            cell.total += perSlot;
+            cell.free += free;
+            if (d > today || (d === today && sl.start > nowHm)) cell.upcoming += free;
+          }
+        }
+        days.set(d, cell);
+      }
+      byStore.set(id, {
+        id,
+        name: s.name,
+        area: placeLabel(s.area),
+        // District first - the cleanest city field (see salonCityKeySql).
+        city: placeLabel(String(s.district || "").trim() || s.city),
+        lat: Number(s.latitude),
+        lng: Number(s.longitude),
+        days,
+      });
+    }
+    return byStore;
+  },
+
+  // Users a bulk push goes to: name and push token, terminated accounts out.
+  getUsersForBulkPush: async (userIds) =>
+    adminDbController.connection.query(
+      `SELECT id, firstname, lastname, device_id FROM User WHERE id IN (:userIds) AND status <> 'terminated'`,
+      { replacements: { userIds }, type: Sequelize.QueryTypes.SELECT }
+    ),
+
+  // Growth dashboard: `date` drives the "today" cards (intent, drop-off,
+  // empty slots, supply vs demand, alerts), from/to (default: the date's
+  // month to date) the period cards. include_list returns one full list for
+  // a "View" dialog instead.
+  getGrowthDashboardV2: async (data = {}) => {
+    try {
+      const today = toIstDatePart(new Date());
+      const date = data.date ? String(data.date) : today;
+      if (!isValidDate(date)) throw Error.BadRequest("date must be YYYY-MM-DD");
+      const period = resolveAnalyticsWindow(
+        data.from || data.to ? data : { from: `${date.slice(0, 7)}-01`, to: date },
+        30
+      );
+      const day = { from: date, to: date, end: addDays(date, 1) };
+      const yesterday = addDays(date, -1);
+      const valueFrom = addDays(date, -(BOOKING_VALUE_LOOKBACK_DAYS - 1));
+      const list = GROWTH_LISTS.includes(data.include_list) ? data.include_list : null;
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const floor = bookingFloorSql("a");
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: {
+            dayFrom: day.from,
+            dayEnd: day.end,
+            from: period.from,
+            end: period.end,
+            yesterday,
+            valueFrom,
+            cutoff: cutoff || null,
+            ...extra,
+          },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+
+      const [
+        [since],
+        dayAppts,
+        dayViews,
+        [dayActive],
+        firsts,
+        [freq],
+        [userTotal],
+        secondRows,
+        latestLocations,
+        periodActive,
+        periodBookers,
+        periodBookings,
+        periodViewers,
+        [failures],
+        [cancels],
+        valueRows,
+        [platformValue],
+        dayCap,
+        periodCap,
+        baseAlerts,
+      ] = await Promise.all([
+        run(`
+          SELECT (SELECT DATE_FORMAT(MIN(started_at), '%Y-%m-%d') FROM UserAppSessions) AS activity_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents) AS events_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserLocations) AS location_since`),
+        // Checkouts placed on the day (an appointment row carries the slot).
+        // Paid includes bookings refunded later.
+        run(`
+          SELECT a.user_id, MAX(${PAYMENT_MADE_SQL}) AS paid, COUNT(*) AS attempts, MAX(a.created_at) AS last_at
+          FROM appointments a
+          WHERE a.user_id IS NOT NULL AND a.created_at >= :dayFrom AND a.created_at < :dayEnd AND ${floor}
+          GROUP BY a.user_id`),
+        run(`
+          SELECT e.user_id, e.store_id, COUNT(*) AS n, MAX(e.created_at) AS last_at
+          FROM UserEvents e
+          WHERE e.event = 'salon_view' AND e.created_at >= :dayFrom AND e.created_at < :dayEnd
+          GROUP BY e.user_id, e.store_id`),
+        run(`
+          SELECT COUNT(DISTINCT s.user_id) AS users FROM UserAppSessions s
+          WHERE s.started_at < :dayEnd AND s.last_seen_at >= :dayFrom`),
+        // First served booking since go-live placed in the period.
+        run(`
+          SELECT a.user_id, a.id, a.created_at
+          FROM (
+            SELECT a.user_id, MIN(a.id) AS first_id FROM appointments a
+            WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${floor} GROUP BY a.user_id
+          ) fb
+          INNER JOIN appointments a ON a.id = fb.first_id
+          WHERE a.created_at >= :from AND a.created_at < :end`),
+        // Lifetime served bookings per (non-terminated) user up to period end.
+        run(`
+          SELECT COUNT(*) AS bookers,
+            COALESCE(SUM(x.n = 1), 0) AS b1, COALESCE(SUM(x.n = 2), 0) AS b2,
+            COALESCE(SUM(x.n BETWEEN 3 AND 4), 0) AS b3_4, COALESCE(SUM(x.n BETWEEN 5 AND 9), 0) AS b5_9,
+            COALESCE(SUM(x.n >= 10), 0) AS b10, COALESCE(SUM(x.n >= 3), 0) AS ge3, COALESCE(SUM(x.n >= 5), 0) AS ge5
+          FROM (
+            SELECT a.user_id, COUNT(*) AS n FROM appointments a
+            INNER JOIN User u ON u.id = a.user_id AND u.status <> 'terminated'
+            WHERE ${ACTIVE_BOOKING_SQL} AND ${floor} AND a.created_at < :end
+            GROUP BY a.user_id
+          ) x`),
+        run(`
+          SELECT COUNT(*) AS c FROM User u
+          WHERE u.status <> 'terminated' AND (u.registered_at IS NULL OR u.registered_at < :end)`),
+        // 2nd served booking placed in the period, and days since the 1st.
+        run(`
+          SELECT r.user_id,
+            DATEDIFF(MAX(CASE WHEN r.rn = 2 THEN r.created_at END), MAX(CASE WHEN r.rn = 1 THEN r.created_at END)) AS days
+          FROM (
+            SELECT a.user_id, a.created_at,
+              ROW_NUMBER() OVER (PARTITION BY a.user_id ORDER BY a.created_at, a.id) AS rn
+            FROM appointments a WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${floor}
+          ) r
+          WHERE r.rn <= 2
+          GROUP BY r.user_id
+          HAVING MAX(CASE WHEN r.rn = 2 THEN r.created_at END) >= :from
+             AND MAX(CASE WHEN r.rn = 2 THEN r.created_at END) < :end`),
+        run(`
+          SELECT l.user_id, l.lat, l.lng FROM UserLocations l
+          INNER JOIN (
+            SELECT user_id, MAX(id) AS id FROM UserLocations WHERE created_at < :end GROUP BY user_id
+          ) m ON m.id = l.id`),
+        run(`
+          SELECT DISTINCT s.user_id FROM UserAppSessions s
+          WHERE s.started_at < :end AND s.last_seen_at >= :from`),
+        run(`
+          SELECT DISTINCT a.user_id FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND a.user_id IS NOT NULL AND ${floor}
+            AND a.created_at >= :from AND a.created_at < :end`),
+        run(`
+          SELECT a.store_id, COUNT(*) AS n FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND ${floor} AND a.created_at >= :from AND a.created_at < :end
+          GROUP BY a.store_id`),
+        run(`
+          SELECT e.store_id, e.user_id FROM UserEvents e
+          WHERE e.event = 'salon_view' AND e.store_id IS NOT NULL
+            AND e.created_at >= :from AND e.created_at < :end
+          GROUP BY e.store_id, e.user_id`),
+        run(`
+          SELECT COUNT(*) AS attempts, COUNT(DISTINCT a.user_id) AS users FROM appointments a
+          WHERE a.payment_status = 'failed' AND a.created_at >= :dayFrom AND a.created_at < :dayEnd AND ${floor}`),
+        // Paid bookings for the day's and the previous day's appointments that
+        // were cancelled or refunded - by booking date, as Dashboard V2 does:
+        // cancel paths don't record when they happened (updated_at untouched).
+        run(`
+          SELECT COALESCE(SUM(a.booking_date >= :dayFrom), 0) AS today,
+                 COALESCE(SUM(a.booking_date < :dayFrom), 0) AS yesterday
+          FROM appointments a
+          WHERE a.status IN ('cancelled', 'refunded') AND ${PAYMENT_MADE_SQL} AND ${floor}
+            AND a.booking_date >= :yesterday AND a.booking_date < :dayEnd`),
+        run(`
+          SELECT a.store_id, AVG(${AMOUNT_PAID_SQL}) AS value FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND ${floor} AND a.created_at >= :valueFrom AND a.created_at < :dayEnd
+          GROUP BY a.store_id`),
+        run(`
+          SELECT AVG(${AMOUNT_PAID_SQL}) AS value FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND ${floor} AND a.created_at >= :valueFrom AND a.created_at < :dayEnd`),
+        adminDbController.app.getSlotCapacity(day.from, day.end),
+        adminDbController.app.getSlotCapacity(period.from, period.end),
+        adminDbController.app.getDashboardV2Alerts({}).catch(() => null),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const activitySince = since?.activity_since || null;
+      const eventsSince = since?.events_since || null;
+      const dayWord = date === today ? "today" : `on ${date}`;
+
+      // ---- High intent (the day): picked a slot but didn't pay, or browsed
+      // more than one salon / one salon more than once without booking.
+      const apptByUser = new Map(dayAppts.map((r) => [r.user_id, r]));
+      const viewsByUser = new Map();
+      for (const v of dayViews) {
+        const u = viewsByUser.get(v.user_id) || { salons: new Set(), views: 0, maxPerSalon: 0, last: 0 };
+        u.salons.add(v.store_id);
+        u.views += num(v.n);
+        u.maxPerSalon = Math.max(u.maxPerSalon, num(v.n));
+        u.last = Math.max(u.last, new Date(v.last_at).getTime());
+        viewsByUser.set(v.user_id, u);
+      }
+      const INTENT_SEGMENTS = [
+        { key: "slot", label: "Selected Slot, Didn't Pay" },
+        { key: "multiple", label: "Viewed Multiple Salons" },
+        { key: "revisit", label: "Revisited a Salon" },
+      ];
+      const intent = [];
+      for (const userId of new Set([...apptByUser.keys(), ...viewsByUser.keys()])) {
+        const appt = apptByUser.get(userId);
+        if (appt && num(appt.paid)) continue;
+        const v = viewsByUser.get(userId);
+        let segment = null;
+        if (appt) segment = "slot";
+        else if (v.salons.size >= 2) segment = "multiple";
+        else if (v.maxPerSalon >= 2) segment = "revisit";
+        if (!segment) continue;
+        const lastMs = Math.max(appt ? new Date(appt.last_at).getTime() : 0, v ? v.last : 0);
+        intent.push({
+          user_id: userId,
+          segment,
+          segment_label: INTENT_SEGMENTS.find((s) => s.key === segment).label,
+          checkout_attempts: appt ? num(appt.attempts) : 0,
+          salons_viewed: v ? v.salons.size : 0,
+          salon_views: v ? v.views : 0,
+          last_seen_at: lastMs ? new Date(lastMs).toISOString() : null,
+        });
+      }
+      const dropoffUsers = intent.filter((u) => u.segment === "slot");
+
+      // ---- First-time bookers of the period and where they are now.
+      const firstIds = firsts.map((f) => f.user_id);
+      const [bookCounts, lastSession, lastEvent, lastAppt] = firstIds.length
+        ? await Promise.all([
+            run(
+              `SELECT a.user_id, COUNT(*) AS n FROM appointments a
+               WHERE ${ACTIVE_BOOKING_SQL} AND ${floor} AND a.user_id IN (:firstIds) GROUP BY a.user_id`,
+              { firstIds }
+            ),
+            run(`SELECT user_id, MAX(last_seen_at) AS at FROM UserAppSessions WHERE user_id IN (:firstIds) GROUP BY user_id`, { firstIds }),
+            run(`SELECT user_id, MAX(created_at) AS at FROM UserEvents WHERE user_id IN (:firstIds) GROUP BY user_id`, { firstIds }),
+            run(`SELECT user_id, MAX(created_at) AS at FROM appointments WHERE user_id IN (:firstIds) GROUP BY user_id`, { firstIds }),
+          ])
+        : [[], [], [], []];
+      const countById = new Map(bookCounts.map((r) => [r.user_id, num(r.n)]));
+      const lastMsById = new Map();
+      for (const r of [...lastSession, ...lastEvent, ...lastAppt]) {
+        const ms = r.at ? new Date(r.at).getTime() : 0;
+        lastMsById.set(r.user_id, Math.max(lastMsById.get(r.user_id) || 0, ms));
+      }
+      const TRACKER = [
+        { key: "booked_again", label: "Already Booked Again" },
+        { key: "active_not_booked", label: "Active but Not Booked" },
+        { key: "no_activity", label: "No Activity" },
+        { key: "churn_risk", label: "Churn Risk" },
+      ];
+      const nowMs = Date.now();
+      const churnMs = CHURN_RISK_DAYS * 864e5;
+      const firstTimers = firsts.map((f) => {
+        const firstMs = new Date(f.created_at).getTime();
+        const lastMs = lastMsById.get(f.user_id) || firstMs;
+        let status;
+        if ((countById.get(f.user_id) || 0) >= 2) status = "booked_again";
+        else if (lastMs > firstMs && nowMs - lastMs <= churnMs) status = "active_not_booked";
+        else if (nowMs - Math.max(lastMs, firstMs) > churnMs) status = "churn_risk";
+        else status = "no_activity";
+        return {
+          user_id: f.user_id,
+          first_booking_at: new Date(firstMs).toISOString(),
+          last_active_at: new Date(Math.max(lastMs, firstMs)).toISOString(),
+          status,
+          status_label: TRACKER.find((t) => t.key === status).label,
+        };
+      });
+      const secondBookingUsers = firstTimers.filter((u) => u.status === "active_not_booked");
+
+      // ---- Empty slots on the day and what filling them could earn.
+      const valueByStore = new Map(valueRows.map((r) => [Number(r.store_id), num(r.value)]));
+      const fallbackValue = num(platformValue?.value);
+      const salonsToday = [...dayCap.values()].map((s) => {
+        const cell = s.days.get(date) || { total: 0, free: 0, upcoming: 0, closed: false };
+        const freeSeats = date >= today ? cell.upcoming : cell.free;
+        const value = valueByStore.get(s.id) || fallbackValue;
+        return {
+          store_id: s.id,
+          salon_name: s.name,
+          area: s.area,
+          city: s.city,
+          closed: cell.closed,
+          total_seats: cell.total,
+          free_seats: freeSeats,
+          free_all_day: cell.free,
+          avg_booking_value: Number(value.toFixed(2)),
+          potential_revenue: Number((freeSeats * value).toFixed(2)),
+        };
+      });
+      const emptySlots = salonsToday.reduce((t, s) => t + s.free_seats, 0);
+      const potentialRevenue = salonsToday.reduce((t, s) => t + s.potential_revenue, 0);
+      const emptySalons = salonsToday.filter(
+        (s) => s.total_seats >= EMPTY_SALON_MIN_SEATS && s.free_all_day / s.total_seats >= EMPTY_SALON_FREE_SHARE
+      );
+
+      // ---- Locations: areas of live salons. A user belongs to the area of
+      // the salon nearest their latest reported location.
+      const areaKey = (s) => `${placeKey(s.area) || "unknown"}|${placeKey(s.city)}`;
+      const areas = new Map();
+      const areaOfStore = new Map();
+      for (const s of periodCap.values()) {
+        const key = areaKey(s);
+        const a = areas.get(key) || {
+          key,
+          area: s.area || "Unknown area",
+          city: s.city,
+          salons: 0,
+          users: new Set(),
+          active: 0,
+          bookers: 0,
+          bookings: 0,
+          demand: new Set(),
+          capacity: 0,
+          day_demand: new Set(),
+          day_capacity: 0,
+        };
+        a.salons += 1;
+        for (const cell of s.days.values()) a.capacity += cell.free;
+        const todayCell = dayCap.get(s.id)?.days.get(date);
+        if (todayCell) a.day_capacity += todayCell.free;
+        areas.set(key, a);
+        areaOfStore.set(s.id, key);
+      }
+      const located = [...periodCap.values()].filter((s) => Number.isFinite(s.lat) && Number.isFinite(s.lng) && (s.lat || s.lng));
+      const activeSet = new Set(periodActive.map((r) => r.user_id));
+      const bookerSet = new Set(periodBookers.map((r) => r.user_id));
+      for (const loc of latestLocations) {
+        let best = null;
+        for (const s of located) {
+          const d = haversineKm(loc.lat, loc.lng, s.lat, s.lng);
+          if (!best || d < best.d) best = { d, key: areaOfStore.get(s.id) };
+        }
+        const a = best && areas.get(best.key);
+        if (!a) continue;
+        a.users.add(loc.user_id);
+        if (activeSet.has(loc.user_id)) a.active += 1;
+        if (bookerSet.has(loc.user_id)) a.bookers += 1;
+      }
+      for (const r of periodBookings) {
+        const a = areas.get(areaOfStore.get(Number(r.store_id)));
+        if (a) a.bookings += num(r.n);
+      }
+      for (const r of periodViewers) areas.get(areaOfStore.get(Number(r.store_id)))?.demand.add(r.user_id);
+      for (const r of dayViews) areas.get(areaOfStore.get(Number(r.store_id)))?.day_demand.add(r.user_id);
+
+      const capacities = [...areas.values()].map((a) => a.capacity).sort((x, y) => x - y);
+      const medianCapacity = capacities.length ? capacities[Math.floor(capacities.length / 2)] : 0;
+      const statusOf = (demand, capacity, median) => {
+        if (!demand) return "balanced";
+        if (demand >= capacity) return capacity < median || !capacity ? "low_supply" : "high_demand";
+        return demand / capacity >= 0.6 ? "moderate" : "balanced";
+      };
+      const locationRows = [...areas.values()]
+        .map((a) => ({
+          key: a.key,
+          area: a.area,
+          city: a.city,
+          salons: a.salons,
+          users: a.users.size,
+          active_users: a.active,
+          bookings: a.bookings,
+          // Share of the area's users who made a served booking in the period.
+          conversion_pct: pct(a.bookers, a.users.size),
+          demand: a.demand.size,
+          free_capacity: a.capacity,
+          status: statusOf(a.demand.size, a.capacity, medianCapacity),
+        }))
+        .sort((x, y) => y.users - x.users || y.bookings - x.bookings || y.free_capacity - x.free_capacity);
+      const dayCapacities = [...areas.values()].map((a) => a.day_capacity).sort((x, y) => x - y);
+      const medianDayCapacity = dayCapacities.length ? dayCapacities[Math.floor(dayCapacities.length / 2)] : 0;
+      const supplyRows = [...areas.values()]
+        .map((a) => ({
+          key: a.key,
+          area: a.area,
+          demand: a.day_demand.size,
+          capacity: a.day_capacity,
+          status: statusOf(a.day_demand.size, a.day_capacity, medianDayCapacity),
+        }))
+        .sort((x, y) => y.demand - x.demand || y.capacity - x.capacity);
+      const overCapacity = supplyRows.filter((r) => r.demand > 0 && r.demand > r.capacity);
+
+      // ---- Booking frequency and level-to-level conversion (lifetime).
+      const totalUsers = num(userTotal?.c);
+      const bookers = num(freq?.bookers);
+      const reached = { 1: bookers, 2: bookers - num(freq?.b1), 3: num(freq?.ge3), 5: num(freq?.ge5), 10: num(freq?.b10) };
+      const freqCounts = {
+        never: Math.max(0, totalUsers - bookers),
+        1: num(freq?.b1),
+        2: num(freq?.b2),
+        "3-4": num(freq?.b3_4),
+        "5-9": num(freq?.b5_9),
+        "10+": num(freq?.b10),
+      };
+
+      // ---- Day funnel: app opened -> viewed a salon -> picked a slot
+      // (checkout) -> paid. Stages with no data yet are null.
+      const viewers = viewsByUser.size;
+      const paidUsers = dayAppts.filter((r) => num(r.paid)).length;
+      const stages = [
+        { key: "app_opened", label: "App Opened", users: activitySince && activitySince <= date ? num(dayActive?.users) : null },
+        { key: "viewed_salon", label: "Viewed Salon", users: eventsSince && eventsSince <= date ? viewers : null },
+        { key: "selected_slot", label: "Selected Slot (Checkout)", users: apptByUser.size },
+        { key: "completed", label: "Booking Completed", users: paidUsers },
+      ];
+      let previous = null;
+      for (const stage of stages) {
+        if (stage.users === null) continue;
+        if (previous) {
+          stage.drop = Math.max(0, previous.users - stage.users);
+          stage.drop_pct = pct(stage.drop, previous.users);
+          stage.drop_from = previous.key;
+        }
+        previous = stage;
+      }
+      const biggest = stages
+        .filter((s) => s.drop_pct !== undefined && s.drop_pct !== null)
+        .sort((a, b) => b.drop_pct - a.drop_pct)[0];
+      const viewersWithoutSlot = [...viewsByUser.keys()].filter((id) => !apptByUser.has(id)).length;
+
+      // ---- Alerts.
+      const alerts = [];
+      const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+      const addAlert = (key, severity, count, text, action) => {
+        if (count > 0) alerts.push({ key, severity, count, text, action });
+      };
+      addAlert("high_intent", "high", intent.length, `${plural(intent.length, "high-intent user", "high-intent users")} didn't complete a booking ${dayWord}.`, {
+        label: "Take Action",
+        list: "high_intent",
+      });
+      addAlert(
+        "unpaid_checkouts",
+        "medium",
+        num(failures?.attempts),
+        `${plural(num(failures?.attempts), "booking attempt wasn't", "booking attempts weren't")} paid (failed or abandoned) ${dayWord}.`,
+        { label: "Investigate", list: "checkout_dropoff" }
+      );
+      addAlert(
+        "empty_salons",
+        "medium",
+        emptySalons.length,
+        `${plural(emptySalons.length, "salon has", "salons have")} ${EMPTY_SALON_FREE_SHARE * 100}%+ of their slots empty ${dayWord}.`,
+        { label: "Create Offer", route: "/coupon" }
+      );
+      addAlert(
+        "demand_over_capacity",
+        "medium",
+        overCapacity.length,
+        `${plural(overCapacity.length, "location has", "locations have")} more interested customers than free slots ${dayWord}.`,
+        { label: "View Locations", list: "locations" }
+      );
+      const cancelToday = num(cancels?.today);
+      const cancelYesterday = num(cancels?.yesterday);
+      if (cancelToday > cancelYesterday) {
+        addAlert(
+          "cancellations",
+          "high",
+          cancelToday,
+          cancelYesterday
+            ? `Cancellations of ${date === today ? "today's" : `${date}'s`} appointments are up ${Math.round(((cancelToday - cancelYesterday) / cancelYesterday) * 100)}% on the day before (${cancelToday} vs ${cancelYesterday}).`
+            : `${plural(cancelToday, "paid appointment", "paid appointments")} for ${date === today ? "today" : date} cancelled or refunded (none the day before).`,
+          { label: "View Cancellations", route: "/bookings-by-order-date-v2" }
+        );
+      }
+      if (baseAlerts) {
+        addAlert(
+          "idle_salons",
+          "low",
+          num(baseAlerts.idle_salons?.count),
+          `${plural(num(baseAlerts.idle_salons?.count), "salon", "salons")} had no bookings in the last ${baseAlerts.idle_salons?.days || 7} days.`,
+          { label: "View Salons", route: "/partner" }
+        );
+        addAlert(
+          "overdue_payouts",
+          "low",
+          num(baseAlerts.overdue_payouts?.invoices),
+          `${plural(num(baseAlerts.overdue_payouts?.invoices), "partner payout is", "partner payouts are")} overdue (₹${num(baseAlerts.overdue_payouts?.amount).toLocaleString("en-IN")}).`,
+          { label: "View Payouts", route: "/invoice-payouts-v2" }
+        );
+      }
+
+      // ---- One full list for a "View" dialog.
+      if (list) {
+        const withNames = async (rows) => {
+          const ids = [...new Set(rows.map((r) => r.user_id))];
+          const users = ids.length
+            ? await run(`SELECT id, firstname, lastname, phone, gender FROM User WHERE id IN (:ids)`, { ids })
+            : [];
+          const byId = new Map(users.map((u) => [Number(u.id), u]));
+          return rows.map((r) => {
+            const u = byId.get(Number(r.user_id));
+            const gender = u?.gender && String(u.gender).toLowerCase() !== "null" ? String(u.gender).trim() : null;
+            return {
+              ...r,
+              name: u ? [u.firstname, u.lastname].filter(Boolean).join(" ").trim() || null : null,
+              phone: u?.phone ? String(u.phone) : null,
+              gender,
+            };
+          });
+        };
+        const byLast = (a, b) => String(b.last_seen_at || "").localeCompare(String(a.last_seen_at || ""));
+        const rowsFor = {
+          high_intent: () => withNames([...intent].sort(byLast)),
+          checkout_dropoff: () => withNames([...dropoffUsers].sort(byLast)),
+          first_time: () => withNames(firstTimers),
+          second_booking: () => withNames(secondBookingUsers),
+          empty_slots: async () =>
+            salonsToday.filter((s) => s.free_seats > 0).sort((a, b) => b.potential_revenue - a.potential_revenue),
+          locations: async () => locationRows,
+          days_to_second: () =>
+            withNames(secondRows.map((r) => ({ user_id: r.user_id, days: num(r.days) })).sort((a, b) => b.days - a.days)),
+        };
+        return { list, date, period: { from: period.from, to: period.to }, rows: await rowsFor[list]() };
+      }
+
+      return {
+        date,
+        period: { from: period.from, to: period.to },
+        activity_since: activitySince,
+        events_since: eventsSince,
+        location_since: since?.location_since || null,
+        kpis: {
+          high_intent: intent.length,
+          checkout_dropoff: dropoffUsers.length,
+          first_time_users: firstTimers.length,
+          second_booking_users: secondBookingUsers.length,
+          empty_slots: emptySlots,
+          empty_slot_salons: salonsToday.filter((s) => s.free_seats > 0).length,
+          potential_revenue: Number(potentialRevenue.toFixed(2)),
+        },
+        locations: { rows: locationRows.slice(0, GROWTH_PREVIEW_ROWS), total: locationRows.length },
+        supply_demand: supplyRows.slice(0, GROWTH_PREVIEW_ROWS),
+        tracker: {
+          total: firstTimers.length,
+          churn_risk_days: CHURN_RISK_DAYS,
+          rows: TRACKER.map((t) => ({ ...t, users: firstTimers.filter((u) => u.status === t.key).length })),
+        },
+        frequency: {
+          total_users: totalUsers,
+          rows: BOOKING_FREQUENCY_BUCKETS.map((b) => ({ key: b.key, label: b.label, users: freqCounts[b.key] })),
+        },
+        levels: BOOKING_LEVELS.map((l) => ({
+          label: l.label,
+          from_users: reached[l.from],
+          to_users: reached[l.to],
+          rate: pct(reached[l.to], reached[l.from]),
+        })),
+        almost_booked: {
+          total: intent.length,
+          rows: INTENT_SEGMENTS.map((s) => ({ ...s, users: intent.filter((u) => u.segment === s.key).length })),
+        },
+        funnel: {
+          stages,
+          biggest: biggest
+            ? { from: stages.find((s) => s.key === biggest.drop_from)?.label, to: biggest.label, pct: biggest.drop_pct }
+            : null,
+          causes: {
+            unpaid_checkouts: Math.max(0, apptByUser.size - paidUsers),
+            unpaid_attempts: num(failures?.attempts),
+            viewers_without_slot: eventsSince && eventsSince <= date ? viewersWithoutSlot : null,
+            fully_booked_salons: salonsToday.filter((s) => s.total_seats > 0 && s.free_all_day === 0).length,
+            closed_salons: salonsToday.filter((s) => s.closed).length,
+          },
+        },
+        days_to_second: {
+          total: secondRows.length,
+          rows: DAYS_TO_SECOND_BUCKETS.map((b, i) => ({
+            key: b.key,
+            label: b.label,
+            users: secondRows.filter(
+              (r) => DAYS_TO_SECOND_BUCKETS.findIndex((x) => num(r.days) <= x.max) === i
+            ).length,
+          })),
+        },
+        alerts,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getGrowthDashboardV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch growth dashboard");
     }
   },
 

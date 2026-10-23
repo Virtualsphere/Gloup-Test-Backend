@@ -183,6 +183,15 @@ UserSession.init({
     type: DataTypes.ENUM('active', 'expired', 'revoked'),
     allowNull: true,
   },
+  user_agent: {
+    type: DataTypes.STRING(512),
+    allowNull: true,
+  },
+  // android / ios / web / app - see resolveClientPlatform().
+  platform: {
+    type: DataTypes.STRING(16),
+    allowNull: true,
+  },
   created_at: {
     type: DataTypes.DATE,
     allowNull: true,
@@ -196,6 +205,131 @@ UserSession.init({
   timestamps: false,
   freezeTableName: true,
 });
+
+// App usage sessions built from the heartbeat (see appUsageTracker.js).
+class UserAppSessions extends Model { }
+
+UserAppSessions.init({
+  id: {
+    type: DataTypes.BIGINT,
+    autoIncrement: true,
+    primaryKey: true,
+    allowNull: false,
+  },
+  user_id: {
+    type: DataTypes.BIGINT,
+    allowNull: false,
+  },
+  platform: {
+    type: DataTypes.STRING(16),
+    allowNull: true,
+  },
+  started_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+  last_seen_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+  },
+  ended_at: {
+    type: DataTypes.DATE,
+    allowNull: true,
+  },
+}, {
+  sequelize: connection,
+  timestamps: false,
+  freezeTableName: true,
+  // Same as the migration, in case dbSync creates the table first.
+  indexes: [
+    { name: "idx_user_app_sessions_user_seen", fields: ["user_id", "last_seen_at"] },
+    { name: "idx_user_app_sessions_started", fields: ["started_at"] },
+    { name: "idx_user_app_sessions_seen", fields: ["last_seen_at"] },
+  ],
+});
+
+// In-app actions the backend can see: salon_view, coupon_apply.
+class UserEvents extends Model { }
+
+UserEvents.init({
+  id: {
+    type: DataTypes.BIGINT,
+    autoIncrement: true,
+    primaryKey: true,
+    allowNull: false,
+  },
+  user_id: {
+    type: DataTypes.BIGINT,
+    allowNull: false,
+  },
+  event: {
+    type: DataTypes.STRING(32),
+    allowNull: false,
+  },
+  store_id: {
+    type: DataTypes.BIGINT,
+    allowNull: true,
+  },
+  coupon_code: {
+    type: DataTypes.STRING(64),
+    allowNull: true,
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+    defaultValue: DataTypes.NOW,
+  },
+}, {
+  sequelize: connection,
+  timestamps: false,
+  freezeTableName: true,
+  // Same as the migration, in case dbSync creates the table first.
+  indexes: [
+    { name: "idx_user_events_event_created", fields: ["event", "created_at"] },
+    { name: "idx_user_events_user", fields: ["user_id"] },
+  ],
+});
+// Locations the app reports (live GPS or a manually picked place).
+class UserLocations extends Model { }
+
+UserLocations.init({
+  id: {
+    type: DataTypes.BIGINT,
+    autoIncrement: true,
+    primaryKey: true,
+    allowNull: false,
+  },
+  user_id: {
+    type: DataTypes.BIGINT,
+    allowNull: false,
+  },
+  lat: {
+    type: DataTypes.DECIMAL(9, 6),
+    allowNull: false,
+  },
+  lng: {
+    type: DataTypes.DECIMAL(9, 6),
+    allowNull: false,
+  },
+  source: {
+    type: DataTypes.STRING(16),
+    allowNull: false,
+  },
+  created_at: {
+    type: DataTypes.DATE,
+    allowNull: false,
+    defaultValue: DataTypes.NOW,
+  },
+}, {
+  sequelize: connection,
+  timestamps: false,
+  freezeTableName: true,
+  // Same as the migration, in case dbSync creates the table first.
+  indexes: [
+    { name: "idx_user_locations_user_created", fields: ["user_id", "created_at"] },
+  ],
+});
+
 class Favourites extends Model { }
 
 Favourites.init({
@@ -430,6 +564,33 @@ appointments.init({
   },
   customer_email: {
     type: DataTypes.STRING(255),
+    allowNull: true
+  },
+  // Where the customer was when booking (see userLocation.js) and the
+  // straight-line distance to the salon.
+  user_lat: {
+    type: DataTypes.DECIMAL(9, 6),
+    allowNull: true
+  },
+  user_lng: {
+    type: DataTypes.DECIMAL(9, 6),
+    allowNull: true
+  },
+  user_location_source: {
+    type: DataTypes.STRING(16),
+    allowNull: true
+  },
+  distance_km: {
+    type: DataTypes.DECIMAL(7, 2),
+    allowNull: true
+  },
+  // When / by which admin a booking was refunded (updateRefundBookingStatus).
+  refunded_at: {
+    type: DataTypes.DATE,
+    allowNull: true
+  },
+  refunded_by: {
+    type: DataTypes.INTEGER,
     allowNull: true
   },
 }, {
@@ -740,4 +901,4 @@ GuestDetails.init({
   freezeTableName: true,
 });
 
-export { User, OtpLogs, UserSession, Payments, WalletLogs, appointments, appointment_items, user_cart, Reviews, Favourites, user_transaction_logs, refund_requests, NotificationLogs, UsedCoupons, DiscountsUsed, AccountLogs, GuestDetails };
+export { User, OtpLogs, UserSession, UserAppSessions, UserEvents, UserLocations, Payments, WalletLogs, appointments, appointment_items, user_cart, Reviews, Favourites, user_transaction_logs, refund_requests, NotificationLogs, UsedCoupons, DiscountsUsed, AccountLogs, GuestDetails };

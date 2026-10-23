@@ -128,6 +128,11 @@ import {
   getAnalyticsSwitchingV2,
   getAnalyticsGravityV2,
   getAnalyticsUninstalledV2,
+  getUserAnalyticsOverviewV2,
+  getUserRetentionV2,
+  getDeepUserInsightsV2,
+  getGrowthDashboardV2,
+  sendBulkUserPushV2,
   resetAllUserPaidBookingCounts,
   downloadInvoicePDF,
   getInvoicePartnersMonthly,
@@ -359,6 +364,11 @@ approutes.post("/getAnalyticsProfitabilityV2", verifyadmin, getAnalyticsProfitab
 approutes.post("/getAnalyticsSwitchingV2", verifyadmin, getAnalyticsSwitchingV2); // Body: { from, to } - stayed / switched / no return, top switched-to, switching risk per salon
 approutes.post("/getAnalyticsGravityV2", verifyadmin, getAnalyticsGravityV2); // Body: { from, to } - customers, repeat customers, retention per salon and overall
 approutes.post("/getAnalyticsUninstalledV2", verifyadmin, getAnalyticsUninstalledV2); // Body: { from, to, include_users } - push-token-unregistered users, segments, contact list
+approutes.post("/getUserAnalyticsOverviewV2", verifyadmin, getUserAnalyticsOverviewV2); // Body: { from, to, city, platform } - User Analytics V2 KPIs, funnel, activity, heatmaps, drop-offs
+approutes.post("/getUserRetentionV2", verifyadmin, getUserRetentionV2); // Body: { mode: signup|first_booking, to, weeks } - weekly retention cohorts
+approutes.post("/getDeepUserInsightsV2", verifyadmin, getDeepUserInsightsV2); // Body: { from, to, city, include_far_users } - booking distance, travel, heat map, reasons
+approutes.post("/getGrowthDashboardV2", verifyadmin, getGrowthDashboardV2); // Body: { date, from, to, include_list } - intent, empty slots, locations, 2nd booking, alerts
+approutes.post("/sendBulkUserPushV2", verifyadmin, sendBulkUserPushV2); // Body: { user_ids: [], title, description, image } - push + in-app notification to many users
 approutes.post("/resetalluserpaidbookingcounts", verifyadmin, resetAllUserPaidBookingCounts);
 approutes.post("/downloadinvoicepdf/:partnerId", verifyadmin, downloadInvoicePDF);
 approutes.post("/getinvoicepartnersmonthly", verifyadmin, getInvoicePartnersMonthly);

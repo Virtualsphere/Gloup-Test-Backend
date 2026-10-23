@@ -18,6 +18,8 @@ import {
   weekdayName,
 } from "../../utils/storeHolidays.js";
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../utils/servicePricing.js";
+import { resolveClientPlatform } from "../../utils/appUsageTracker.js";
+import { bookingLocationSnapshot } from "../../utils/userLocation.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -113,6 +115,8 @@ userDbController.auth = {
         user_id: userId,
         token: encryptedToken,
         ipv4: deviceinfo.userAgent,
+        user_agent: deviceinfo.userAgent ? String(deviceinfo.userAgent).slice(0, 512) : null,
+        platform: resolveClientPlatform(null, deviceinfo.userAgent),
         status: 'active',
         created_at: new Date(),
         updated_at: new Date(),
@@ -235,7 +239,8 @@ userDbController.auth = {
         user_id: customerId,
         token: token,
         ipv4: device.ip || device.ipv,
-        userAgent: device.userAgent,
+        user_agent: device.userAgent ? String(device.userAgent).slice(0, 512) : null,
+        platform: resolveClientPlatform(null, device.userAgent),
         status: 'active',
         created_at: new Date(),
         updated_at: new Date(),
@@ -1725,7 +1730,9 @@ FROM Store S JOIN PartnerAddress a ON S.address_id = a.id WHERE S.status = 'acti
   },
   createorder: async (data, id, transaction, razorpay_id, is_combo, total, final_total) => {
     try {
+      const location = await bookingLocationSnapshot(id, data.store_id);
       const appointment = await userDbController.Models.appointments.create({
+        ...location,
         store_id: data.store_id,
         booking_date: data.booking_date,
         amount: final_total,
@@ -4154,7 +4161,8 @@ END AS distance
 
   createOrderV2: async (orderData, transaction) => {
     try {
-      return await userDbController.Models.appointments.create(orderData, { transaction });
+      const location = await bookingLocationSnapshot(orderData.user_id, orderData.store_id);
+      return await userDbController.Models.appointments.create({ ...orderData, ...location }, { transaction });
     } catch (error) {
       console.error("createOrderV2 Error:", error);
       throw Error.InternalError("Failed to create order: " + (error.message || error));
