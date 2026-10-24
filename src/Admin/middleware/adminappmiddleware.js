@@ -1364,6 +1364,86 @@ Adminappmiddleware.app = {
         }
     },
 
+    getServiceIntelligenceV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getServiceIntelligenceV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch service intelligence");
+        }
+    },
+    getBookingIntelligenceV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingIntelligenceV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch booking intelligence");
+        }
+    },
+    getSalonHeatmapV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getSalonHeatmapV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salon heatmap");
+        }
+    },
+    getSalonCategoryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getSalonCategoryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salon category intelligence");
+        }
+    },
+    getPartnerPickerV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getPartnerPickerV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salons");
+        }
+    },
+    getPartnerOverviewV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getPartnerOverviewV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch partner overview");
+        }
+    },
+    getUserSegmentsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserSegmentsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user segments");
+        }
+    },
+    getUserLiveFeedV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserLiveFeedV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch live activity");
+        }
+    },
+    getBehaviorAnalyticsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBehaviorAnalyticsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch behavior analytics");
+        }
+    },
+    getClickInteractionV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getClickInteractionV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch click & interaction analytics");
+        }
+    },
     getGrowthDashboardV2: async ({ body }) => {
         try {
             return await adminDbController.app.getGrowthDashboardV2(body || {});

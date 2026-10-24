@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { ApplicationResponse } from "../../core/inc/response/ApplicationResponse.js";
 import { ApplicationResult } from "../../core/result.js";
 import { userappmiddleware } from "../middleware/appmiddleware.js";
+import { clientMetaOf } from "../../core/utils/appUsageTracker.js";
 dotenv.config();
 
 
@@ -1450,6 +1451,29 @@ export const cancelPendingOrderV2 = async (req, res) => {
   }
 };
 
+// Same response shape for the three tracking endpoints below.
+const respondTracking = (handler) => async (req, res) => {
+  try {
+    const data = await handler(req);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
+export const saveAppEventsV2 = respondTracking((req) =>
+  userappmiddleware.user.saveAppEventsV2({ user: req.user, body: req.body, client: clientMetaOf(req) })
+);
+export const saveAttributionV2 = respondTracking((req) =>
+  userappmiddleware.user.saveAttributionV2({ user: req.user, body: req.body, client: clientMetaOf(req) })
+);
+export const saveFeedbackV2 = respondTracking((req) =>
+  userappmiddleware.user.saveFeedbackV2({ user: req.user, body: req.body })
+);
+
 export const saveLocationV2 = async (req, res) => {
   try {
     const data = await userappmiddleware.user.saveLocationV2({ user: req.user, body: req.body });
@@ -1467,7 +1491,7 @@ export const saveLocationV2 = async (req, res) => {
 
 export const userHeartbeat = async (req, res) => {
   userappmiddleware.user
-    .heartbeat({ user: req.user, body: req.body, userAgent: req.get("User-Agent") })
+    .heartbeat({ user: req.user, body: req.body, client: clientMetaOf(req, req.body?.platform) })
     .then((data) => {
       const response = ApplicationResult.forCreated();
       let statuscode = 0;

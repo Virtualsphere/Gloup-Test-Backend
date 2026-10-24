@@ -32,6 +32,7 @@ import {
 } from "../../utils/partnerSubscriptionBilling.js";
 import { addDays, isValidDate, resolveRanges, rangesTableSql } from "../../utils/dashboardRanges.js";
 import { haversineKm } from "../../utils/userLocation.js";
+import { deriveStoreTypeFromServiceNames } from "../../utils/storeGenderFilter.js";
 
 const ALLOWED_STATUS_TRANSITIONS = {
   booked: ["confirmed", "cancelled"],
@@ -603,6 +604,42 @@ const EMPTY_SALON_FREE_SHARE = 0.8;
 const BOOKING_VALUE_LOOKBACK_DAYS = 30;
 const GROWTH_PREVIEW_ROWS = 5;
 const GROWTH_LISTS = ["high_intent", "checkout_dropoff", "first_time", "second_booking", "empty_slots", "locations", "days_to_second"];
+
+// ── Booking analytics V2 (Service / Booking Intelligence, Salon Heatmap,
+// Salon Category, Partner Details) ──
+// A booking counts when it was paid, wasn't cancelled / refunded and is from
+// go-live on; it is dated by booking_date (the service day - the Dashboard /
+// Monthly Report basis) and timed by its slot (Slots.from).
+const PRICE_BANDS = [
+  { key: "lt100", label: "Below ₹99", max: 100 },
+  { key: "100-199", label: "₹100 – ₹199", max: 200 },
+  { key: "200-299", label: "₹200 – ₹299", max: 300 },
+  { key: "300-499", label: "₹300 – ₹499", max: 500 },
+  { key: "500-999", label: "₹500 – ₹999", max: 1000 },
+  { key: "1000+", label: "₹1000+", max: Infinity },
+];
+const hourName = (h) => `${h % 12 || 12} ${h % 24 < 12 ? "AM" : "PM"}`;
+// 12 two-hour slots and the six day bands of the Booking Intelligence page.
+const TWO_HOUR_SLOTS = Array.from({ length: 12 }, (_, i) => `${hourName(i * 2)} - ${hourName(i * 2 + 2)}`);
+const DAY_BANDS = [
+  { key: "night", label: "12 AM - 6 AM", from: 0, to: 6 },
+  { key: "morning", label: "6 AM - 10 AM", from: 6, to: 10 },
+  { key: "midday", label: "10 AM - 2 PM", from: 10, to: 14 },
+  { key: "afternoon", label: "2 PM - 6 PM", from: 14, to: 18 },
+  { key: "evening", label: "6 PM - 10 PM", from: 18, to: 22 },
+  { key: "late", label: "10 PM - 12 AM", from: 22, to: 24 },
+];
+const WEEKDAY_SHORT = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+const WEEKDAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+// Service preferences: a booking this large makes a "high spender".
+const HIGH_SPENDER_BOOKING = 1000;
+const SALON_TYPES = [
+  { key: "men", label: "Men's Salon" },
+  { key: "unisex", label: "Unisex Salon" },
+  { key: "women", label: "Women's Salon" },
+];
+const SERVICE_TOP_ROWS = 7;
+const PARTNER_PEAK_HOURS = Array.from({ length: 19 }, (_, i) => i + 6); // 6 AM .. 12 AM
 
 // { from, to } (YYYY-MM-DD, inclusive, default the last `defaultDays` days)
 // plus `end` (exclusive) and the equal-length previous window.
@@ -9675,10 +9712,24 @@ verifypartnerdetails: async (data) => {
         if (delta > 0 && n === 1) distinct += 1;
         if (delta < 0 && n === 0) distinct -= 1;
       };
+      // WAU: the same slide over 7 days.
+      const seen7 = new Map();
+      let distinct7 = 0;
+      const step7 = (id, delta) => {
+        const n = (seen7.get(id) || 0) + delta;
+        if (n > 0) seen7.set(id, n);
+        else seen7.delete(id);
+        if (delta > 0 && n === 1) distinct7 += 1;
+        if (delta < 0 && n === 0) distinct7 -= 1;
+      };
       for (let d = pairsFrom; d < win.end; d = addDays(d, 1)) {
-        for (const id of byDay.get(d) || []) step(id, 1);
+        for (const id of byDay.get(d) || []) {
+          step(id, 1);
+          step7(id, 1);
+        }
         for (const id of byDay.get(addDays(d, -USER_ANALYTICS_MAU_DAYS)) || []) step(id, -1);
-        daily.set(d, { dau: (byDay.get(d) || []).length, mau: distinct });
+        for (const id of byDay.get(addDays(d, -7)) || []) step7(id, -1);
+        daily.set(d, { dau: (byDay.get(d) || []).length, wau: distinct7, mau: distinct });
       }
       const tracked = (d) => Boolean(activitySince && d >= activitySince && d <= today);
 
@@ -9753,6 +9804,7 @@ verifypartnerdetails: async (data) => {
           logins: num(loginsByDay.get(d)),
           first_bookings: num(firstByDay.get(d)),
           dau: tracked(d) ? daily.get(d)?.dau ?? 0 : null,
+          wau: tracked(d) ? daily.get(d)?.wau ?? 0 : null,
           mau: tracked(d) ? daily.get(d)?.mau ?? 0 : null,
           avg_session_seconds: avg === undefined || avg === null ? null : Math.round(num(avg)),
           uninstalls: uninstallsByDay.get(d) || 0,
@@ -9862,6 +9914,11 @@ verifypartnerdetails: async (data) => {
       if (!isValidDate(to)) throw Error.BadRequest("to must be YYYY-MM-DD");
       if (to > today) to = today;
       const weeks = Math.min(Math.max(Number(data.weeks) || 5, 1), USER_RETENTION_MAX_WEEKS);
+      // Optional custom columns, e.g. [7, 14, 28, 56] for Week 1 / 2 / 4 / 8.
+      const requestedDays = Array.isArray(data.days)
+        ? [...new Set(data.days.map(Number).filter((n) => Number.isInteger(n) && n >= 1 && n <= 365))].sort((a, b) => a - b).slice(0, 8)
+        : [];
+      const retentionDays = requestedDays.length ? requestedDays : USER_RETENTION_DAYS;
       const firstFrom = addDays(to, -(7 * weeks - 1));
       const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
       const replacements = { firstFrom, end: addDays(to, 1), cutoff: cutoff || null };
@@ -9905,7 +9962,7 @@ verifypartnerdetails: async (data) => {
           from: cohortFrom,
           to: cohortTo,
           users: members.length,
-          retention: USER_RETENTION_DAYS.map((n) => {
+          retention: retentionDays.map((n) => {
             if (addDays(cohortTo, n) > today || !members.length) return null;
             const back = members.filter((r) => r.last_d && r.last_d >= addDays(r.d0, n)).length;
             return Number(((back / members.length) * 100).toFixed(1));
@@ -9916,7 +9973,7 @@ verifypartnerdetails: async (data) => {
       return {
         mode,
         to,
-        days: USER_RETENTION_DAYS,
+        days: retentionDays,
         activity_since: since?.activity_since || null,
         cohorts,
       };
@@ -10332,7 +10389,8 @@ verifypartnerdetails: async (data) => {
         FROM Store s LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
         WHERE ${live}`),
       run(`
-        SELECT sl.id, sl.store_id, sl.day, TIME_FORMAT(sl.\`from\`, '%H:%i') AS start
+        SELECT sl.id, sl.store_id, sl.day, TIME_FORMAT(sl.\`from\`, '%H:%i') AS start,
+          (TIME_TO_SEC(sl.\`to\`) - TIME_TO_SEC(sl.\`from\`)) / 60 AS minutes
         FROM Slots sl INNER JOIN Store s ON s.id = sl.store_id
         WHERE sl.status = 'active' AND ${live}`),
       run(`
@@ -10379,7 +10437,8 @@ verifypartnerdetails: async (data) => {
       const days = new Map();
       for (let d = fromDate; d < end; d = addDays(d, 1)) {
         const weekday = new Date(`${d}T00:00:00Z`).getUTCDay();
-        const cell = { total: 0, free: 0, upcoming: 0, closed: false };
+        // free_minutes = free seats x slot length (empty seat time).
+        const cell = { total: 0, free: 0, upcoming: 0, free_minutes: 0, closed: false };
         if (holidaySet.has(`${id}|${d}`) || weeklySet.has(`${id}|${weekday}`)) {
           cell.closed = true;
         } else {
@@ -10387,8 +10446,10 @@ verifypartnerdetails: async (data) => {
             if (sl.day && sl.day !== SLOT_WEEKDAYS[weekday]) continue;
             if (blockedSet.has(`${sl.id}|${d}`)) continue;
             const free = Math.max(0, perSlot - (taken.get(`${sl.id}|${d}`) || 0));
+            const minutes = Number(sl.minutes) > 0 ? Number(sl.minutes) : 30;
             cell.total += perSlot;
             cell.free += free;
+            cell.free_minutes += free * minutes;
             if (d > today || (d === today && sl.start > nowHm)) cell.upcoming += free;
           }
         }
@@ -10974,6 +11035,2100 @@ verifypartnerdetails: async (data) => {
       if (error instanceof ApplicationError) throw error;
       console.log("🚀 ~ getGrowthDashboardV2 error:", error);
       throw Error.SomethingWentWrong("Failed to fetch growth dashboard");
+    }
+  },
+
+  // ── Booking analytics V2 ──
+  // Every salon with its type (men / women / unisex), area and city. The
+  // type is Store.store_type when it names one, else derived from what the
+  // salon's services are for (StoreServices.service_for), like the app's
+  // gender filter does; 'unknown' when neither says.
+  getStoreDirectory: async () => {
+    const rows = await adminDbController.connection.query(
+      `
+      SELECT s.id, s.name, s.logo, s.store_type, s.status, s.completion_status,
+        DATE_FORMAT(s.createdAt, '%Y-%m-%d') AS created_day,
+        pa.area, pa.city, pa.district, pa.latitude, pa.longitude,
+        (SELECT GROUP_CONCAT(DISTINCT ss.service_for) FROM StoreServices ss WHERE ss.store_id = s.id) AS service_for
+      FROM Store s
+      LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+      `,
+      { type: Sequelize.QueryTypes.SELECT }
+    );
+    const typeOf = (storeType, serviceFor) => {
+      const t = String(storeType || "").toLowerCase();
+      if (/unisex|both/.test(t)) return "unisex";
+      if (/female|women|ladies/.test(t)) return "women";
+      if (/male|men|gents/.test(t)) return "men";
+      const derived = String(deriveStoreTypeFromServiceNames(String(serviceFor || "").split(",")) || "").toLowerCase();
+      if (/unisex/.test(derived)) return "unisex";
+      if (/female/.test(derived)) return "women";
+      if (/male/.test(derived)) return "men";
+      return "unknown";
+    };
+    return rows.map((s) => {
+      const city = String(s.district || "").trim() || s.city;
+      const lat = Number(s.latitude);
+      const lng = Number(s.longitude);
+      return {
+        id: Number(s.id),
+        name: s.name,
+        logo: cleanLogo(s.logo),
+        type: typeOf(s.store_type, s.service_for),
+        status: s.status,
+        listed: s.completion_status === "completed" && ["active", "inactive"].includes(s.status),
+        live: s.completion_status === "completed" && s.status === "active",
+        created_day: s.created_day,
+        area: placeLabel(s.area) || "Unknown area",
+        area_key: placeKey(s.area) || "unknown",
+        city: placeLabel(city),
+        city_key: placeKey(city),
+        lat: Number.isFinite(lat) && lat ? lat : null,
+        lng: Number.isFinite(lng) && lng ? lng : null,
+      };
+    });
+  },
+
+  // One row per booked item of the served bookings in the window. f = the
+  // User Analytics filters (city + go-live cutoff); storeIds narrows to
+  // salons. customer_gender is the guest's when booked for someone else.
+  getBookingItems: async (win, f, storeIds = null) =>
+    adminDbController.connection.query(
+      `
+      SELECT a.id AS booking_id, a.user_id, a.store_id, a.booking_for, a.status, a.discount_id,
+        DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS day, HOUR(sl.\`from\`) AS hour,
+        ${PLATFORM_FEE_SQL} AS platform_fee, a.distance_km,
+        COALESCE(CASE WHEN a.booking_for IS NOT NULL AND a.booking_for <> 'myself' THEN g.gender END, u.gender) AS customer_gender,
+        TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS customer_name,
+        ai.id AS item_id, COALESCE(ai.service_amount, 0) AS price, ${ITEM_GMV_SQL} AS gmv,
+        COALESCE(ai.list_amount, ss.amount, cb.amount, 0) AS list_price,
+        COALESCE(ss.service_name, cb.combo) AS service_name,
+        COALESCE(ss.service_category, cb.service_category) AS category_id
+      FROM appointments a
+      INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+      LEFT JOIN StoreServices ss ON ss.id = ai.service_id
+      LEFT JOIN Combo cb ON cb.id = ai.combo_id
+      LEFT JOIN Slots sl ON sl.id = a.slot_id
+      LEFT JOIN User u ON u.id = a.user_id
+      LEFT JOIN GuestDetails g ON g.id = a.guest_id
+      ${f.cityJoin("a")}
+      WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")}
+        AND a.booking_date >= :from AND a.booking_date < :end ${f.cityWhere}
+        ${storeIds ? "AND a.store_id IN (:storeIds)" : ""}
+      `,
+      {
+        replacements: { ...f.replacements, from: win.from, end: win.end, storeIds: storeIds?.length ? storeIds : [0] },
+        type: Sequelize.QueryTypes.SELECT,
+      }
+    ),
+
+  // Items -> bookings: { id, user_id, store_id, day, hour, gmv, fee,
+  // discounted, gender, items: [{ key, label, category_id, price, gmv }] }.
+  // Service names are free text per salon, so they group on placeKey.
+  rollUpBookings: (items) => {
+    const bookings = new Map();
+    for (const it of items) {
+      const b = bookings.get(it.booking_id) || {
+        id: it.booking_id,
+        user_id: it.user_id,
+        store_id: Number(it.store_id),
+        day: it.day,
+        hour: it.hour === null || it.hour === undefined ? null : Number(it.hour),
+        status: it.status,
+        gmv: 0,
+        fee: Number(it.platform_fee) || 0,
+        distance: it.distance_km === null || it.distance_km === undefined ? null : Number(it.distance_km),
+        discounted: Number(it.discount_id) > 0,
+        guest: Boolean(it.booking_for && it.booking_for !== "myself"),
+        gender: /^(m|male)$/i.test(String(it.customer_gender || "").trim())
+          ? "men"
+          : /^(f|female)$/i.test(String(it.customer_gender || "").trim())
+            ? "women"
+            : null,
+        customer_name: it.customer_name || null,
+        items: [],
+      };
+      const gmv = Number(it.gmv) || 0;
+      const price = Number(it.price) || 0;
+      b.gmv += gmv;
+      if (Number(it.list_price) > price) b.discounted = true;
+      b.items.push({
+        key: placeKey(it.service_name) || "unknown",
+        label: placeLabel(it.service_name) || "Unknown service",
+        category_id: it.category_id === null || it.category_id === undefined ? null : Number(it.category_id),
+        price,
+        gmv,
+      });
+      bookings.set(it.booking_id, b);
+    }
+    return [...bookings.values()];
+  },
+
+  // Service Intelligence V2. salon_type = men | women | unisex narrows to
+  // salons of that type; "Men's / Women's" rankings split by the customer's
+  // gender (the guest's for guest bookings).
+  getServiceIntelligenceV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 7);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const salonType = SALON_TYPES.some((t) => t.key === data.salon_type) ? data.salon_type : null;
+      const stores = await adminDbController.app.getStoreDirectory();
+      const storeIds = salonType ? stores.filter((s) => s.type === salonType).map((s) => s.id) : null;
+
+      const [items, prevItems, categoryRows, cities] = await Promise.all([
+        adminDbController.app.getBookingItems(win, f, storeIds),
+        adminDbController.app.getBookingItems(win.previous, f, storeIds),
+        adminDbController.connection.query(`SELECT id, name FROM Servicecategory`, { type: Sequelize.QueryTypes.SELECT }),
+        adminDbController.app.getSalonCities(),
+      ]);
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const prevBookings = adminDbController.app.rollUpBookings(prevItems);
+      const categoryName = new Map(categoryRows.map((c) => [Number(c.id), placeLabel(c.name) || c.name]));
+
+      // Service history of these customers (from go-live) for repeat rates
+      // and first-time customers.
+      const userIds = [...new Set([...bookings, ...prevBookings].map((b) => b.user_id).filter(Boolean))];
+      const history = userIds.length
+        ? await adminDbController.connection.query(
+            `
+            SELECT a.user_id, DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS day, COALESCE(ss.service_name, cb.combo) AS service_name
+            FROM appointments a
+            INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+            LEFT JOIN StoreServices ss ON ss.id = ai.service_id
+            LEFT JOIN Combo cb ON cb.id = ai.combo_id
+            WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")}
+              AND a.user_id IN (:userIds) AND a.booking_date < :end
+            `,
+            { replacements: { userIds, end: win.end, cutoff: cutoff || null }, type: Sequelize.QueryTypes.SELECT }
+          )
+        : [];
+      const firstServiceDay = new Map(); // user|serviceKey -> earliest day
+      const firstBookingDay = new Map(); // user -> earliest day
+      for (const h of history) {
+        const key = `${h.user_id}|${placeKey(h.service_name) || "unknown"}`;
+        if (!firstServiceDay.has(key) || h.day < firstServiceDay.get(key)) firstServiceDay.set(key, h.day);
+        if (!firstBookingDay.has(h.user_id) || h.day < firstBookingDay.get(h.user_id)) firstBookingDay.set(h.user_id, h.day);
+      }
+      const isRepeat = (b, item) => {
+        const first = firstServiceDay.get(`${b.user_id}|${item.key}`);
+        return Boolean(first && first < b.day);
+      };
+
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+
+      const kpisOf = (list) => {
+        const allItems = list.flatMap((b) => b.items.map((it) => ({ b, it })));
+        const gmv = list.reduce((t, b) => t + b.gmv, 0);
+        return {
+          bookings: list.length,
+          gmv: money(gmv),
+          unique_services: new Set(allItems.map(({ it }) => it.key)).size,
+          avg_service_price: allItems.length ? money(allItems.reduce((t, { it }) => t + it.price, 0) / allItems.length) : null,
+          addon_rate: pct(list.filter((b) => b.items.length >= 2).length, list.length),
+          repeat_service_rate: pct(allItems.filter(({ b, it }) => isRepeat(b, it)).length, allItems.length),
+        };
+      };
+
+      // Services ranked by bookings (a booking counts once per service).
+      const rankServices = (list, limit = SERVICE_TOP_ROWS) => {
+        const byKey = new Map();
+        for (const b of list) {
+          const seen = new Set();
+          for (const it of b.items) {
+            const s = byKey.get(it.key) || { key: it.key, labels: new Map(), bookings: 0, gmv: 0, repeat: 0, items: 0, days: new Map() };
+            s.labels.set(it.label, (s.labels.get(it.label) || 0) + 1);
+            s.gmv += it.gmv;
+            s.items += 1;
+            if (isRepeat(b, it)) s.repeat += 1;
+            if (!seen.has(it.key)) {
+              s.bookings += 1;
+              s.days.set(b.day, (s.days.get(b.day) || 0) + 1);
+              seen.add(it.key);
+            }
+            byKey.set(it.key, s);
+          }
+        }
+        const label = (s) => [...s.labels].sort((a, b) => b[1] - a[1])[0][0];
+        const total = list.length;
+        const sorted = [...byKey.values()].sort((a, b) => b.bookings - a.bookings || b.gmv - a.gmv);
+        const top = sorted.slice(0, limit).map((s) => ({
+          key: s.key,
+          name: label(s),
+          bookings: s.bookings,
+          share: pct(s.bookings, total),
+          gmv: money(s.gmv),
+          repeat_rate: pct(s.repeat, s.items),
+          days: s.days,
+        }));
+        const rest = sorted.slice(limit);
+        if (rest.length) {
+          const restBookings = rest.reduce((t, s) => t + s.bookings, 0);
+          top.push({
+            key: "others",
+            name: "Others",
+            bookings: restBookings,
+            share: pct(restBookings, total),
+            gmv: money(rest.reduce((t, s) => t + s.gmv, 0)),
+            repeat_rate: null,
+            days: new Map(),
+          });
+        }
+        return top;
+      };
+      // Drop the per-day map used for the trend before returning.
+      const strip = (rows) => rows.map(({ days: _days, ...row }) => row);
+
+      // Window split into up to 12 equal buckets (sparklines).
+      const dayIndex = (d) => Math.round((Date.parse(d) - Date.parse(win.from)) / 864e5);
+      const bucketCount = Math.min(12, win.days);
+      const bucketOf = (d) => Math.min(bucketCount - 1, Math.floor((dayIndex(d) * bucketCount) / win.days));
+
+      const all = rankServices(bookings);
+      const men = rankServices(bookings.filter((b) => b.gender === "men"));
+      const women = rankServices(bookings.filter((b) => b.gender === "women"));
+
+      // Category split (a booking counts once per category).
+      const catCounts = new Map();
+      for (const b of bookings) {
+        for (const cid of new Set(b.items.map((it) => it.category_id))) {
+          const name = categoryName.get(cid) || "Uncategorised";
+          catCounts.set(name, (catCounts.get(name) || 0) + 1);
+        }
+      }
+      const catSorted = [...catCounts].sort((a, b) => b[1] - a[1]);
+      const categories = catSorted.slice(0, 5).map(([name, count]) => ({ name, bookings: count, share: pct(count, bookings.length) }));
+      const catRest = catSorted.slice(5).reduce((t, [, c]) => t + c, 0);
+      if (catRest) categories.push({ name: "Others", bookings: catRest, share: pct(catRest, bookings.length) });
+
+      // Daily trend of the three most booked services.
+      const trendServices = all.filter((s) => s.key !== "others").slice(0, 3);
+      const trend = [];
+      for (let d = win.from; d <= win.to; d = addDays(d, 1)) {
+        trend.push({ day: d, ...Object.fromEntries(trendServices.map((s) => [s.key, s.days.get(d) || 0])) });
+      }
+
+      // Add-ons: in a booking with 2+ services, every service but the one
+      // that earned the most.
+      const addonMap = new Map();
+      for (const b of bookings) {
+        if (b.items.length < 2) continue;
+        const primary = b.items.reduce((best, it) => (it.gmv > best.gmv ? it : best), b.items[0]);
+        const seen = new Set();
+        for (const it of b.items) {
+          if (it === primary || seen.has(it.key)) continue;
+          seen.add(it.key);
+          const a = addonMap.get(it.key) || { key: it.key, name: it.label, bookings: 0, gmv: 0 };
+          a.bookings += 1;
+          a.gmv += it.gmv;
+          addonMap.set(it.key, a);
+        }
+      }
+      const addonSorted = [...addonMap.values()].sort((a, b) => b.bookings - a.bookings);
+      const addons = addonSorted.slice(0, 6).map((a) => ({ ...a, gmv: money(a.gmv), attach_rate: pct(a.bookings, bookings.length) }));
+      const addonRest = addonSorted.slice(6);
+      if (addonRest.length) {
+        const n = addonRest.reduce((t, a) => t + a.bookings, 0);
+        addons.push({ key: "others", name: "Others", bookings: n, gmv: money(addonRest.reduce((t, a) => t + a.gmv, 0)), attach_rate: pct(n, bookings.length) });
+      }
+
+      // Price bands of the charged service price.
+      const allItems = bookings.flatMap((b) => b.items);
+      const priceBands = PRICE_BANDS.map((band, i) => ({
+        key: band.key,
+        label: band.label,
+        items: allItems.filter((it) => PRICE_BANDS.findIndex((p) => it.price < p.max) === i).length,
+      })).map((band) => ({ ...band, share: pct(band.items, allItems.length) }));
+
+      // Peak days for the top five categories (Mon..Sun, by booking date).
+      const peakCats = categories.filter((c) => c.name !== "Others").map((c) => c.name);
+      const peak = peakCats.map(() => Array(7).fill(0));
+      for (const b of bookings) {
+        const weekday = (new Date(`${b.day}T00:00:00Z`).getUTCDay() + 6) % 7;
+        for (const cid of new Set(b.items.map((it) => it.category_id))) {
+          const row = peakCats.indexOf(categoryName.get(cid) || "Uncategorised");
+          if (row >= 0) peak[row][weekday] += 1;
+        }
+      }
+
+      // Repeat rate of the most booked services, with a bookings sparkline.
+      const repeat = all
+        .filter((s) => s.key !== "others")
+        .slice(0, 6)
+        .map((s) => {
+          const series = Array(bucketCount).fill(0);
+          for (const [d, n] of s.days) series[bucketOf(d)] += n;
+          return { key: s.key, name: s.name, rate: s.repeat_rate, series };
+        });
+
+      // Favourite services per customer group.
+      const top2 = (list) =>
+        rankServices(list, 2)
+          .filter((s) => s.key !== "others")
+          .map((s) => ({ name: s.name, share: s.share }));
+      const isNewCustomer = (b) => firstBookingDay.get(b.user_id) === b.day || !firstBookingDay.get(b.user_id);
+      const preferences = [
+        { key: "new", label: "New Customers", top: top2(bookings.filter((b) => isNewCustomer(b) && b.day >= win.from)) },
+        { key: "returning", label: "Returning Customers", top: top2(bookings.filter((b) => !isNewCustomer(b))) },
+        { key: "high_spenders", label: `High Spenders (₹${HIGH_SPENDER_BOOKING}+)`, top: top2(bookings.filter((b) => b.gmv >= HIGH_SPENDER_BOOKING)) },
+        { key: "offer", label: "Offer Users", top: top2(bookings.filter((b) => b.discounted)) },
+      ];
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { city: f.city, salon_type: salonType },
+        data_start_date: cutoff || null,
+        kpis: kpisOf(bookings),
+        previous_kpis: kpisOf(prevBookings),
+        services: { all: strip(all), men: strip(men), women: strip(women) },
+        gender_coverage: pct(bookings.filter((b) => b.gender).length, bookings.length),
+        categories,
+        trend: { services: trendServices.map((s) => ({ key: s.key, name: s.name })), days: trend },
+        addons,
+        price_bands: priceBands,
+        peak: { categories: peakCats, weekdays: WEEKDAY_SHORT, values: peak },
+        repeat,
+        preferences,
+        cities,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getServiceIntelligenceV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch service intelligence");
+    }
+  },
+
+  // Paid bookings (refunds included) and how many were cancelled / refunded,
+  // by booking date, per salon. The cancellation-rate base.
+  getCancellationCounts: async (win, f) =>
+    adminDbController.connection.query(
+      `
+      SELECT a.store_id, COUNT(*) AS paid, COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancelled
+      FROM appointments a ${f.cityJoin("a")}
+      WHERE ${PAYMENT_MADE_SQL} AND ${bookingFloorSql("a")}
+        AND a.booking_date >= :from AND a.booking_date < :end ${f.cityWhere}
+      GROUP BY a.store_id
+      `,
+      { replacements: { ...f.replacements, from: win.from, end: win.end }, type: Sequelize.QueryTypes.SELECT }
+    ),
+
+  // Booking Intelligence V2: when bookings happen (slot time), how much they
+  // earn, and the cancellation rate.
+  getBookingIntelligenceV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const [items, prevItems, cancels, prevCancels, cities] = await Promise.all([
+        adminDbController.app.getBookingItems(win, f),
+        adminDbController.app.getBookingItems(win.previous, f),
+        adminDbController.app.getCancellationCounts(win, f),
+        adminDbController.app.getCancellationCounts(win.previous, f),
+        adminDbController.app.getSalonCities(),
+      ]);
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const prevBookings = adminDbController.app.rollUpBookings(prevItems);
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const cancelRate = (rows) => {
+        const paid = rows.reduce((t, r) => t + num(r.paid), 0);
+        return pct(rows.reduce((t, r) => t + num(r.cancelled), 0), paid);
+      };
+      const kpisOf = (list, cancelRows) => {
+        const gmv = list.reduce((t, b) => t + b.gmv, 0);
+        return {
+          bookings: list.length,
+          gmv: money(gmv),
+          customers: new Set(list.map((b) => b.user_id).filter(Boolean)).size,
+          aov: list.length ? money(gmv / list.length) : null,
+          cancellation_rate: cancelRate(cancelRows),
+        };
+      };
+
+      const weekdayOf = (d) => (new Date(`${d}T00:00:00Z`).getUTCDay() + 6) % 7;
+      const timed = bookings.filter((b) => b.hour !== null);
+      const grid = (cols) => TWO_HOUR_SLOTS.map(() => Array(cols).fill(0));
+
+      // Slot x weekday, and slot x period (the window cut into up to 12 parts).
+      const byWeekday = { bookings: grid(7), gmv: grid(7) };
+      const periods = Math.min(12, win.days);
+      const periodOf = (d) => Math.min(periods - 1, Math.floor((Math.round((Date.parse(d) - Date.parse(win.from)) / 864e5) * periods) / win.days));
+      const periodLabels = Array.from({ length: periods }, (_, p) => {
+        const start = addDays(win.from, Math.ceil((p * win.days) / periods));
+        const end = addDays(win.from, Math.ceil(((p + 1) * win.days) / periods) - 1);
+        return start === end ? start : `${start}|${end}`;
+      });
+      const byPeriod = { bookings: grid(periods), gmv: grid(periods) };
+      const byHour = Array(24).fill(0);
+      const byHourGmv = Array(24).fill(0);
+      for (const b of timed) {
+        const slot = Math.min(11, Math.floor(b.hour / 2));
+        const wd = weekdayOf(b.day);
+        byWeekday.bookings[slot][wd] += 1;
+        byWeekday.gmv[slot][wd] += b.gmv;
+        const p = periodOf(b.day);
+        byPeriod.bookings[slot][p] += 1;
+        byPeriod.gmv[slot][p] += b.gmv;
+        byHour[b.hour] += 1;
+        byHourGmv[b.hour] += b.gmv;
+      }
+      const roundGrid = (g) => g.map((row) => row.map((v) => money(v)));
+
+      const peakHours = byHour
+        .map((n, h) => ({ hour: h, label: `${hourName(h)} – ${hourName(h + 1)}`, bookings: n, gmv: money(byHourGmv[h]) }))
+        .filter((r) => r.bookings)
+        .sort((a, b) => b.bookings - a.bookings)
+        .slice(0, 5);
+      const weekdayTotals = WEEKDAY_FULL.map((label, wd) => {
+        const list = bookings.filter((b) => weekdayOf(b.day) === wd);
+        return { weekday: wd, label, bookings: list.length, gmv: money(list.reduce((t, b) => t + b.gmv, 0)) };
+      });
+      const busiestDays = [...weekdayTotals].filter((r) => r.bookings).sort((a, b) => b.bookings - a.bookings).slice(0, 5);
+      const dayBands = DAY_BANDS.map((band) => {
+        const list = timed.filter((b) => b.hour >= band.from && b.hour < band.to);
+        return { key: band.key, label: band.label, bookings: list.length, gmv: money(list.reduce((t, b) => t + b.gmv, 0)) };
+      });
+
+      // This period vs the previous one, day by day (aligned by position).
+      const daily = (list, from, days) => {
+        const out = Array.from({ length: days }, (_, i) => ({ day: addDays(from, i), bookings: 0, gmv: 0 }));
+        for (const b of list) {
+          const i = Math.round((Date.parse(b.day) - Date.parse(from)) / 864e5);
+          if (out[i]) {
+            out[i].bookings += 1;
+            out[i].gmv += b.gmv;
+          }
+        }
+        return out.map((r) => ({ ...r, gmv: money(r.gmv) }));
+      };
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { city: f.city },
+        data_start_date: cutoff || null,
+        kpis: kpisOf(bookings, cancels),
+        previous_kpis: kpisOf(prevBookings, prevCancels),
+        untimed_bookings: bookings.length - timed.length,
+        slots: TWO_HOUR_SLOTS,
+        by_weekday: { weekdays: WEEKDAY_SHORT, bookings: byWeekday.bookings, gmv: roundGrid(byWeekday.gmv) },
+        by_period: { periods: periodLabels, bookings: byPeriod.bookings, gmv: roundGrid(byPeriod.gmv) },
+        peak_hours: peakHours,
+        busiest_days: busiestDays,
+        weekday_totals: weekdayTotals,
+        day_bands: dayBands,
+        trend: { current: daily(bookings, win.from, win.days), previous: daily(prevBookings, win.previous.from, win.days) },
+        cities,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getBookingIntelligenceV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch booking intelligence");
+    }
+  },
+
+  // Salon Heatmap V2: bookings, GMV and growth per salon area (areas grouped
+  // on the normalised area name; the hotspot sits at the average position of
+  // the area's salons).
+  getSalonHeatmapV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const cityKey = f.replacements.cityKey;
+      const [stores, items, prevItems, cities] = await Promise.all([
+        adminDbController.app.getStoreDirectory(),
+        adminDbController.app.getBookingItems(win, f),
+        adminDbController.app.getBookingItems(win.previous, f),
+        adminDbController.app.getSalonCities(),
+      ]);
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const prevBookings = adminDbController.app.rollUpBookings(prevItems);
+      const storeById = new Map(stores.map((s) => [s.id, s]));
+      const inCity = (s) => !cityKey || s.city_key === cityKey;
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+
+      const areas = new Map();
+      const areaFor = (s) => {
+        const key = `${s.area_key}|${s.city_key}`;
+        if (!areas.has(key)) {
+          areas.set(key, { key, name: s.area, city: s.city, salons: new Set(), live: 0, coords: [], bookings: 0, gmv: 0, customers: new Set(), prev: 0 });
+        }
+        return areas.get(key);
+      };
+      for (const s of stores) {
+        if (!s.listed || !inCity(s)) continue;
+        const a = areaFor(s);
+        a.salons.add(s.id);
+        if (s.live) a.live += 1;
+        if (s.lat !== null) a.coords.push([s.lat, s.lng]);
+      }
+      for (const b of bookings) {
+        const s = storeById.get(b.store_id);
+        if (!s) continue;
+        const a = areaFor(s);
+        a.bookings += 1;
+        a.gmv += b.gmv;
+        if (b.user_id) a.customers.add(b.user_id);
+        if (s.lat !== null && !a.coords.length) a.coords.push([s.lat, s.lng]);
+      }
+      for (const b of prevBookings) {
+        const s = storeById.get(b.store_id);
+        if (s) areaFor(s).prev += 1;
+      }
+      const areaRows = [...areas.values()]
+        .filter((a) => a.bookings || a.salons.size)
+        .map((a) => ({
+          key: a.key,
+          name: a.name,
+          city: a.city,
+          lat: a.coords.length ? Number((a.coords.reduce((t, c) => t + c[0], 0) / a.coords.length).toFixed(5)) : null,
+          lng: a.coords.length ? Number((a.coords.reduce((t, c) => t + c[1], 0) / a.coords.length).toFixed(5)) : null,
+          salons: a.salons.size,
+          live_salons: a.live,
+          bookings: a.bookings,
+          gmv: money(a.gmv),
+          aov: a.bookings ? money(a.gmv / a.bookings) : null,
+          customers: a.customers.size,
+          previous_bookings: a.prev,
+          growth_pct: a.prev ? pct(a.bookings - a.prev, a.prev) : null,
+        }))
+        .sort((x, y) => y.bookings - x.bookings || y.gmv - x.gmv);
+
+      const kpisOf = (list, w) => {
+        const gmv = list.reduce((t, b) => t + b.gmv, 0);
+        return {
+          bookings: list.length,
+          gmv: money(gmv),
+          customers: new Set(list.map((b) => b.user_id).filter(Boolean)).size,
+          aov: list.length ? money(gmv / list.length) : null,
+          active_salons: stores.filter((s) => s.live && inCity(s)).length,
+          new_salons: stores.filter((s) => s.listed && inCity(s) && s.created_day >= w.from && s.created_day <= w.to).length,
+        };
+      };
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { city: f.city },
+        data_start_date: cutoff || null,
+        kpis: kpisOf(bookings, win),
+        previous_kpis: kpisOf(prevBookings, win.previous),
+        areas: areaRows,
+        cities,
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getSalonHeatmapV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch salon heatmap");
+    }
+  },
+
+  // Salon Category Intelligence V2: the same metrics per salon type (men's /
+  // unisex / women's) and overall. area narrows to one salon area. No-show
+  // isn't recorded, so it isn't returned.
+  getSalonCategoryV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const cityKey = f.replacements.cityKey;
+      const areaKey = placeKey(data.area);
+      const today = toIstDatePart(new Date());
+      const capEnd = win.end < addDays(today, 1) ? win.end : addDays(today, 1);
+
+      const stores = (await adminDbController.app.getStoreDirectory()).filter(
+        (s) => (!cityKey || s.city_key === cityKey) && (!areaKey || s.area_key === areaKey)
+      );
+      const storeIds = stores.map((s) => s.id);
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { ...f.replacements, from: win.from, end: win.end, storeIds: storeIds.length ? storeIds : [0], ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+      const [items, cancels, subscriptions, ratings, capacity, areaStores] = await Promise.all([
+        adminDbController.app.getBookingItems(win, f, storeIds),
+        adminDbController.app.getCancellationCounts(win, f),
+        run(`
+          SELECT store_id, COALESCE(SUM(subscription_deducted), 0) AS amount FROM InvoicePayouts
+          WHERE paid_at >= :from AND paid_at < :end AND subscription_deducted > 0 AND store_id IN (:storeIds)
+          GROUP BY store_id`),
+        run(`
+          SELECT store_id, SUM(rating) AS total, COUNT(*) AS reviews FROM Reviews
+          WHERE status = 'active' AND rating BETWEEN 1 AND 5 AND store_id IN (:storeIds)
+          GROUP BY store_id`),
+        win.from < capEnd ? adminDbController.app.getSlotCapacity(win.from, capEnd) : new Map(),
+        adminDbController.app.getStoreDirectory(),
+      ]);
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const userIds = [...new Set(bookings.map((b) => b.user_id).filter(Boolean))];
+      const visits = userIds.length
+        ? await run(
+            `SELECT a.user_id, a.store_id, COUNT(*) AS n FROM appointments a
+             WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")} AND a.booking_date < :end AND a.user_id IN (:userIds)
+             GROUP BY a.user_id, a.store_id`,
+            { userIds }
+          )
+        : [];
+      const visitsOf = new Map(visits.map((v) => [`${v.user_id}|${v.store_id}`, Number(v.n) || 0]));
+      const cancelsByStore = new Map(cancels.map((c) => [Number(c.store_id), c]));
+      const subsByStore = new Map(subscriptions.map((r) => [Number(r.store_id), Number(r.amount) || 0]));
+      const ratingByStore = new Map(ratings.map((r) => [Number(r.store_id), r]));
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const totalBookings = bookings.length;
+
+      const summarise = (inType) => {
+        const typeStores = stores.filter((s) => s.listed && inType(s));
+        const ids = new Set(typeStores.map((s) => s.id));
+        const list = bookings.filter((b) => ids.has(b.store_id));
+        const gmv = list.reduce((t, b) => t + b.gmv, 0);
+        const fees = list.reduce((t, b) => t + b.fee, 0);
+        const active = typeStores.filter((s) => s.live).length;
+        let paid = 0;
+        let cancelled = 0;
+        let subs = 0;
+        let ratingTotal = 0;
+        let ratingCount = 0;
+        let seats = 0;
+        let free = 0;
+        for (const id of ids) {
+          const c = cancelsByStore.get(id);
+          paid += num(c?.paid);
+          cancelled += num(c?.cancelled);
+          subs += subsByStore.get(id) || 0;
+          const r = ratingByStore.get(id);
+          ratingTotal += num(r?.total);
+          ratingCount += num(r?.reviews);
+          for (const cell of capacity.get(id)?.days.values() || []) {
+            seats += cell.total;
+            free += cell.free;
+          }
+        }
+        const pairs = new Map();
+        for (const b of list) if (b.user_id) pairs.set(`${b.user_id}|${b.store_id}`, true);
+        const repeatPairs = [...pairs.keys()].filter((k) => (visitsOf.get(k) || 0) >= 2).length;
+        const distances = list.map((b) => b.distance).filter((d) => d !== null);
+        const slotCounts = Array(12).fill(0);
+        for (const b of list) if (b.hour !== null) slotCounts[Math.min(11, Math.floor(b.hour / 2))] += 1;
+        const peakSlot = slotCounts.some(Boolean) ? slotCounts.indexOf(Math.max(...slotCounts)) : null;
+        const dayCounts = Array(7).fill(0);
+        for (const b of list) dayCounts[(new Date(`${b.day}T00:00:00Z`).getUTCDay() + 6) % 7] += 1;
+        const peakDay = list.length ? dayCounts.indexOf(Math.max(...dayCounts)) : null;
+        // No-show proxy: served bookings whose day has passed but were never marked completed.
+        const past = list.filter((b) => b.day < today);
+        return {
+          total_salons: typeStores.length,
+          active_salons: active,
+          inactive_salons: typeStores.length - active,
+          active_pct: pct(active, typeStores.length),
+          bookings: list.length,
+          booking_share: pct(list.length, totalBookings),
+          bookings_per_salon: typeStores.length ? Number((list.length / typeStores.length).toFixed(1)) : null,
+          bookings_per_active_salon: active ? Number((list.length / active).toFixed(1)) : null,
+          gmv: money(gmv),
+          aov: list.length ? money(gmv / list.length) : null,
+          platform_fee_revenue: money(fees),
+          subscription_revenue: money(subs),
+          cancellation_rate: pct(cancelled, paid),
+          repeat_customer_rate: pct(repeatPairs, pairs.size),
+          avg_distance_km: distances.length ? Number((distances.reduce((t, d) => t + d, 0) / distances.length).toFixed(1)) : null,
+          avg_rating: ratingCount ? Number((ratingTotal / ratingCount).toFixed(1)) : null,
+          reviews: ratingCount,
+          empty_slot_rate: pct(free, seats),
+          peak_slot: peakSlot === null ? null : TWO_HOUR_SLOTS[peakSlot],
+          peak_day: peakDay === null ? null : WEEKDAY_FULL[peakDay],
+          not_completed_rate: pct(past.filter((b) => b.status !== "completed").length, past.length),
+        };
+      };
+
+      const areas = new Map();
+      for (const s of areaStores) {
+        if (s.listed && (!cityKey || s.city_key === cityKey) && !areas.has(s.area_key)) areas.set(s.area_key, s.area);
+      }
+
+      return {
+        from: win.from,
+        to: win.to,
+        filters: { city: f.city, area: areaKey ? placeLabel(data.area) : null },
+        data_start_date: cutoff || null,
+        types: SALON_TYPES.map((t) => ({ key: t.key, label: t.label, ...summarise((s) => s.type === t.key) })),
+        overall: summarise(() => true),
+        unclassified_salons: stores.filter((s) => s.listed && s.type === "unknown").length,
+        areas: [...areas.values()].sort((a, b) => a.localeCompare(b)),
+        cities: await adminDbController.app.getSalonCities(),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getSalonCategoryV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch salon category intelligence");
+    }
+  },
+
+  // Salons for the Partner Details picker: name / area search, live first.
+  getPartnerPickerV2: async (data = {}) => {
+    try {
+      const search = String(data.search || "").trim().toLowerCase();
+      const stores = (await adminDbController.app.getStoreDirectory())
+        .filter((s) => s.status !== "terminated")
+        .filter((s) => !search || `${s.name} ${s.area} ${s.city || ""} ${s.id}`.toLowerCase().includes(search))
+        .sort((a, b) => Number(b.live) - Number(a.live) || String(a.name).localeCompare(String(b.name)))
+        .slice(0, 50)
+        .map((s) => ({ store_id: s.id, name: s.name, logo: s.logo, area: s.area, city: s.city, type: s.type, live: s.live, status: s.status }));
+      return { salons: stores };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getPartnerPickerV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch salons");
+    }
+  },
+
+  // Partner Details V2 (Overview tab) for one salon: profile, KPIs, trend,
+  // services, peak times, retention, ratings, subscription, payouts, recent
+  // bookings and activity. Window default: this month to date.
+  getPartnerOverviewV2: async (data = {}) => {
+    try {
+      const storeId = Number(data.store_id);
+      if (!Number.isInteger(storeId) || storeId <= 0) throw Error.BadRequest("store_id is required");
+      const today = toIstDatePart(new Date());
+      const win = resolveAnalyticsWindow(data.from || data.to ? data : { from: `${today.slice(0, 7)}-01`, to: today }, 30);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters({}, cutoff);
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { storeId, from: win.from, end: win.end, today, cutoff: cutoff || null, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+
+      const [[store]] = await Promise.all([
+        run(`
+          SELECT s.id, s.name, s.logo, s.email, s.phone, s.whatsapp_number, s.store_type, s.status, s.completion_status,
+            s.is_premium, s.payout_frequency, s.account_number, s.ifsc_code, s.bank_account_holder,
+            DATE_FORMAT(s.createdAt, '%Y-%m-%d') AS created_day,
+            pa.addressLine1, pa.area, pa.city, pa.district, pa.state
+          FROM Store s LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE s.id = :storeId`),
+      ]);
+      if (!store) throw Error.NotFound("Salon not found");
+
+      const monthStart = `${today.slice(0, 7)}-01`;
+      const lastMonthStart = addDays(monthStart, -1).slice(0, 7) + "-01";
+      const weekStart = addDays(today, -((new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7));
+      const [items, prevItems, [periods], [cancel], [subscriptionFees], ratingRows, [subscription], [lastPayout], recent, capacity, directory] =
+        await Promise.all([
+          adminDbController.app.getBookingItems(win, f, [storeId]),
+          adminDbController.app.getBookingItems(win.previous, f, [storeId]),
+          run(
+            `
+            SELECT COALESCE(SUM(a.booking_date >= :today AND a.booking_date < :tomorrow), 0) AS today,
+                   COALESCE(SUM(a.booking_date >= :weekStart AND a.booking_date < :tomorrow), 0) AS week,
+                   COALESCE(SUM(a.booking_date >= :monthStart AND a.booking_date < :tomorrow), 0) AS month,
+                   COALESCE(SUM(a.booking_date >= :lastMonthStart AND a.booking_date < :monthStart), 0) AS last_month
+            FROM appointments a
+            WHERE a.store_id = :storeId AND ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")}
+              AND a.booking_date >= :lastMonthStart AND a.booking_date < :tomorrow`,
+            { tomorrow: addDays(today, 1), weekStart, monthStart, lastMonthStart }
+          ),
+          run(`
+            SELECT COUNT(*) AS paid, COALESCE(SUM(a.status IN ('cancelled', 'refunded')), 0) AS cancelled
+            FROM appointments a
+            WHERE a.store_id = :storeId AND ${PAYMENT_MADE_SQL} AND ${bookingFloorSql("a")}
+              AND a.booking_date >= :from AND a.booking_date < :end`),
+          run(`
+            SELECT COALESCE(SUM(subscription_deducted), 0) AS amount FROM InvoicePayouts
+            WHERE store_id = :storeId AND paid_at >= :from AND paid_at < :end`),
+          run(`
+            SELECT rating, COUNT(*) AS n FROM Reviews
+            WHERE store_id = :storeId AND status = 'active' AND rating BETWEEN 1 AND 5
+            GROUP BY rating`),
+          run(`
+            SELECT status, plan_amount, activated_at, deactivated_at, next_due_date, outstanding_due, renewal_booking_limit, cycle_state
+            FROM PartnerManualSubscriptions WHERE store_id = :storeId
+            ORDER BY (status = 'active') DESC, activated_at DESC LIMIT 1`),
+          run(`
+            SELECT paid_at, SUM(amount) AS amount FROM InvoicePayouts
+            WHERE store_id = :storeId AND paid_at IS NOT NULL
+            GROUP BY paid_at ORDER BY paid_at DESC LIMIT 1`),
+          run(`
+            SELECT a.id, DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS day, TIME_FORMAT(sl.\`from\`, '%H:%i') AS time,
+              a.status, a.payment_status, ${AMOUNT_PAID_SQL} AS amount,
+              COALESCE(NULLIF(TRIM(a.customer_name), ''), TRIM(CONCAT_WS(' ', u.firstname, u.lastname))) AS customer,
+              COALESCE(NULLIF(TRIM(a.customer_phone), ''), u.phone) AS phone, a.user_id,
+              (SELECT GROUP_CONCAT(COALESCE(ss.service_name, cb.combo) SEPARATOR ', ')
+                 FROM appointment_items ai
+                 LEFT JOIN StoreServices ss ON ss.id = ai.service_id
+                 LEFT JOIN Combo cb ON cb.id = ai.combo_id
+                 WHERE ai.appointment_id = a.id) AS services
+            FROM appointments a
+            LEFT JOIN Slots sl ON sl.id = a.slot_id
+            LEFT JOIN User u ON u.id = a.user_id
+            WHERE a.store_id = :storeId AND ${PAYMENT_MADE_SQL} AND ${bookingFloorSql("a")}
+            ORDER BY a.booking_date DESC, sl.\`from\` DESC, a.id DESC
+            LIMIT 8`),
+          win.from < addDays(today, 1)
+            ? adminDbController.app.getSlotCapacity(win.from, win.end < addDays(today, 1) ? win.end : addDays(today, 1))
+            : new Map(),
+          adminDbController.app.getStoreDirectory(),
+        ]);
+
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const prevBookings = adminDbController.app.rollUpBookings(prevItems);
+      const userIds = [...new Set([...bookings, ...prevBookings].map((b) => b.user_id).filter(Boolean))];
+      const firsts = userIds.length
+        ? await run(
+            `SELECT a.user_id, DATE_FORMAT(MIN(a.booking_date), '%Y-%m-%d') AS first_day FROM appointments a
+             WHERE a.store_id = :storeId AND ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")} AND a.user_id IN (:userIds)
+             GROUP BY a.user_id`,
+            { userIds }
+          )
+        : [];
+      const firstDay = new Map(firsts.map((r) => [r.user_id, r.first_day]));
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+
+      const kpisOf = (list, w) => {
+        const gmv = list.reduce((t, b) => t + b.gmv, 0);
+        const customers = new Set(list.map((b) => b.user_id).filter(Boolean));
+        const completed = list.filter((b) => b.status === "completed").length;
+        return {
+          bookings: list.length,
+          completed_bookings: completed,
+          completion_rate: pct(completed, list.length),
+          gmv: money(gmv),
+          platform_fee_revenue: money(list.reduce((t, b) => t + b.fee, 0)),
+          customers: customers.size,
+          new_customers: [...customers].filter((u) => (firstDay.get(u) || "") >= w.from).length,
+          aov: list.length ? money(gmv / list.length) : null,
+          services_sold: list.reduce((t, b) => t + b.items.length, 0),
+        };
+      };
+      const kpis = kpisOf(bookings, win);
+      kpis.subscription_revenue = money(subscriptionFees?.amount);
+      kpis.gloup_revenue = money(kpis.platform_fee_revenue + kpis.subscription_revenue);
+      kpis.cancellation_rate = pct(num(cancel?.cancelled), num(cancel?.paid));
+      let freeMinutes = 0;
+      for (const cell of capacity.get(storeId)?.days.values() || []) freeMinutes += cell.free_minutes || 0;
+      kpis.empty_seat_hours = capacity.get(storeId) ? Number((freeMinutes / 60).toFixed(1)) : null;
+
+      // Daily trend, services, peak times, retention.
+      const trend = [];
+      for (let d = win.from; d <= win.to && d <= today; d = addDays(d, 1)) {
+        trend.push({ day: d, bookings: bookings.filter((b) => b.day === d).length });
+      }
+      const services = new Map();
+      for (const b of bookings) {
+        for (const it of b.items) {
+          const s = services.get(it.key) || { key: it.key, name: it.label, bookings: 0, gmv: 0 };
+          s.bookings += 1;
+          s.gmv += it.gmv;
+          services.set(it.key, s);
+        }
+      }
+      const serviceRows = [...services.values()].sort((a, b) => b.bookings - a.bookings || b.gmv - a.gmv).map((s) => ({ ...s, gmv: money(s.gmv) }));
+      const totalGmv = bookings.reduce((t, b) => t + b.gmv, 0);
+      const revenueSplit = serviceRows.slice(0, 4).map((s) => ({ name: s.name, gmv: s.gmv, share: pct(s.gmv, totalGmv) }));
+      const restGmv = serviceRows.slice(4).reduce((t, s) => t + s.gmv, 0);
+      if (restGmv) revenueSplit.push({ name: "Others", gmv: money(restGmv), share: pct(restGmv, totalGmv) });
+      const highest = bookings.reduce((best, b) => (!best || b.gmv > best.gmv ? b : best), null);
+      const peak = WEEKDAY_SHORT.map(() => PARTNER_PEAK_HOURS.map(() => 0));
+      for (const b of bookings) {
+        const col = PARTNER_PEAK_HOURS.indexOf(b.hour === 0 ? 24 : b.hour);
+        if (col >= 0) peak[(new Date(`${b.day}T00:00:00Z`).getUTCDay() + 6) % 7][col] += 1;
+      }
+      const customers = [...new Set(bookings.map((b) => b.user_id).filter(Boolean))];
+      const returning = customers.filter((u) => (firstDay.get(u) || win.from) < win.from).length;
+      const ratingTotal = ratingRows.reduce((t, r) => t + num(r.n), 0);
+
+      // Activity: the latest dated events for this salon.
+      const activity = await run(`
+        SELECT * FROM (
+          SELECT 'holiday' AS kind, h.created_at AS at, DATE_FORMAT(h.holiday_date, '%Y-%m-%d') AS detail, h.reason AS note
+            FROM StoreHolidays h WHERE h.store_id = :storeId AND h.created_at IS NOT NULL
+          UNION ALL
+          SELECT 'weekly_holiday', w.created_at, w.weekday, w.reason
+            FROM StoreWeeklyHolidays w WHERE w.store_id = :storeId AND w.created_at IS NOT NULL
+          UNION ALL
+          SELECT 'payout', ip.paid_at, ROUND(SUM(ip.amount), 2), NULL
+            FROM InvoicePayouts ip WHERE ip.store_id = :storeId AND ip.paid_at IS NOT NULL GROUP BY ip.paid_at
+          UNION ALL
+          SELECT 'subscription_started', pms.activated_at, pms.plan_amount, NULL
+            FROM PartnerManualSubscriptions pms WHERE pms.store_id = :storeId AND pms.activated_at IS NOT NULL
+          UNION ALL
+          SELECT 'subscription_stopped', pms.deactivated_at, pms.plan_amount, NULL
+            FROM PartnerManualSubscriptions pms WHERE pms.store_id = :storeId AND pms.deactivated_at IS NOT NULL
+          UNION ALL
+          SELECT 'review', r.cretaed_at, r.rating, LEFT(r.review_description, 120)
+            FROM Reviews r WHERE r.store_id = :storeId AND r.cretaed_at IS NOT NULL
+        ) x
+        ORDER BY x.at DESC
+        LIMIT 8`);
+
+      const dir = directory.find((s) => s.id === storeId);
+      const masked = store.account_number ? `•••• ${String(store.account_number).slice(-4)}` : null;
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        data_start_date: cutoff || null,
+        profile: {
+          store_id: storeId,
+          name: store.name,
+          logo: cleanLogo(store.logo),
+          type: dir?.type || "unknown",
+          address: [store.addressLine1, placeLabel(store.area), placeLabel(store.district || store.city), store.state].filter(Boolean).join(", "),
+          area: placeLabel(store.area),
+          city: placeLabel(String(store.district || "").trim() || store.city),
+          phone: store.phone ? String(store.phone) : null,
+          whatsapp: store.whatsapp_number ? String(store.whatsapp_number) : null,
+          email: store.email || null,
+          status: store.status,
+          completion_status: store.completion_status,
+          is_premium: Boolean(store.is_premium),
+          partner_since: store.created_day,
+          payout_frequency: store.payout_frequency || "daily",
+          bank: masked ? { account: masked, ifsc: store.ifsc_code || null, holder: store.bank_account_holder || null } : null,
+        },
+        subscription: subscription
+          ? {
+              status: subscription.status,
+              plan_amount: money(subscription.plan_amount),
+              activated_at: subscription.activated_at,
+              deactivated_at: subscription.deactivated_at,
+              next_due_date: subscription.next_due_date,
+              outstanding_due: money(subscription.outstanding_due),
+              renewal_booking_limit: subscription.renewal_booking_limit,
+              cycle_state: subscription.cycle_state,
+            }
+          : null,
+        last_payout: lastPayout ? { paid_at: lastPayout.paid_at, amount: money(lastPayout.amount) } : null,
+        kpis,
+        previous_kpis: kpisOf(prevBookings, win.previous),
+        periods: {
+          today: num(periods?.today),
+          this_week: num(periods?.week),
+          this_month: num(periods?.month),
+          last_month: num(periods?.last_month),
+        },
+        trend,
+        revenue_split: revenueSplit,
+        highest_booking: highest ? { gmv: money(highest.gmv), day: highest.day } : null,
+        top_services: serviceRows.slice(0, 5),
+        booked_for: {
+          self: bookings.filter((b) => !b.guest).length,
+          guest: bookings.filter((b) => b.guest).length,
+        },
+        peak: { weekdays: WEEKDAY_SHORT, hours: PARTNER_PEAK_HOURS, values: peak },
+        retention: { customers: customers.length, returning, new: customers.length - returning },
+        ratings: {
+          average: ratingTotal ? Number((ratingRows.reduce((t, r) => t + num(r.rating) * num(r.n), 0) / ratingTotal).toFixed(1)) : null,
+          total: ratingTotal,
+          bars: [5, 4, 3, 2, 1].map((stars) => {
+            const n = num(ratingRows.find((r) => num(r.rating) === stars)?.n);
+            return { stars, count: n, share: pct(n, ratingTotal) };
+          }),
+        },
+        recent_bookings: recent.map((r) => ({
+          id: r.id,
+          day: r.day,
+          time: r.time,
+          customer: r.customer || null,
+          phone: r.phone ? String(r.phone) : null,
+          user_id: r.user_id,
+          services: r.services || null,
+          amount: money(r.amount),
+          status: r.status === "refunded" || r.payment_status === "refunded"
+            ? "refunded"
+            : r.status === "cancelled"
+              ? "cancelled"
+              : r.status === "completed"
+                ? "completed"
+                : r.day >= today
+                  ? "upcoming"
+                  : "not_completed",
+        })),
+        activity: activity.map((a) => ({ kind: a.kind, at: a.at, detail: a.detail, note: a.note })),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getPartnerOverviewV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch partner overview");
+    }
+  },
+
+  // User segments V2 (User Analytics Overview / 360): segment table, age
+  // groups, lifetime spend, acquisition and booking behaviour. Segments are
+  // as of the window's last day, first match wins:
+  //   new       - signed up in the window
+  //   loyal     - 5+ served bookings, the last within 60 days
+  //   active    - booked or used the app within 30 days
+  //   at_risk   - last booking / app use 31-60 days ago
+  //   inactive  - nothing for 60+ days, or never
+  getUserSegmentsV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 30);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { from: win.from, end: win.end, cutoff: cutoff || null, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+      const served = `${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")}`;
+      const [users, windowBookings, prevWindowBookings, gaps, prevGaps, hours, attribution, leaveReasons, checkoutReasons] = await Promise.all([
+        run(`
+          SELECT u.id, DATE_FORMAT(u.registered_at, '%Y-%m-%d') AS reg, u.age, u.date_of_birth, u.used_code,
+            b.n AS bookings, DATE_FORMAT(b.last_day, '%Y-%m-%d') AS last_booking, b.spent,
+            DATE_FORMAT(s.last_seen, '%Y-%m-%d') AS last_seen
+          FROM User u
+          LEFT JOIN (
+            SELECT a.user_id, COUNT(*) AS n, MAX(a.booking_date) AS last_day, SUM(${AMOUNT_PAID_SQL}) AS spent
+            FROM appointments a WHERE ${served} AND a.booking_date < :end GROUP BY a.user_id
+          ) b ON b.user_id = u.id
+          LEFT JOIN (
+            SELECT user_id, MAX(last_seen_at) AS last_seen FROM UserAppSessions WHERE started_at < :end GROUP BY user_id
+          ) s ON s.user_id = u.id
+          WHERE u.status <> 'terminated'`),
+        run(`
+          SELECT a.user_id, COUNT(*) AS n, SUM(${AMOUNT_PAID_SQL}) AS amount FROM appointments a
+          WHERE ${served} AND a.user_id IS NOT NULL AND a.booking_date >= :from AND a.booking_date < :end
+          GROUP BY a.user_id`),
+        run(
+          `SELECT a.user_id, COUNT(*) AS n FROM appointments a
+           WHERE ${served} AND a.user_id IS NOT NULL AND a.booking_date >= :prevFrom AND a.booking_date < :from
+           GROUP BY a.user_id`,
+          { prevFrom: win.previous.from }
+        ),
+        // Days between consecutive served bookings that end in the window.
+        run(`
+          SELECT DATEDIFF(r.booking_date, r.prev_date) AS gap FROM (
+            SELECT a.user_id, a.booking_date,
+              LAG(a.booking_date) OVER (PARTITION BY a.user_id ORDER BY a.booking_date, a.id) AS prev_date
+            FROM appointments a WHERE ${served} AND a.user_id IS NOT NULL AND a.booking_date < :end
+          ) r
+          WHERE r.prev_date IS NOT NULL AND r.booking_date >= :from`),
+        run(
+          `SELECT DATEDIFF(r.booking_date, r.prev_date) AS gap FROM (
+             SELECT a.user_id, a.booking_date,
+               LAG(a.booking_date) OVER (PARTITION BY a.user_id ORDER BY a.booking_date, a.id) AS prev_date
+             FROM appointments a WHERE ${served} AND a.user_id IS NOT NULL AND a.booking_date < :from
+           ) r
+           WHERE r.prev_date IS NOT NULL AND r.booking_date >= :prevFrom`,
+          { prevFrom: win.previous.from }
+        ),
+        run(`
+          SELECT HOUR(sl.\`from\`) AS hour, COUNT(*) AS n FROM appointments a
+          INNER JOIN Slots sl ON sl.id = a.slot_id
+          WHERE ${served} AND a.booking_date >= :from AND a.booking_date < :end
+          GROUP BY HOUR(sl.\`from\`)`),
+        run(`
+          SELECT COALESCE(at.source, 'unknown') AS source, COUNT(*) AS users FROM UserAttribution at
+          INNER JOIN User u ON u.id = at.user_id
+          WHERE u.registered_at >= :from AND u.registered_at < :end
+          GROUP BY COALESCE(at.source, 'unknown')`),
+        run(`
+          SELECT COALESCE(reason, 'other') AS reason, COUNT(*) AS n FROM UserFeedback
+          WHERE type = 'account_delete' AND created_at >= :from AND created_at < :end
+          GROUP BY COALESCE(reason, 'other')`),
+        run(`
+          SELECT COALESCE(reason, 'other') AS reason, COUNT(*) AS n FROM UserFeedback
+          WHERE type = 'checkout_exit' AND created_at >= :from AND created_at < :end
+          GROUP BY COALESCE(reason, 'other')`),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const daysBefore = (d) => (d ? Math.round((Date.parse(win.to) - Date.parse(d)) / 864e5) : Infinity);
+      const windowById = new Map(windowBookings.map((r) => [Number(r.user_id), r]));
+      const lifetimeById = new Map(users.map((u) => [Number(u.id), num(u.bookings)]));
+
+      const SEGMENTS = [
+        { key: "new", label: "New Users" },
+        { key: "active", label: "Active Users" },
+        { key: "loyal", label: "Loyal Users" },
+        { key: "at_risk", label: "At Risk Users" },
+        { key: "inactive", label: "Inactive Users" },
+      ];
+      const segmentOf = (u) => {
+        if (u.reg && u.reg >= win.from && u.reg <= win.to) return "new";
+        const sinceBooking = daysBefore(u.last_booking);
+        const last = Math.min(sinceBooking, daysBefore(u.last_seen));
+        if (num(u.bookings) >= 5 && sinceBooking <= 60) return "loyal";
+        if (last <= 30) return "active";
+        if (last <= 60) return "at_risk";
+        return "inactive";
+      };
+      const bySegment = new Map(SEGMENTS.map((s) => [s.key, { users: 0, bookings: 0, amount: 0, spent: 0 }]));
+      for (const u of users) {
+        const seg = bySegment.get(segmentOf(u));
+        seg.users += 1;
+        seg.spent += num(u.spent);
+        const w = windowById.get(Number(u.id));
+        if (w) {
+          seg.bookings += num(w.n);
+          seg.amount += num(w.amount);
+        }
+      }
+      const segments = SEGMENTS.map((s) => {
+        const v = bySegment.get(s.key);
+        return {
+          key: s.key,
+          label: s.label,
+          users: v.users,
+          share: pct(v.users, users.length),
+          bookings: v.bookings,
+          aov: v.bookings ? money(v.amount / v.bookings) : null,
+          avg_lifetime_spend: v.users ? money(v.spent / v.users) : null,
+        };
+      });
+
+      // Age: User.age, else the date of birth (YYYY-MM-DD / DD-MM-YYYY / DD/MM/YYYY).
+      const ageOf = (u) => {
+        const age = num(u.age);
+        if (age >= 10 && age <= 100) return age;
+        const text = String(u.date_of_birth || "").trim();
+        const m = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/) || text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+        if (!m) return null;
+        const year = Number(m[1].length === 4 ? m[1] : m[3]);
+        const years = Number(win.to.slice(0, 4)) - year;
+        return years >= 10 && years <= 100 ? years : null;
+      };
+      const AGE_BANDS = [
+        { label: "Under 18", max: 18 },
+        { label: "18 – 24", max: 25 },
+        { label: "25 – 34", max: 35 },
+        { label: "35 – 44", max: 45 },
+        { label: "45 – 54", max: 55 },
+        { label: "55+", max: Infinity },
+      ];
+      const ages = users.map(ageOf).filter((a) => a !== null);
+      const ageGroups = AGE_BANDS.map((band, i) => {
+        const n = ages.filter((a) => AGE_BANDS.findIndex((b) => a < b.max) === i).length;
+        return { label: band.label, users: n, share: pct(n, ages.length) };
+      });
+
+      // Lifetime spend: how it splits across the top 20% / middle 60% / bottom 20% of spenders.
+      const spenders = users.map((u) => num(u.spent)).filter((v) => v > 0).sort((a, b) => b - a);
+      const spendTotal = spenders.reduce((t, v) => t + v, 0);
+      // Group edges round up, so a handful of spenders still fills "Top 20%".
+      const cut = (from, to) => spenders.slice(Math.ceil(spenders.length * from), Math.ceil(spenders.length * to)).reduce((t, v) => t + v, 0);
+      const ltvShare = spenders.length
+        ? [
+            { key: "top20", label: "Top 20%", share: pct(cut(0, 0.2), spendTotal) },
+            { key: "mid60", label: "Middle 60%", share: pct(cut(0.2, 0.8), spendTotal) },
+            { key: "bottom20", label: "Bottom 20%", share: pct(cut(0.8, 1), spendTotal) },
+          ]
+        : [];
+
+      // Acquisition: sign-ups in the window by referral code and, once the app
+      // reports it, install source.
+      const signups = users.filter((u) => u.reg && u.reg >= win.from && u.reg <= win.to);
+      const referral = signups.filter((u) => u.used_code && String(u.used_code).trim()).length;
+
+      // Booking behaviour (this window vs the previous one).
+      const behaviourOf = (rows, gapRows) => {
+        const customers = rows.length;
+        const total = rows.reduce((t, r) => t + num(r.n), 0);
+        const gapList = gapRows.map((g) => num(g.gap)).filter((g) => g > 0);
+        return {
+          customers,
+          avg_bookings_per_user: customers ? Number((total / customers).toFixed(2)) : null,
+          avg_days_between: gapList.length ? Math.round(gapList.reduce((t, g) => t + g, 0) / gapList.length) : null,
+        };
+      };
+      // Customers in the window with 2+ served bookings to date.
+      const repeatRate = pct(
+        windowBookings.filter((r) => (lifetimeById.get(Number(r.user_id)) || 0) >= 2).length,
+        windowBookings.length
+      );
+      const hourTotals = Array(24).fill(0);
+      for (const h of hours) if (h.hour !== null) hourTotals[num(h.hour)] += num(h.n);
+      const threeHour = hourTotals.map((_, h) => (h <= 21 ? hourTotals[h] + hourTotals[h + 1] + hourTotals[h + 2] : 0));
+      const bestStart = threeHour.some(Boolean) ? threeHour.indexOf(Math.max(...threeHour)) : null;
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        data_start_date: cutoff || null,
+        total_users: users.length,
+        segments,
+        age_groups: { known: ages.length, total: users.length, groups: ageGroups },
+        ltv: {
+          by_segment: segments.map((s) => ({ key: s.key, label: s.label, avg_lifetime_spend: s.avg_lifetime_spend })),
+          share: ltvShare,
+          spenders: spenders.length,
+        },
+        acquisition: {
+          signups: signups.length,
+          referral,
+          organic: signups.length - referral,
+          sources: attribution.map((r) => ({ source: r.source, users: num(r.users) })),
+        },
+        leave_reasons: leaveReasons.map((r) => ({ reason: r.reason, users: num(r.n) })),
+        checkout_reasons: checkoutReasons.map((r) => ({ reason: r.reason, users: num(r.n) })),
+        booking_behavior: {
+          ...behaviourOf(windowBookings, gaps),
+          repeat_booking_rate: repeatRate,
+          preferred_time: bestStart === null ? null : `${hourName(bestStart)} – ${hourName(bestStart + 3)}`,
+          previous: behaviourOf(prevWindowBookings, prevGaps),
+        },
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getUserSegmentsV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch user segments");
+    }
+  },
+
+  // Latest sign-ups, bookings and reviews (User Analytics 360 live feed).
+  getUserLiveFeedV2: async (data = {}) => {
+    try {
+      const limit = Math.min(Math.max(Number(data.limit) || 10, 1), 50);
+      const since = addDays(toIstDatePart(new Date()), -30);
+      const rows = await adminDbController.connection.query(
+        `
+        SELECT * FROM (
+          SELECT 'signup' AS kind, u.registered_at AS at, u.id AS user_id,
+            TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, NULL AS store, NULL AS area, NULL AS detail, NULL AS amount
+          FROM User u WHERE u.registered_at >= :since
+          UNION ALL
+          SELECT 'booking', a.created_at, a.user_id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)), s.name, pa.area,
+            (SELECT COALESCE(ss.service_name, cb.combo) FROM appointment_items ai
+               LEFT JOIN StoreServices ss ON ss.id = ai.service_id LEFT JOIN Combo cb ON cb.id = ai.combo_id
+               WHERE ai.appointment_id = a.id ORDER BY ai.id LIMIT 1),
+            ${AMOUNT_PAID_SQL}
+          FROM appointments a
+          LEFT JOIN User u ON u.id = a.user_id
+          LEFT JOIN Store s ON s.id = a.store_id
+          LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE ${PAID_BOOKING_SQL} AND a.created_at >= :since
+          UNION ALL
+          SELECT 'review', r.cretaed_at, r.user_id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)), s.name, pa.area, r.rating, NULL
+          FROM Reviews r
+          LEFT JOIN User u ON u.id = r.user_id
+          LEFT JOIN Store s ON s.id = r.store_id
+          LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
+          WHERE r.cretaed_at >= :since AND r.status = 'active'
+        ) x
+        ORDER BY x.at DESC
+        LIMIT :limit
+        `,
+        { replacements: { since, limit }, type: Sequelize.QueryTypes.SELECT }
+      );
+      return {
+        items: rows.map((r) => ({
+          kind: r.kind,
+          at: r.at,
+          user_id: r.user_id,
+          name: r.name || null,
+          store: r.store || null,
+          area: placeLabel(r.area),
+          detail: r.detail,
+          amount: r.amount === null ? null : Number(Number(r.amount).toFixed(2)),
+        })),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getUserLiveFeedV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch live activity");
+    }
+  },
+
+  // Behavior Analytics V2. Server-side signals now (sessions, screen views,
+  // salon views, coupons, checkouts, bookings); app events (filters, taps)
+  // add to the same numbers once the app sends them. include_list =
+  // viewed_not_booked | checkout_unpaid | offer_not_booked | inactive_7d
+  // returns that opportunity's users for a push / contact export.
+  getBehaviorAnalyticsV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 7);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const f = adminDbController.app.getUserAnalyticsFilters(data, cutoff);
+      const today = toIstDatePart(new Date());
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { ...f.replacements, from: win.from, end: win.end, cutoff: cutoff || null, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+      const pf = f.platformWhere("s");
+      const oppFrom = addDays(win.to, -6);
+      const served = `${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")}`;
+
+      const sessionStats = (w) =>
+        run(
+          `SELECT COUNT(*) AS sessions, COUNT(DISTINCT s.user_id) AS users, AVG(${SESSION_SECONDS_SQL}) AS avg_seconds
+           FROM UserAppSessions s WHERE s.started_at >= :wFrom AND s.started_at < :wEnd ${pf}`,
+          { wFrom: w.from, wEnd: w.end }
+        );
+      const eventStats = (w) =>
+        run(
+          `SELECT COALESCE(SUM(event = 'salon_view' OR (event = 'screen_view' AND screen = 'salon_details' AND source = 'app')), 0) AS views
+           FROM UserEvents WHERE created_at >= :wFrom AND created_at < :wEnd`,
+          { wFrom: w.from, wEnd: w.end }
+        );
+      const completedStats = (w) =>
+        run(
+          `SELECT COUNT(*) AS completed FROM appointments a
+           WHERE ${served} AND a.status = 'completed' AND a.booking_date >= :wFrom AND a.booking_date < :wEnd`,
+          { wFrom: w.from, wEnd: w.end }
+        );
+
+      const [
+        [sess],
+        [prevSess],
+        [views],
+        [prevViews],
+        [completed],
+        [prevCompleted],
+        activeDays,
+        sessionLengths,
+        items,
+        eventRows,
+        checkoutRows,
+        feedback,
+        categoryRows,
+        [since],
+      ] = await Promise.all([
+        sessionStats(win),
+        sessionStats(win.previous),
+        eventStats(win),
+        eventStats(win.previous),
+        completedStats(win),
+        completedStats(win.previous),
+        adminDbController.app.getUserActiveDays(win.previous.from, win.end, f),
+        run(`SELECT ${SESSION_SECONDS_SQL} AS seconds FROM UserAppSessions s WHERE s.started_at >= :from AND s.started_at < :end ${pf}`),
+        adminDbController.app.getBookingItems(win, f),
+        run(`
+          SELECT e.user_id, e.event, e.screen, e.element, e.store_id, e.meta, e.source,
+            DATE_FORMAT(e.created_at, '%Y-%m-%d') AS day, e.created_at AS at
+          FROM UserEvents e
+          WHERE e.created_at >= :from AND e.created_at < :end`),
+        run(`
+          SELECT a.user_id, a.id, a.created_at AS at, DATE_FORMAT(a.created_at, '%Y-%m-%d') AS day,
+            (${PAYMENT_MADE_SQL}) AS paid
+          FROM appointments a
+          WHERE a.user_id IS NOT NULL AND a.created_at >= :from AND a.created_at < :end AND ${bookingFloorSql("a")}`),
+        run(`
+          SELECT COALESCE(reason, 'other') AS reason, COUNT(*) AS n FROM UserFeedback
+          WHERE type = 'checkout_exit' AND created_at >= :from AND created_at < :end
+          GROUP BY COALESCE(reason, 'other')`),
+        run(`SELECT id, name FROM Servicecategory`),
+        run(`
+          SELECT (SELECT DATE_FORMAT(MIN(started_at), '%Y-%m-%d') FROM UserAppSessions) AS activity_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents) AS events_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents WHERE source = 'app') AS app_events_since`),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const money = (v) => Number(num(v).toFixed(2));
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const parseMeta = (m) => {
+        try {
+          return m ? JSON.parse(m) : {};
+        } catch {
+          return {};
+        }
+      };
+
+      // Active users / DAU per window.
+      const activeIn = (w) => {
+        const users = new Set();
+        let sum = 0;
+        let days = 0;
+        for (let d = w.from; d <= w.to && d <= today; d = addDays(d, 1)) {
+          const ids = activeDays.get(d) || [];
+          ids.forEach((id) => users.add(id));
+          sum += ids.length;
+          days += 1;
+        }
+        return { users: users.size, dau: days ? Number((sum / days).toFixed(1)) : null };
+      };
+      const act = activeIn(win);
+      const prevAct = activeIn(win.previous);
+      const tracked = Boolean(since?.activity_since);
+      const kpis = {
+        active_users: tracked ? act.users : null,
+        dau: tracked ? act.dau : null,
+        sessions: tracked ? num(sess?.sessions) : null,
+        avg_session_seconds: num(sess?.sessions) ? Math.round(num(sess.avg_seconds)) : null,
+        salon_views: since?.events_since ? num(views?.views) : null,
+        bookings_completed: num(completed?.completed),
+      };
+      const previousKpis = {
+        active_users: tracked ? prevAct.users : null,
+        dau: tracked ? prevAct.dau : null,
+        sessions: tracked ? num(prevSess?.sessions) : null,
+        avg_session_seconds: num(prevSess?.sessions) ? Math.round(num(prevSess.avg_seconds)) : null,
+        salon_views: since?.events_since ? num(prevViews?.views) : null,
+        bookings_completed: num(prevCompleted?.completed),
+      };
+
+      // Booking frequency (served bookings per month in the window).
+      const bookings = adminDbController.app.rollUpBookings(items);
+      const customerIds = [...new Set(bookings.map((b) => b.user_id).filter(Boolean))];
+      const history = customerIds.length
+        ? await run(
+            `SELECT a.user_id, a.id, DATE_FORMAT(a.booking_date, '%Y-%m-%d') AS day, HOUR(sl.\`from\`) AS hour,
+               ${ITEM_GMV_SQL} AS gmv, COALESCE(ss.service_category, cb.service_category) AS category_id,
+               COALESCE(ss.service_name, cb.combo) AS service_name
+             FROM appointments a
+             INNER JOIN appointment_items ai ON ai.appointment_id = a.id
+             LEFT JOIN StoreServices ss ON ss.id = ai.service_id
+             LEFT JOIN Combo cb ON cb.id = ai.combo_id
+             LEFT JOIN Slots sl ON sl.id = a.slot_id
+             WHERE ${served} AND a.user_id IN (:customerIds) AND a.booking_date < :end`,
+            { customerIds }
+          )
+        : [];
+      const historyByUser = new Map();
+      for (const h of history) {
+        const list = historyByUser.get(h.user_id) || [];
+        list.push(h);
+        historyByUser.set(h.user_id, list);
+      }
+      const months = Math.max(1, win.days / 30);
+      const windowCount = new Map();
+      for (const b of bookings) if (b.user_id) windowCount.set(b.user_id, (windowCount.get(b.user_id) || 0) + 1);
+      const FREQ = [
+        { key: "1", label: "1 time / month" },
+        { key: "2", label: "2 times / month" },
+        { key: "3", label: "3 times / month" },
+        { key: "4+", label: "4+ times / month" },
+        { key: "irregular", label: "Irregular (back after 60+ days)" },
+      ];
+      const freqCounts = Object.fromEntries(FREQ.map((x) => [x.key, 0]));
+      for (const [userId, n] of windowCount) {
+        const days = [...new Set((historyByUser.get(userId) || []).map((h) => h.day))].sort();
+        const firstInWindow = days.find((d) => d >= win.from);
+        const before = days.filter((d) => d < firstInWindow);
+        const gap = before.length ? (Date.parse(firstInWindow) - Date.parse(before[before.length - 1])) / 864e5 : 0;
+        if (n === 1 && gap > 60) freqCounts.irregular += 1;
+        else {
+          const rate = n / months;
+          freqCounts[rate < 1.5 ? "1" : rate < 2.5 ? "2" : rate < 3.5 ? "3" : "4+"] += 1;
+        }
+      }
+      const frequency = FREQ.map((x) => ({ ...x, users: freqCounts[x.key], share: pct(freqCounts[x.key], windowCount.size) }));
+
+      // Service segments: each customer's most booked kind of service.
+      const categoryName = new Map(categoryRows.map((c) => [Number(c.id), String(c.name || "")]));
+      // Matched on the service name first, then its category; premium wins
+      // ("Keratin" in a "Hair Treatments" category is premium, not a haircut).
+      const KINDS = [
+        { key: "premium", label: "Premium Care", sub: "Smoothening, Keratin, Colour, Bridal", re: /smooth|keratin|botox|colou?r|bridal|make ?up|rebond|treatment|extension|straighten/i },
+        { key: "relax", label: "Relaxation", sub: "Massage, Spa, Head Massage", re: /massage|\bspa\b|head|relax|pedicure|manicure/i },
+        { key: "face", label: "Face Care", sub: "Facial, Clean up, D-Tan", re: /facial|clean ?up|d-?tan|\bface\b|thread|bleach|skin/i },
+        { key: "basic", label: "Basic Grooming", sub: "Haircut, Trim, Shave", re: /hair ?cut|beard|shave|trim|groom|\bkids?\b|\bmen'?s?\b/i },
+      ];
+      const DISPLAY_ORDER = ["basic", "face", "relax", "premium"];
+      const kindOf = (categoryId, serviceName) => {
+        const byName = KINDS.find((k) => k.re.test(serviceName || ""));
+        if (byName) return byName.key;
+        return KINDS.find((k) => k.re.test(categoryName.get(Number(categoryId)) || ""))?.key || "other";
+      };
+      const userKind = new Map();
+      for (const b of bookings) {
+        if (!b.user_id) continue;
+        const tally = userKind.get(b.user_id) || { counts: {}, gmv: 0, bookings: 0 };
+        for (const it of b.items) {
+          const k = kindOf(it.category_id, it.label);
+          tally.counts[k] = (tally.counts[k] || 0) + 1;
+        }
+        tally.gmv += b.gmv;
+        tally.bookings += 1;
+        userKind.set(b.user_id, tally);
+      }
+      const kindRows = [...DISPLAY_ORDER.map((key) => KINDS.find((k) => k.key === key)), { key: "other", label: "Others", sub: "" }].map((k) => {
+        const members = [...userKind.values()].filter((t) => Object.entries(t.counts).sort((a, b) => b[1] - a[1])[0]?.[0] === k.key);
+        const bookingsN = members.reduce((t, m) => t + m.bookings, 0);
+        return {
+          key: k.key,
+          label: k.label,
+          sub: k.sub,
+          users: members.length,
+          share: pct(members.length, userKind.size),
+          aov: bookingsN ? money(members.reduce((t, m) => t + m.gmv, 0) / bookingsN) : null,
+        };
+      });
+
+      // Intent signals and pricing behaviour (users in the window).
+      const viewsByUser = new Map();
+      const usersWith = (pred) => new Set(eventRows.filter(pred).map((e) => e.user_id));
+      for (const e of eventRows) {
+        if (e.event !== "salon_view" || !e.store_id) continue;
+        const v = viewsByUser.get(e.user_id) || { stores: new Set(), byDay: new Map() };
+        v.stores.add(e.store_id);
+        const dayStores = v.byDay.get(e.day) || new Set();
+        dayStores.add(e.store_id);
+        v.byDay.set(e.day, dayStores);
+        viewsByUser.set(e.user_id, v);
+      }
+      const priceUsers = usersWith((e) => {
+        const m = parseMeta(e.meta);
+        return (e.event === "screen_view" && (/price/i.test(m.sort || "") || m.minPrice || m.maxPrice)) || (e.event === "filter" && (/price/i.test(e.element || "") || m.min_price || m.max_price));
+      });
+      const ratingUsers = usersWith((e) => {
+        const m = parseMeta(e.meta);
+        return (e.event === "screen_view" && (/rating/i.test(m.sort || "") || m.minRating)) || (e.event === "filter" && (/rating/i.test(e.element || "") || m.min_rating));
+      });
+      const offerUsers = usersWith((e) => (e.event === "screen_view" && e.screen === "offers") || e.event === "coupon_apply" || e.event === "coupon_attempt_failed");
+      const couponUsers = usersWith((e) => e.event === "coupon_apply");
+      const compareUsers = new Set([...viewsByUser].filter(([, v]) => [...v.byDay.values()].some((s) => s.size >= 2)).map(([u]) => u));
+      const checkoutByUser = new Map();
+      for (const c of checkoutRows) {
+        const v = checkoutByUser.get(c.user_id) || { paid: false, rows: [] };
+        if (num(c.paid)) v.paid = true;
+        v.rows.push(c);
+        checkoutByUser.set(c.user_id, v);
+      }
+      const unpaidUsers = new Set([...checkoutByUser].filter(([, v]) => !v.paid).map(([u]) => u));
+      const base = act.users || new Set(eventRows.map((e) => e.user_id)).size;
+      const intent = [
+        { key: "viewed_3", label: "Viewed 3+ salons", users: [...viewsByUser.values()].filter((v) => v.stores.size >= 3).length },
+        { key: "price_filter", label: "Filtered or sorted by price", users: priceUsers.size },
+        { key: "unpaid_checkout", label: "Started checkout but didn't pay", users: unpaidUsers.size },
+        { key: "offers", label: "Checked offers & coupons", users: offerUsers.size },
+        { key: "coupon", label: "Applied a coupon", users: couponUsers.size },
+      ].map((r) => ({ ...r, share: pct(r.users, base) }));
+      const anyPricing = new Set([...priceUsers, ...offerUsers, ...ratingUsers, ...compareUsers]);
+      const pricing = [
+        { key: "compare", label: "Compared 2+ salons in a day", users: compareUsers.size },
+        { key: "price", label: "Filtered / sorted by price", users: priceUsers.size },
+        { key: "offers", label: "Looked for offers / coupons", users: offerUsers.size },
+        { key: "rating", label: "Sorted / filtered by rating", users: ratingUsers.size },
+        { key: "none", label: "No comparison behaviour", users: Math.max(0, base - anyPricing.size) },
+      ].map((r) => ({ ...r, share: pct(r.users, base) }));
+
+      // Time per session.
+      const SESSION_BANDS = [
+        { label: "0 – 30 sec", max: 30 },
+        { label: "30 sec – 1 min", max: 60 },
+        { label: "1 – 2 min", max: 120 },
+        { label: "2 – 5 min", max: 300 },
+        { label: "5 – 10 min", max: 600 },
+        { label: "10+ min", max: Infinity },
+      ];
+      const lengths = sessionLengths.map((r) => num(r.seconds));
+      const timeSpent = SESSION_BANDS.map((band, i) => {
+        const n = lengths.filter((s) => SESSION_BANDS.findIndex((b) => s < b.max) === i).length;
+        return { label: band.label, sessions: n, share: pct(n, lengths.length) };
+      });
+
+      // High-value services: highest average booking value (3+ bookings).
+      const serviceStats = new Map();
+      for (const b of bookings) {
+        for (const it of b.items) {
+          const s = serviceStats.get(it.key) || { key: it.key, name: it.label, users: new Set(), gmv: 0, items: 0 };
+          s.users.add(b.user_id);
+          s.gmv += it.gmv;
+          s.items += 1;
+          serviceStats.set(it.key, s);
+        }
+      }
+      const lifetimeService = new Map();
+      for (const h of history) {
+        const k = `${h.user_id}|${placeKey(h.service_name) || "unknown"}`;
+        lifetimeService.set(k, (lifetimeService.get(k) || 0) + 1);
+      }
+      const highValue = [...serviceStats.values()]
+        .filter((s) => s.items >= 3)
+        .map((s) => {
+          const usersList = [...s.users].filter(Boolean);
+          const repeaters = usersList.filter((u) => (lifetimeService.get(`${u}|${s.key}`) || 0) >= 2).length;
+          return { key: s.key, name: s.name, users: usersList.length, aov: money(s.gmv / s.items), repeat_rate: pct(repeaters, usersList.length) };
+        })
+        .sort((a, b) => b.aov - a.aov)
+        .slice(0, 5);
+
+      // Booking speed: first salon view of the day -> checkout.
+      const firstViewAt = new Map();
+      for (const e of eventRows) {
+        if (e.event !== "salon_view") continue;
+        const k = `${e.user_id}|${e.day}`;
+        const t = new Date(e.at).getTime();
+        if (!firstViewAt.has(k) || t < firstViewAt.get(k)) firstViewAt.set(k, t);
+      }
+      const speeds = [];
+      for (const c of checkoutRows) {
+        const start = firstViewAt.get(`${c.user_id}|${c.day}`);
+        const t = new Date(c.at).getTime();
+        if (start && t >= start) speeds.push((t - start) / 60000);
+      }
+      const speed = [
+        { key: "fast", label: "Fast (< 2 min)", users: speeds.filter((m) => m < 2).length },
+        { key: "medium", label: "Medium (2 – 5 min)", users: speeds.filter((m) => m >= 2 && m <= 5).length },
+        { key: "slow", label: "Slow (> 5 min)", users: speeds.filter((m) => m > 5).length },
+      ].map((r) => ({ ...r, share: pct(r.users, speeds.length) }));
+
+      // Lifestyle groups (rules, first match): spend -> cadence -> timing.
+      const LIFESTYLE = [
+        { key: "self_care", label: "Self Care Lovers", traits: "High spend or 3+ kinds of service" },
+        { key: "regular", label: "Regular Maintainers", traits: "Books every 10–35 days" },
+        { key: "busy", label: "Busy Professionals", traits: "Books evenings (7 PM+) or weekends" },
+        { key: "occasional", label: "Occasional Users", traits: "Books rarely" },
+      ];
+      const lifestyleOf = (rows) => {
+        const byBooking = new Map();
+        for (const r of rows) {
+          const b = byBooking.get(r.id) || { day: r.day, hour: r.hour === null ? null : num(r.hour), gmv: 0, cats: new Set() };
+          b.gmv += num(r.gmv);
+          if (r.category_id !== null) b.cats.add(r.category_id);
+          byBooking.set(r.id, b);
+        }
+        const list = [...byBooking.values()].sort((a, b) => a.day.localeCompare(b.day));
+        const avgGmv = list.reduce((t, b) => t + b.gmv, 0) / (list.length || 1);
+        const kinds = new Set(list.flatMap((b) => [...b.cats]));
+        if (avgGmv >= 800 || kinds.size >= 3) return { key: "self_care", list };
+        const gaps = list.slice(1).map((b, i) => (Date.parse(b.day) - Date.parse(list[i].day)) / 864e5);
+        const avgGap = gaps.length ? gaps.reduce((t, g) => t + g, 0) / gaps.length : null;
+        if (list.length >= 3 && avgGap >= 10 && avgGap <= 35) return { key: "regular", list };
+        const lateOrWeekend = list.filter((b) => (b.hour !== null && b.hour >= 19) || [0, 6].includes(new Date(`${b.day}T00:00:00Z`).getUTCDay()));
+        if (list.length && lateOrWeekend.length / list.length >= 0.5) return { key: "busy", list };
+        return { key: "occasional", list };
+      };
+      const lifestyleCounts = new Map(LIFESTYLE.map((l) => [l.key, { users: 0, hours: Array(24).fill(0) }]));
+      for (const userId of customerIds) {
+        const { key, list } = lifestyleOf(historyByUser.get(userId) || []);
+        const entry = lifestyleCounts.get(key);
+        entry.users += 1;
+        for (const b of list) if (b.hour !== null) entry.hours[b.hour] += 1;
+      }
+      const lifestyle = LIFESTYLE.map((l) => {
+        const entry = lifestyleCounts.get(l.key);
+        const three = entry.hours.map((_, h) => (h <= 21 ? entry.hours[h] + entry.hours[h + 1] + entry.hours[h + 2] : 0));
+        const best = three.some(Boolean) ? three.indexOf(Math.max(...three)) : null;
+        return {
+          ...l,
+          users: entry.users,
+          share: pct(entry.users, customerIds.length),
+          best_time: best === null ? null : `${hourName(best)} – ${hourName(best + 3)}`,
+        };
+      });
+
+      // Timeline: the latest customer who paid, their day step by step.
+      const lastPaid = [...checkoutRows].filter((c) => num(c.paid)).sort((a, b) => new Date(b.at) - new Date(a.at))[0];
+      const timeline = lastPaid
+        ? [
+            ...eventRows
+              .filter((e) => e.user_id === lastPaid.user_id && e.day === lastPaid.day && new Date(e.at) <= new Date(lastPaid.at))
+              .map((e) => ({ at: e.at, kind: e.event, screen: e.screen, element: e.element, store_id: e.store_id })),
+            { at: lastPaid.at, kind: "booking", screen: null, element: null, store_id: null },
+          ]
+            .sort((a, b) => new Date(a.at) - new Date(b.at))
+            .slice(-8)
+        : [];
+
+      // Opportunities over the window's last 7 days.
+      const recent = (e) => e.day >= oppFrom;
+      const paidRecent = new Set(checkoutRows.filter((c) => c.day >= oppFrom && num(c.paid)).map((c) => c.user_id));
+      const checkoutRecent = new Set(checkoutRows.filter((c) => c.day >= oppFrom).map((c) => c.user_id));
+      const viewedNotBooked = new Set(eventRows.filter((e) => recent(e) && e.event === "salon_view" && !checkoutRecent.has(e.user_id)).map((e) => e.user_id));
+      const unpaidRecent = new Set([...checkoutRecent].filter((u) => !paidRecent.has(u)));
+      const offerNotBooked = new Set(
+        eventRows
+          .filter((e) => recent(e) && ((e.event === "screen_view" && e.screen === "offers") || e.event === "coupon_apply") && !paidRecent.has(e.user_id))
+          .map((e) => e.user_id)
+      );
+      const inactiveRows = await run(
+        `SELECT user_id FROM UserAppSessions GROUP BY user_id
+         HAVING MAX(last_seen_at) < :sevenAgo AND MAX(last_seen_at) >= :thirtyAgo`,
+        { sevenAgo: addDays(win.to, -6), thirtyAgo: addDays(win.to, -29) }
+      );
+      const inactive7 = new Set(inactiveRows.map((r) => r.user_id));
+      const OPPORTUNITIES = [
+        { key: "viewed_not_booked", label: "Viewed a salon but didn't book", set: viewedNotBooked },
+        { key: "checkout_unpaid", label: "Started checkout but didn't pay", set: unpaidRecent },
+        { key: "offer_not_booked", label: "Checked offers but didn't book", set: offerNotBooked },
+        { key: "inactive_7d", label: "Inactive for 7+ days", set: inactive7 },
+      ];
+      if (data.include_list) {
+        const opp = OPPORTUNITIES.find((o) => o.key === data.include_list);
+        if (!opp) throw Error.BadRequest("include_list must be one of the opportunity keys");
+        const ids = [...opp.set].filter(Boolean);
+        const users = ids.length
+          ? await run(`SELECT id, firstname, lastname, phone, gender FROM User WHERE id IN (:ids) AND status <> 'terminated'`, { ids })
+          : [];
+        return {
+          list: opp.key,
+          rows: users.map((u) => ({
+            user_id: u.id,
+            name: [u.firstname, u.lastname].filter(Boolean).join(" ").trim() || null,
+            phone: u.phone ? String(u.phone) : null,
+            gender: u.gender && String(u.gender).toLowerCase() !== "null" ? String(u.gender).trim() : null,
+          })),
+        };
+      }
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        data_start_date: cutoff || null,
+        activity_since: since?.activity_since || null,
+        events_since: since?.events_since || null,
+        app_events_since: since?.app_events_since || null,
+        kpis,
+        previous_kpis: previousKpis,
+        frequency,
+        service_segments: kindRows,
+        intent: { base, rows: intent },
+        pricing: { base, rows: pricing },
+        time_spent: timeSpent,
+        high_value: highValue,
+        speed: { checkouts: speeds.length, fast_share: pct(speeds.filter((m) => m < 2).length, speeds.length), rows: speed },
+        drop_reasons: feedback.map((r) => ({ reason: r.reason, users: num(r.n) })),
+        lifestyle,
+        timeline,
+        opportunities: { from: oppFrom, to: win.to, rows: OPPORTUNITIES.map((o) => ({ key: o.key, label: o.label, users: o.set.size })) },
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getBehaviorAnalyticsV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch behavior analytics");
+    }
+  },
+
+  // Click & Interaction V2. "Interactions" = screen views (logged by the
+  // backend, or sent by the app) + taps the app sends + actions the backend
+  // serves (salon views, coupon attempts). Tap positions, gestures, time to
+  // tap and rage taps exist only once the app sends events; until then
+  // those parts are null / empty. platform / app_version filter the events.
+  getClickInteractionV2: async (data = {}) => {
+    try {
+      const win = resolveAnalyticsWindow(data, 7);
+      const { dashboard_data_start_date: cutoff } = await adminDbController.app.getDashboardSettings();
+      const requested = String(data.platform || "").trim().toLowerCase();
+      const platform = USER_ANALYTICS_PLATFORMS.includes(requested) ? requested : null;
+      const appVersion = /^[0-9A-Za-z.+_-]{1,20}$/.test(String(data.app_version || "")) ? String(data.app_version) : null;
+      const eventFilter = `${platform ? "AND e.platform = :platform" : ""} ${appVersion ? "AND e.app_version = :appVersion" : ""}`;
+      const run = (sql, extra = {}) =>
+        adminDbController.connection.query(sql, {
+          replacements: { from: win.from, end: win.end, platform, appVersion, cutoff: cutoff || null, ...extra },
+          type: Sequelize.QueryTypes.SELECT,
+        });
+      const INTERACTIONS = "('screen_view', 'tap', 'salon_view', 'coupon_apply', 'coupon_attempt_failed', 'search', 'filter', 'cart', 'checkout_step')";
+      const kpiOf = (w) =>
+        run(
+          `SELECT COALESCE(SUM(e.event IN ${INTERACTIONS}), 0) AS interactions,
+             COUNT(DISTINCT CASE WHEN e.event IN ${INTERACTIONS} THEN e.user_id END) AS users,
+             COALESCE(SUM(e.event = 'tap'), 0) AS taps,
+             AVG(CASE WHEN e.event = 'tap' THEN e.value END) AS avg_ms_to_tap,
+             COALESCE(SUM(e.event = 'rage_tap'), 0) AS rage_taps,
+             COALESCE(SUM(e.event = 'coupon_attempt_failed'), 0) AS failed_coupons
+           FROM UserEvents e WHERE e.created_at >= :wFrom AND e.created_at < :wEnd ${eventFilter}`,
+          { wFrom: w.from, wEnd: w.end }
+        );
+
+      const [[cur], [prev], events, checkouts, bookingCounts, versions, [since]] = await Promise.all([
+        kpiOf(win),
+        kpiOf(win.previous),
+        run(`
+          SELECT e.user_id, e.event, e.screen, e.element, e.x, e.y, e.value, e.platform, e.source,
+            DATE_FORMAT(e.created_at, '%Y-%m-%d') AS day, e.created_at AS at
+          FROM UserEvents e
+          WHERE e.created_at >= :from AND e.created_at < :end ${eventFilter}
+          ORDER BY e.created_at`),
+        run(`
+          SELECT a.user_id, DATE_FORMAT(a.created_at, '%Y-%m-%d') AS day, (${PAYMENT_MADE_SQL}) AS paid, a.payment_status
+          FROM appointments a
+          WHERE a.user_id IS NOT NULL AND a.created_at >= :from AND a.created_at < :end AND ${bookingFloorSql("a")}`),
+        run(`
+          SELECT a.user_id, COUNT(*) AS n FROM appointments a
+          WHERE ${ACTIVE_BOOKING_SQL} AND ${bookingFloorSql("a")} AND a.user_id IS NOT NULL AND a.booking_date < :end
+          GROUP BY a.user_id`),
+        run(`
+          SELECT app_version, COUNT(*) AS n FROM UserEvents
+          WHERE app_version IS NOT NULL AND created_at >= :from AND created_at < :end
+          GROUP BY app_version ORDER BY n DESC LIMIT 20`),
+        run(`
+          SELECT (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents WHERE event = 'screen_view') AS screens_since,
+                 (SELECT DATE_FORMAT(MIN(created_at), '%Y-%m-%d') FROM UserEvents WHERE source = 'app') AS app_events_since`),
+      ]);
+
+      const num = (v) => Number(v) || 0;
+      const pct = (part, whole) => (whole ? Number(((part / whole) * 100).toFixed(1)) : null);
+      const appEvents = Boolean(since?.app_events_since);
+      const kpis = (k) => ({
+        interactions: num(k?.interactions),
+        unique_users: num(k?.users),
+        avg_per_user: num(k?.users) ? Number((num(k.interactions) / num(k.users)).toFixed(1)) : null,
+        taps: appEvents ? num(k?.taps) : null,
+        avg_seconds_to_tap: k?.avg_ms_to_tap === null || k?.avg_ms_to_tap === undefined ? null : Number((num(k.avg_ms_to_tap) / 1000).toFixed(2)),
+        repeated_attempts: num(k?.rage_taps) + num(k?.failed_coupons),
+      });
+
+      // Screens: views, unique users, average time (app screen_view durations).
+      const SCREEN_LABELS = {
+        home: "Home Screen",
+        search: "Search Screen",
+        salon_list: "Salon List",
+        map: "Map",
+        salon_details: "Salon Details",
+        slots: "Slot Selection",
+        offers: "Offers & Coupons",
+        checkout: "Checkout",
+        payment: "Payment Screen",
+        payment_success: "Booking Confirmation",
+        bookings: "My Bookings",
+        favourites: "Favourites",
+        reviews: "Reviews",
+        profile: "Profile",
+        wallet: "Wallet",
+        notifications: "Notifications",
+      };
+      const labelOf = (screen) => SCREEN_LABELS[screen] || placeLabel(String(screen || "").replace(/_/g, " ")) || "Other";
+      const screenViews = events.filter((e) => e.event === "screen_view" && e.screen);
+      const screens = new Map();
+      for (const e of screenViews) {
+        const s = screens.get(e.screen) || { screen: e.screen, views: 0, users: new Set(), durations: [] };
+        s.views += 1;
+        s.users.add(e.user_id);
+        if (e.source === "app" && num(e.value) > 0) s.durations.push(num(e.value));
+        screens.set(e.screen, s);
+      }
+      const totalViews = screenViews.length;
+      const screenRows = [...screens.values()]
+        .sort((a, b) => b.views - a.views)
+        .map((s) => ({
+          screen: s.screen,
+          label: labelOf(s.screen),
+          views: s.views,
+          share: pct(s.views, totalViews),
+          unique_users: s.users.size,
+          avg_seconds: s.durations.length ? Math.round(s.durations.reduce((t, d) => t + d, 0) / s.durations.length / 1000) : null,
+        }));
+
+      // Tap heatmaps per screen (app taps, 8 x 16 grid of the screen).
+      const taps = events.filter((e) => e.event === "tap" && e.x !== null && e.y !== null);
+      const heatmaps = {};
+      for (const e of taps) {
+        const h = (heatmaps[e.screen || "other"] ||= new Map());
+        const cx = Math.min(7, Math.floor(num(e.x) * 8));
+        const cy = Math.min(15, Math.floor(num(e.y) * 16));
+        const k = `${cx},${cy}`;
+        h.set(k, (h.get(k) || 0) + 1);
+      }
+      const heatmapOut = Object.fromEntries(
+        Object.entries(heatmaps).map(([screen, cells]) => {
+          const max = Math.max(...cells.values());
+          return [
+            screen,
+            [...cells]
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 14)
+              .map(([k, n]) => {
+                const [cx, cy] = k.split(",").map(Number);
+                return { x: Number(((cx + 0.5) / 8).toFixed(3)), y: Number(((cy + 0.5) / 16).toFixed(3)), taps: n, weight: Number((n / max).toFixed(2)) };
+              }),
+          ];
+        })
+      );
+
+      // Top elements: app taps by element; until the app sends taps, the
+      // actions the backend sees.
+      const elementCounts = new Map();
+      if (taps.length || events.some((e) => e.event === "tap")) {
+        for (const e of events) if (e.event === "tap" && e.element) elementCounts.set(e.element, (elementCounts.get(e.element) || 0) + 1);
+      } else {
+        const count = (pred) => events.filter(pred).length;
+        elementCounts.set("Salon card (opened salon)", count((e) => e.event === "salon_view"));
+        elementCounts.set("Search", count((e) => e.event === "screen_view" && e.screen === "search"));
+        elementCounts.set("Offers", count((e) => e.event === "screen_view" && e.screen === "offers"));
+        elementCounts.set("Time slot (opened slots)", count((e) => e.event === "screen_view" && e.screen === "slots"));
+        elementCounts.set("Apply coupon", count((e) => e.event === "coupon_apply" || e.event === "coupon_attempt_failed"));
+        elementCounts.set("Book now (checkout)", checkouts.length);
+      }
+      const elementTotal = [...elementCounts.values()].reduce((t, n) => t + n, 0);
+      const elements = [...elementCounts]
+        .filter(([, n]) => n)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([element, n]) => ({ element: placeLabel(String(element).replace(/_/g, " ")) || element, clicks: n, share: pct(n, elementTotal) }));
+
+      // Journeys: each user-day's screens in order, repeats collapsed, the
+      // first four steps.
+      const journeys = new Map();
+      for (const e of screenViews) {
+        const k = `${e.user_id}|${e.day}`;
+        const path = journeys.get(k) || [];
+        if (path[path.length - 1] !== e.screen) path.push(e.screen);
+        journeys.set(k, path);
+      }
+      const pathCounts = new Map();
+      for (const path of journeys.values()) {
+        if (path.length < 2) continue;
+        const key = path.slice(0, 4).join(">");
+        pathCounts.set(key, (pathCounts.get(key) || 0) + 1);
+      }
+      const multiStep = [...journeys.values()].filter((p) => p.length >= 2).length;
+      const flows = [...pathCounts]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([key, n]) => ({ steps: key.split(">").map(labelOf), sessions: n, share: pct(n, multiStep) }));
+
+      // Tap intensity by vertical band of the screen.
+      const BANDS = [
+        { key: "top", label: "Top Section", max: 0.15 },
+        { key: "search", label: "Search & Filters", max: 0.3 },
+        { key: "content", label: "Salon / Content Area", max: 0.75 },
+        { key: "cta", label: "Bottom Actions (CTAs)", max: 0.92 },
+        { key: "nav", label: "Navigation Bar", max: Infinity },
+      ];
+      const areas = BANDS.map((band, i) => {
+        const n = taps.filter((e) => BANDS.findIndex((b) => num(e.y) < b.max) === i).length;
+        return { key: band.key, label: band.label, taps: n, share: pct(n, taps.length) };
+      });
+
+      // Repeated attempts: rage taps by element, failed coupon codes,
+      // checkouts that weren't paid, and extra checkouts the same day.
+      const rageRows = new Map();
+      const addRage = (label, userId) => {
+        const r = rageRows.get(label) || { element: label, attempts: 0, users: new Set() };
+        r.attempts += 1;
+        r.users.add(userId);
+        rageRows.set(label, r);
+      };
+      for (const e of events) {
+        if (e.event === "rage_tap") addRage(placeLabel(String(e.element || "Unknown").replace(/_/g, " ")) || "Unknown", e.user_id);
+        if (e.event === "coupon_attempt_failed") addRage("Apply Coupon (invalid code)", e.user_id);
+      }
+      const checkoutsPerDay = new Map();
+      for (const c of checkouts) {
+        if (!num(c.paid) && c.payment_status === "failed") addRage("Proceed to Pay (not paid)", c.user_id);
+        const k = `${c.user_id}|${c.day}`;
+        checkoutsPerDay.set(k, (checkoutsPerDay.get(k) || 0) + 1);
+      }
+      for (const [k, n] of checkoutsPerDay) for (let i = 1; i < n; i += 1) addRage("Book Now (retried same day)", Number(k.split("|")[0]));
+      const repeated = [...rageRows.values()]
+        .sort((a, b) => b.attempts - a.attempts)
+        .slice(0, 6)
+        .map((r) => ({ element: r.element, attempts: r.attempts, users: r.users.size }));
+
+      // Gestures (app).
+      const gestureMap = new Map();
+      for (const e of events) {
+        if (e.event !== "gesture") continue;
+        const g = gestureMap.get(e.element) || { gesture: placeLabel(String(e.element || "other").replace(/_/g, " ")), users: new Set(), events: 0 };
+        g.users.add(e.user_id);
+        g.events += 1;
+        gestureMap.set(e.element, g);
+      }
+      const gestureUsers = new Set(events.filter((e) => e.event === "gesture").map((e) => e.user_id)).size;
+      const gestures = [...gestureMap.values()]
+        .sort((a, b) => b.users.size - a.users.size)
+        .map((g) => ({ gesture: g.gesture, users: g.users.size, events: g.events, share: pct(g.users.size, gestureUsers) }));
+
+      // Drop-off after a click: salon details -> checkout -> payment -> success.
+      const usersOn = (screen) => new Set(screenViews.filter((e) => e.screen === screen).map((e) => e.user_id));
+      const steps = [
+        { key: "salon_details", label: "Salon Details", users: usersOn("salon_details") },
+        { key: "checkout", label: "Checkout", users: new Set([...usersOn("checkout"), ...checkouts.map((c) => c.user_id)]) },
+        // Anyone who paid passed the payment step (wallet payments skip the screen's API).
+        {
+          key: "payment",
+          label: "Payment",
+          users: new Set([...usersOn("payment"), ...checkouts.filter((c) => num(c.paid)).map((c) => c.user_id)]),
+        },
+        { key: "payment_success", label: "Success", users: new Set(checkouts.filter((c) => num(c.paid)).map((c) => c.user_id)) },
+      ];
+      const dropOffs = steps.slice(1).map((s, i) => {
+        const before = steps[i].users.size;
+        const dropped = Math.max(0, before - s.users.size);
+        return { step: `${steps[i].label} → ${s.label}`, dropped, of: before, rate: pct(dropped, before) };
+      });
+
+      // Behaviour by customer type (served bookings to date).
+      const lifetime = new Map(bookingCounts.map((r) => [r.user_id, num(r.n)]));
+      const typeOf = (userId) => {
+        const n = lifetime.get(userId) || 0;
+        return n >= 5 ? "loyal" : n >= 2 ? "active" : "new";
+      };
+      const perUserDay = new Map();
+      for (const e of events) {
+        if (!INTERACTIONS.includes(`'${e.event}'`)) continue;
+        const k = `${e.user_id}|${e.day}`;
+        const v = perUserDay.get(k) || { user: e.user_id, n: 0, screens: new Set() };
+        v.n += 1;
+        if (e.screen) v.screens.add(e.screen);
+        perUserDay.set(k, v);
+      }
+      const rageUsers = new Set([...rageRows.values()].flatMap((r) => [...r.users]));
+      const paidUsers = new Set(checkouts.filter((c) => num(c.paid)).map((c) => c.user_id));
+      const tapMs = new Map();
+      for (const e of events) {
+        if (e.event !== "tap" || e.value === null) continue;
+        const t = tapMs.get(e.user_id) || [];
+        t.push(num(e.value));
+        tapMs.set(e.user_id, t);
+      }
+      const byType = ["new", "active", "loyal"].map((type) => {
+        const days = [...perUserDay.values()].filter((v) => typeOf(v.user) === type);
+        const users = new Set(days.map((v) => v.user));
+        const ms = [...users].flatMap((u) => tapMs.get(u) || []);
+        return {
+          type,
+          users: users.size,
+          interactions_per_session: days.length ? Number((days.reduce((t, v) => t + v.n, 0) / days.length).toFixed(1)) : null,
+          interactions_per_screen: days.length
+            ? Number((days.reduce((t, v) => t + v.n, 0) / Math.max(1, days.reduce((t, v) => t + v.screens.size, 0))).toFixed(1))
+            : null,
+          avg_seconds_to_tap: ms.length ? Number((ms.reduce((t, m) => t + m, 0) / ms.length / 1000).toFixed(2)) : null,
+          repeated_attempt_rate: pct([...users].filter((u) => rageUsers.has(u)).length, users.size),
+          conversion_rate: pct([...users].filter((u) => paidUsers.has(u)).length, users.size),
+        };
+      });
+
+      // Devices: interactions per user by platform (where known).
+      const devices = ["android", "ios", "web", "app"].map((p) => {
+        const list = events.filter((e) => e.platform === p && INTERACTIONS.includes(`'${e.event}'`));
+        const users = new Set(list.map((e) => e.user_id));
+        const rage = events.filter((e) => e.platform === p && e.event === "rage_tap").length;
+        const tapsN = list.filter((e) => e.event === "tap").length;
+        return {
+          platform: p,
+          users: users.size,
+          interactions_per_user: users.size ? Number((list.length / users.size).toFixed(1)) : null,
+          rage_tap_rate: tapsN ? pct(rage, tapsN) : null,
+        };
+      }).filter((d) => d.users);
+
+      return {
+        from: win.from,
+        to: win.to,
+        previous: { from: win.previous.from, to: win.previous.to },
+        filters: { platform, app_version: appVersion },
+        screens_since: since?.screens_since || null,
+        app_events_since: since?.app_events_since || null,
+        kpis: kpis(cur),
+        previous_kpis: kpis(prev),
+        screens: screenRows,
+        heatmaps: heatmapOut,
+        elements,
+        elements_source: taps.length || events.some((e) => e.event === "tap") ? "app_taps" : "server_actions",
+        flows,
+        areas: taps.length ? areas : null,
+        repeated_attempts: repeated,
+        gestures,
+        drop_offs: dropOffs,
+        by_customer_type: byType,
+        devices,
+        app_versions: versions.map((v) => v.app_version),
+      };
+    } catch (error) {
+      if (error instanceof ApplicationError) throw error;
+      console.log("🚀 ~ getClickInteractionV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch click & interaction analytics");
     }
   },
 

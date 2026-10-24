@@ -931,6 +931,16 @@ export const getAnalyticsUninstalledV2 = respondV2((req) => Adminappmiddleware.a
 export const getUserAnalyticsOverviewV2 = respondV2((req) => Adminappmiddleware.app.getUserAnalyticsOverviewV2(req));
 export const getUserRetentionV2 = respondV2((req) => Adminappmiddleware.app.getUserRetentionV2(req));
 export const getDeepUserInsightsV2 = respondV2((req) => Adminappmiddleware.app.getDeepUserInsightsV2(req));
+export const getServiceIntelligenceV2 = respondV2((req) => Adminappmiddleware.app.getServiceIntelligenceV2(req));
+export const getBookingIntelligenceV2 = respondV2((req) => Adminappmiddleware.app.getBookingIntelligenceV2(req));
+export const getSalonHeatmapV2 = respondV2((req) => Adminappmiddleware.app.getSalonHeatmapV2(req));
+export const getSalonCategoryV2 = respondV2((req) => Adminappmiddleware.app.getSalonCategoryV2(req));
+export const getPartnerPickerV2 = respondV2((req) => Adminappmiddleware.app.getPartnerPickerV2(req));
+export const getPartnerOverviewV2 = respondV2((req) => Adminappmiddleware.app.getPartnerOverviewV2(req));
+export const getUserSegmentsV2 = respondV2((req) => Adminappmiddleware.app.getUserSegmentsV2(req));
+export const getUserLiveFeedV2 = respondV2((req) => Adminappmiddleware.app.getUserLiveFeedV2(req));
+export const getBehaviorAnalyticsV2 = respondV2((req) => Adminappmiddleware.app.getBehaviorAnalyticsV2(req));
+export const getClickInteractionV2 = respondV2((req) => Adminappmiddleware.app.getClickInteractionV2(req));
 export const getGrowthDashboardV2 = respondV2((req) => Adminappmiddleware.app.getGrowthDashboardV2(req));
 export const sendBulkUserPushV2 = respondV2((req) => Adminappmiddleware.app.sendBulkUserPushV2(req));
 

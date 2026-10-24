@@ -17,7 +17,13 @@ import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonRespon
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../core/utils/servicePricing.js";
-import { recordAppHeartbeat, recordUserEvent, resolveClientPlatform } from "../../core/utils/appUsageTracker.js";
+import {
+    recordAppEvents,
+    recordAppHeartbeat,
+    recordAttribution,
+    recordFeedback,
+    recordUserEvent,
+} from "../../core/utils/appUsageTracker.js";
 import { parseLocation, recordUserLocation } from "../../core/utils/userLocation.js";
 
 
@@ -2063,6 +2069,8 @@ userappmiddleware.user = {
             void recordUserEvent({ userId: user.id, event: "coupon_apply", couponCode: body.code });
             return getcoupon;
         } catch (error) {
+            // Invalid / expired code: a failed attempt (repeated-attempt analytics).
+            void recordUserEvent({ userId: user?.id, event: "coupon_attempt_failed", couponCode: body?.code });
             throw Error.SomethingWentWrong("could not validate coupon")
         }
     },
@@ -3067,10 +3075,19 @@ userappmiddleware.user = {
             throw Error.SomethingWentWrong("Failed to update profile");
         }
     },
-    deleteUserV2: async ({ user }) => {
+    deleteUserV2: async ({ user, body, query }) => {
         try {
             if (!user || !user.id) {
                 throw Error.Unauthorized("User not authenticated");
+            }
+
+            // Optional leave reason from the app; never blocks the deletion.
+            const reason = body?.reason ?? query?.reason;
+            const note = body?.note ?? query?.note;
+            if (reason || note) {
+                await recordFeedback(user.id, { type: "account_delete", reason, note }).catch((error) =>
+                    console.warn("[deleteUserV2] reason not recorded:", error?.message || error)
+                );
             }
 
             const success = await userDbController.app.deleteUserV2(user.id);
@@ -3100,7 +3117,48 @@ userappmiddleware.user = {
         }
     },
 
-    heartbeat: async ({ user, body, userAgent }) => {
+    // Batch of app events (taps, screens, gestures, searches, ...); see
+    // appUsageTracker.js for the accepted types and fields.
+    saveAppEventsV2: async ({ user, body, client }) => {
+        try {
+            if (!user?.id) throw Error.Unauthorized("User not authenticated");
+            if (!Array.isArray(body?.events) || !body.events.length) {
+                throw badRequest("events must be a non-empty array");
+            }
+            return await recordAppEvents(user.id, body.events, client);
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to save events");
+        }
+    },
+
+    // Install source, reported once after the first login.
+    saveAttributionV2: async ({ user, body, client }) => {
+        try {
+            if (!user?.id) throw Error.Unauthorized("User not authenticated");
+            return await recordAttribution(user.id, body, client);
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to save attribution");
+        }
+    },
+
+    // A reason the user picked (checkout exit, cancel, ...).
+    saveFeedbackV2: async ({ user, body }) => {
+        try {
+            if (!user?.id) throw Error.Unauthorized("User not authenticated");
+            const saved = await recordFeedback(user.id, body);
+            if (!saved) {
+                throw badRequest("type must be checkout_exit, account_delete, cancel_booking or other, with a reason or note");
+            }
+            return saved;
+        } catch (error) {
+            if (error.status) throw error;
+            throw Error.SomethingWentWrong("Failed to save feedback");
+        }
+    },
+
+    heartbeat: async ({ user, body, client }) => {
         try {
             if (!user?.id) throw Error.Unauthorized("User not authenticated");
             const isOnline = body?.online !== false;
@@ -3111,7 +3169,8 @@ userappmiddleware.user = {
             await recordAppHeartbeat({
                 userId: user.id,
                 online: isOnline,
-                platform: resolveClientPlatform(body?.platform, userAgent),
+                platform: client?.platform || null,
+                appVersion: client?.appVersion || null,
             });
             try {
                 const presence = await import("../../core/utils/presenceService.js");
