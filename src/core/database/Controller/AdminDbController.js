@@ -269,6 +269,9 @@ const SUB_LIST_SORTS = {
 };
 // Store.logo holds the literal string "null" for some salons.
 const cleanLogo = (logo) => (logo && logo !== "null" && logo !== "undefined" ? logo : null);
+// Text columns in a UNION across tables: the tables don't share one collation
+// (ER_CANT_AGGREGATE_NCOLLATIONS), so every branch converts to the same one.
+const unionText = (expr) => `CONVERT(${expr} USING utf8mb4) COLLATE utf8mb4_unicode_ci`;
 // "YYYY-MM-DD" from a DATE column, whether the driver returned a string or a Date.
 const dayString = (value) => {
   if (value === null || value === undefined) return null;
@@ -11953,22 +11956,23 @@ verifypartnerdetails: async (data) => {
       // Activity: the latest dated events for this salon.
       const activity = await run(`
         SELECT * FROM (
-          SELECT 'holiday' AS kind, h.created_at AS at, DATE_FORMAT(h.holiday_date, '%Y-%m-%d') AS detail, h.reason AS note
+          SELECT ${unionText("'holiday'")} AS kind, h.created_at AS at,
+              ${unionText("DATE_FORMAT(h.holiday_date, '%Y-%m-%d')")} AS detail, ${unionText("h.reason")} AS note
             FROM StoreHolidays h WHERE h.store_id = :storeId AND h.created_at IS NOT NULL
           UNION ALL
-          SELECT 'weekly_holiday', w.created_at, w.weekday, w.reason
+          SELECT ${unionText("'weekly_holiday'")}, w.created_at, ${unionText("w.weekday")}, ${unionText("w.reason")}
             FROM StoreWeeklyHolidays w WHERE w.store_id = :storeId AND w.created_at IS NOT NULL
           UNION ALL
-          SELECT 'payout', ip.paid_at, ROUND(SUM(ip.amount), 2), NULL
+          SELECT ${unionText("'payout'")}, ip.paid_at, ${unionText("ROUND(SUM(ip.amount), 2)")}, ${unionText("NULL")}
             FROM InvoicePayouts ip WHERE ip.store_id = :storeId AND ip.paid_at IS NOT NULL GROUP BY ip.paid_at
           UNION ALL
-          SELECT 'subscription_started', pms.activated_at, pms.plan_amount, NULL
+          SELECT ${unionText("'subscription_started'")}, pms.activated_at, ${unionText("pms.plan_amount")}, ${unionText("NULL")}
             FROM PartnerManualSubscriptions pms WHERE pms.store_id = :storeId AND pms.activated_at IS NOT NULL
           UNION ALL
-          SELECT 'subscription_stopped', pms.deactivated_at, pms.plan_amount, NULL
+          SELECT ${unionText("'subscription_stopped'")}, pms.deactivated_at, ${unionText("pms.plan_amount")}, ${unionText("NULL")}
             FROM PartnerManualSubscriptions pms WHERE pms.store_id = :storeId AND pms.deactivated_at IS NOT NULL
           UNION ALL
-          SELECT 'review', r.cretaed_at, r.rating, LEFT(r.review_description, 120)
+          SELECT ${unionText("'review'")}, r.cretaed_at, ${unionText("r.rating")}, ${unionText("LEFT(r.review_description, 120)")}
             FROM Reviews r WHERE r.store_id = :storeId AND r.cretaed_at IS NOT NULL
         ) x
         ORDER BY x.at DESC
@@ -12299,14 +12303,15 @@ verifypartnerdetails: async (data) => {
       const rows = await adminDbController.connection.query(
         `
         SELECT * FROM (
-          SELECT 'signup' AS kind, u.registered_at AS at, u.id AS user_id,
-            TRIM(CONCAT_WS(' ', u.firstname, u.lastname)) AS name, NULL AS store, NULL AS area, NULL AS detail, NULL AS amount
+          SELECT ${unionText("'signup'")} AS kind, u.registered_at AS at, u.id AS user_id,
+            ${unionText("TRIM(CONCAT_WS(' ', u.firstname, u.lastname))")} AS name, ${unionText("NULL")} AS store, ${unionText("NULL")} AS area,
+            ${unionText("NULL")} AS detail, NULL AS amount
           FROM User u WHERE u.registered_at >= :since
           UNION ALL
-          SELECT 'booking', a.created_at, a.user_id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)), s.name, pa.area,
-            (SELECT COALESCE(ss.service_name, cb.combo) FROM appointment_items ai
+          SELECT ${unionText("'booking'")}, a.created_at, a.user_id, ${unionText("TRIM(CONCAT_WS(' ', u.firstname, u.lastname))")}, ${unionText("s.name")}, ${unionText("pa.area")},
+            ${unionText(`(SELECT COALESCE(ss.service_name, cb.combo) FROM appointment_items ai
                LEFT JOIN StoreServices ss ON ss.id = ai.service_id LEFT JOIN Combo cb ON cb.id = ai.combo_id
-               WHERE ai.appointment_id = a.id ORDER BY ai.id LIMIT 1),
+               WHERE ai.appointment_id = a.id ORDER BY ai.id LIMIT 1)`)},
             ${AMOUNT_PAID_SQL}
           FROM appointments a
           LEFT JOIN User u ON u.id = a.user_id
@@ -12314,7 +12319,8 @@ verifypartnerdetails: async (data) => {
           LEFT JOIN PartnerAddress pa ON pa.id = s.address_id
           WHERE ${PAID_BOOKING_SQL} AND a.created_at >= :since
           UNION ALL
-          SELECT 'review', r.cretaed_at, r.user_id, TRIM(CONCAT_WS(' ', u.firstname, u.lastname)), s.name, pa.area, r.rating, NULL
+          SELECT ${unionText("'review'")}, r.cretaed_at, r.user_id, ${unionText("TRIM(CONCAT_WS(' ', u.firstname, u.lastname))")}, ${unionText("s.name")}, ${unionText("pa.area")},
+            ${unionText("r.rating")}, NULL
           FROM Reviews r
           LEFT JOIN User u ON u.id = r.user_id
           LEFT JOIN Store s ON s.id = r.store_id
