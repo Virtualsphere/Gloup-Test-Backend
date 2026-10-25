@@ -29,3 +29,19 @@ ReferenceError: deleteservice is not defined
 [2026-05-18 10:01:03]error: Verify Admin Error: Authentication Failed
 [2026-05-30 01:14:54]error: Verify Admin Error: Authentication Failed
 [2026-05-30 01:14:54]error: Verify Admin Error: Authentication Failed
+[2026-10-23 04:24:30]error: uncaughtException: ENOENT: no such file or directory, open 'C:\app\src\core\utils\AuthKey_3L95Q89942.p8'
+Error: ENOENT: no such file or directory, open 'C:\app\src\core\utils\AuthKey_3L95Q89942.p8'
+    at Object.openSync (node:fs:561:18)
+    at Object.readFileSync (node:fs:445:35)
+    at file:///C:/Users/VST016/OneDrive/Desktop/Company%20Projects/Gloup-Test-Backend/src/core/utils/appleUser.js:12:21
+    at ModuleJob.run (node:internal/modules/esm/module_job:345:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:651:26)
+    at async file:///C:/Users/VST016/AppData/Local/Temp/claude/c--Users-VST016-OneDrive-Desktop-Company-Projects-Gloup-Test-AdminPanel/fde341ce-2a57-4a61-8667-30cfee6a93fa/scratchpad/deep-insights-test.mjs:3:31
+[2026-10-23 04:24:50]error: uncaughtException: ENOENT: no such file or directory, open 'C:\app\src\core\utils\AuthKey_3L95Q89942.p8'
+Error: ENOENT: no such file or directory, open 'C:\app\src\core\utils\AuthKey_3L95Q89942.p8'
+    at Object.openSync (node:fs:561:18)
+    at Object.readFileSync (node:fs:445:35)
+    at file:///C:/Users/VST016/OneDrive/Desktop/Company%20Projects/Gloup-Test-Backend/src/core/utils/appleUser.js:12:21
+    at ModuleJob.run (node:internal/modules/esm/module_job:345:25)
+    at async onImport.tracePromise.__proto__ (node:internal/modules/esm/loader:651:26)
+    at async file:///C:/Users/VST016/AppData/Local/Temp/claude/c--Users-VST016-OneDrive-Desktop-Company-Projects-Gloup-Test-AdminPanel/fde341ce-2a57-4a61-8667-30cfee6a93fa/scratchpad/deep-insights-test.mjs:3:31

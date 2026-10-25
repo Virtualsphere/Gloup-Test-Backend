@@ -44,6 +44,9 @@ import redisClient from "../../core/database/redisClient.js";
 dotenv.config();
 
 
+// sendBulkUserPushV2: most users one send may target.
+const BULK_PUSH_MAX_USERS = 5000;
+
 const razorpay = new Razorpay({
     key_id: process.env.RZ_PAY_ID,
     key_secret: process.env.RZ_PAY_KEY
@@ -1331,6 +1334,216 @@ Adminappmiddleware.app = {
         } catch (error) {
             if (error instanceof ApplicationError) throw error;
             throw Error.SomethingWentWrong("Failed to fetch uninstalled users");
+        }
+    },
+
+    getUserAnalyticsOverviewV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserAnalyticsOverviewV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user analytics");
+        }
+    },
+
+    getUserRetentionV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserRetentionV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user retention");
+        }
+    },
+
+    getDeepUserInsightsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getDeepUserInsightsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch deep user insights");
+        }
+    },
+
+    getServiceIntelligenceV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getServiceIntelligenceV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch service intelligence");
+        }
+    },
+    getBookingIntelligenceV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBookingIntelligenceV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch booking intelligence");
+        }
+    },
+    getSalonHeatmapV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getSalonHeatmapV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salon heatmap");
+        }
+    },
+    getSalonCategoryV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getSalonCategoryV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salon category intelligence");
+        }
+    },
+    getPartnerPickerV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getPartnerPickerV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch salons");
+        }
+    },
+    getPartnerOverviewV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getPartnerOverviewV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch partner overview");
+        }
+    },
+    getUserSegmentsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserSegmentsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch user segments");
+        }
+    },
+    getUserLiveFeedV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getUserLiveFeedV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch live activity");
+        }
+    },
+    getBehaviorAnalyticsV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getBehaviorAnalyticsV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch behavior analytics");
+        }
+    },
+    getClickInteractionV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getClickInteractionV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch click & interaction analytics");
+        }
+    },
+    getGrowthDashboardV2: async ({ body }) => {
+        try {
+            return await adminDbController.app.getGrowthDashboardV2(body || {});
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            throw Error.SomethingWentWrong("Failed to fetch growth dashboard");
+        }
+    },
+
+    // Same push as /send-targeted-notification, to a list of users at once
+    // (Growth Dashboard "Send Push"): one admin log, an in-app notification
+    // per user, one push to each user's latest FCM token.
+    sendBulkUserPushV2: async ({ body }) => {
+        try {
+            const title = String(body?.title || "").trim();
+            const description = String(body?.description || "").trim();
+            const imageUrl = typeof body?.image === "string" && body.image.trim() ? body.image.trim() : null;
+            const userIds = [...new Set((Array.isArray(body?.user_ids) ? body.user_ids : [])
+                .map((id) => parseInt(id, 10))
+                .filter((id) => Number.isInteger(id) && id > 0))];
+
+            if (!title || !description) {
+                throw Error.BadRequest("title and description are required");
+            }
+            if (!userIds.length) {
+                throw Error.BadRequest("user_ids must list at least one user");
+            }
+            if (userIds.length > BULK_PUSH_MAX_USERS) {
+                throw Error.BadRequest(`At most ${BULK_PUSH_MAX_USERS} users per send`);
+            }
+
+            const users = await adminDbController.app.getUsersForBulkPush(userIds);
+            if (!users.length) {
+                throw Error.NotFound("None of these users exist");
+            }
+
+            const adminNotification = await adminDbController.app.addnotificationlogsadmin({
+                store_id: null,
+                notification_type: "general",
+                sent_to: "user",
+                title,
+                description,
+                date: new Date(),
+            });
+            const notificationId = adminNotification.id;
+
+            await userDbController.app.addnotificationlogs_1(
+                users.map((user) => ({
+                    notification_id: notificationId,
+                    user_id: user.id,
+                    image: imageUrl,
+                    title,
+                    description,
+                    status: "active",
+                    date: new Date(),
+                }))
+            );
+
+            const recipients = users
+                .map((user) => ({ user, token: getLatestFcmToken(user.device_id) }))
+                .filter((row) => row.token)
+                .map((row) => ({
+                    token: row.token,
+                    user_id: row.user.id,
+                    partner_id: null,
+                    notification_id: notificationId,
+                }));
+
+            const pushTraceId = createPushTraceId("bulk");
+            const pushResult = recipients.length
+                ? await sendPushNotification({
+                      dedupeKey: `admin:${notificationId}`,
+                      rapidDedupeKey: `admin:rapid:bulk:${hashNotificationContent(title, description)}:${userIds.length}`,
+                      recipients,
+                      title,
+                      body: description,
+                      image: imageUrl || undefined,
+                      collapseKey: `admin_bulk_${notificationId}`,
+                      persistLogs: true,
+                      notificationOnly: true,
+                      debugTraceId: pushTraceId,
+                      debugContext: "admin_bulk:user",
+                  })
+                : { attempted: 0, successCount: 0, failureCount: 0, prunedInvalidTokens: 0 };
+
+            return {
+                requested: userIds.length,
+                in_app_notifications: users.length,
+                push: {
+                    attempted: pushResult.attempted || 0,
+                    success: pushResult.successCount || 0,
+                    failed: pushResult.failureCount || 0,
+                    no_token: users.length - recipients.length,
+                    pruned_invalid_tokens: pushResult.prunedInvalidTokens || 0,
+                },
+            };
+        } catch (error) {
+            if (error instanceof ApplicationError) throw error;
+            console.log("🚀 ~ sendBulkUserPushV2 error:", error);
+            throw Error.SomethingWentWrong("Failed to send push notifications");
         }
     },
 
