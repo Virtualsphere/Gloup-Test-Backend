@@ -284,19 +284,23 @@ async function sendUserRefundWhatsApp(data, refundAmount) {
 
 /**
  * Fetches booking data and sends the "booking cancelled" WhatsApp message to the customer.
- * Call after an admin cancels/rejects a refund on an appointment.
+ * Call after a booking is cancelled (admin, partner, store holiday) or a refund is rejected.
+ * Returns true only when MSG91 accepted the message, so callers that retry
+ * (CronHelper.scheduleCancelledBookingNotify) know whether to mark it sent.
  */
 export async function sendBookingCancelledWhatsApp(appointmentId) {
   try {
     const data = await getBookingWhatsAppPayload(appointmentId);
     if (!data) {
       console.warn(`[WhatsApp] No booking data found for appointment ${appointmentId}, skipping`);
-      return;
+      return false;
     }
-    await sendUserCancelledWhatsApp(data);
+    const result = await sendUserCancelledWhatsApp(data);
+    return result != null;
   } catch (error) {
     console.error("[WhatsApp] sendBookingCancelledWhatsApp error:", error);
-    // Swallow — never let WhatsApp failures break the refund flow
+    // Swallow — never let WhatsApp failures break the cancel/refund flow
+    return false;
   }
 }
 

@@ -7,6 +7,7 @@ import {
     acquirePushDedupeLock,
     sendPushNotification,
 } from "./pushNotificationService.js";
+import { sendBookingCancelledWhatsApp } from "./whatsappNotification.js";
 
 const BOOKING_LOG_TTL_SECONDS = 86400;
 
@@ -140,9 +141,12 @@ export async function sendBookingConfirmedNotifications(appointment) {
 
 /**
  * Notify the customer that their booking was cancelled (e.g. store holiday).
- * Skips quietly when device/store data is missing.
+ * WhatsApp goes out regardless of push; push skips quietly when device/store
+ * data is missing.
  */
 export async function sendBookingCancelledNotifications(appointment, reason) {
+    await sendBookingCancelledWhatsApp(appointment?.id);
+
     try {
         const store = await userDbController.app.getstore(appointment.store_id);
         if (!store) {
