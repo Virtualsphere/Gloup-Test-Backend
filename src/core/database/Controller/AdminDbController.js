@@ -3639,6 +3639,9 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
   // notified yet. Requiring status = 'rejected' here is what makes an
   // "undo" (anything that moves the row off 'rejected' in the meantime)
   // silently cancel the pending send — there's nothing left to match.
+  // Failed sends stay unmarked and are retried each run; the 1-day cutoff
+  // stops a permanently failing one (bad number, template issue) from
+  // retrying forever.
   getDueCancelBookingNotifications: async () => {
     try {
       return await adminDbController.connection.query(
@@ -3648,6 +3651,7 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         WHERE status = 'rejected'
           AND cancel_notify_at IS NOT NULL
           AND cancel_notify_at <= NOW()
+          AND cancel_notify_at >= NOW() - INTERVAL 1 DAY
           AND cancel_notified_at IS NULL
         `,
         { type: Sequelize.QueryTypes.SELECT }

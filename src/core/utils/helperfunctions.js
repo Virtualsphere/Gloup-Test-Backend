@@ -177,7 +177,14 @@ export class CronHelper {
                 const due = await adminDbController.app.getDueCancelBookingNotifications();
                 for (const row of due) {
                     try {
-                        await sendBookingCancelledWhatsApp(row.appointment_id);
+                        // Only mark sent when MSG91 accepted it; a failed send
+                        // stays due and is retried on the next run (for up to
+                        // a day — see getDueCancelBookingNotifications).
+                        const sent = await sendBookingCancelledWhatsApp(row.appointment_id);
+                        if (!sent) {
+                            console.warn(`[Cron] Cancel-booking WhatsApp not sent for refund request ${row.id}, will retry`);
+                            continue;
+                        }
                         await adminDbController.app.markCancelNotificationSent(row.id);
                     } catch (rowError) {
                         console.error(

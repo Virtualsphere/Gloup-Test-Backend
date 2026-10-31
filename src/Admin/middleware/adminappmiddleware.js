@@ -28,6 +28,7 @@ import {
     sendMarketingBroadcast,
     sendVideoMarketingBroadcast,
     sendBookingRefundWhatsApp,
+    sendBookingCancelledWhatsApp,
 } from "../../core/utils/whatsappNotification.js"
 import {
     createPushTraceId,
@@ -1833,6 +1834,9 @@ Adminappmiddleware.app = {
 
 
     if (updateStatus) {
+      if (body.status === "cancelled") {
+        await sendBookingCancelledWhatsApp(body.id);
+      }
       return "Booking Status Updated Successfully";
     } else {
       throw Error.NotFound("No Booking Found");

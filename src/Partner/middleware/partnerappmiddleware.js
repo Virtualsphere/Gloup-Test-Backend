@@ -18,6 +18,7 @@ import { userDbController } from "../../core/database/Controller/userDbControlle
 import { helperfunction } from "../../core/utils/helperfunctions.js";
 import { Op, Sequelize } from "sequelize";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
+import { sendBookingCancelledWhatsApp } from "../../core/utils/whatsappNotification.js";
 import {
   ensurePlanSyncedToRazorpay,
   resolveRazorpayPlanId,
@@ -1775,6 +1776,8 @@ partnerappmiddleware.addstore = {
         appointmentId,
         user.id,
       );
+
+      await sendBookingCancelledWhatsApp(appointmentId);
 
       return updated;
     } catch (error) {
