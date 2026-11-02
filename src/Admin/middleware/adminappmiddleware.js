@@ -41,6 +41,7 @@ import Razorpay from "razorpay";
 import { uploadToS3, S3upload } from "../../core/utils/s3/s3Upload.js";
 import { deriveStoreTypeFromServiceNames } from "../../core/utils/storeGenderFilter.js";
 import redisClient from "../../core/database/redisClient.js";
+import { bookingPaidAmount } from "../../core/utils/refunds.js";
 
 dotenv.config();
 
@@ -1186,10 +1187,12 @@ Adminappmiddleware.app = {
                 const deleterequest = await adminDbController.app.updaterefundrequest(body);
 
 
-                if (getappoinment.is_wallet === true) {
-                    const addwallet = await adminDbController.app.addwallet(getappoinment.user_id, getappoinment.discounted_amount);
+                const paidAmount = bookingPaidAmount(getappoinment);
 
-                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+                if (getappoinment.is_wallet === true) {
+                    const addwallet = await adminDbController.app.addwallet(getappoinment.user_id, paidAmount);
+
+                    await sendBookingRefundWhatsApp(getappoinment.id, paidAmount);
 
                     return "Refunded amount to your wallet successfully";
                 }
@@ -1199,7 +1202,7 @@ Adminappmiddleware.app = {
                 })
                 //console.log("🚀 ~ updaterefundrequests:async ~ response:", response)
 
-                await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+                await sendBookingRefundWhatsApp(getappoinment.id, paidAmount);
 
                 return "Refunded amount successfully";
             } else {
@@ -2903,14 +2906,20 @@ await Promise.all(
             const updateStatus = await adminDbController.app.updateRefundBookingStatus({ body, user });
             if (updateStatus) {
                 if (getappoinment) {
-                    await sendBookingRefundWhatsApp(getappoinment.id, getappoinment.discounted_amount);
+                    await sendBookingRefundWhatsApp(getappoinment.id, updateStatus.refund_amount);
                 }
-                return "Booking refund status updated successfully";
+                return updateStatus.refund_method === "wallet"
+                    ? `₹${updateStatus.refund_amount} credited to the customer's wallet`
+                    : "Booking refund status updated successfully";
             } else {
                 throw Error.NotFound("No Booking Found");
-            }       
+            }
         } catch (error) {
             console.log("🚀 ~ error:", error)
+            // keep the rule's own message ("Only cancelled or completed bookings…")
+            if (error && error.type && error.code) {
+                throw error;
+            }
             throw Error.SomethingWentWrong("Failed to update booking refund status");
         }
     },

@@ -22,6 +22,13 @@ import {
 } from "../../utils/excelParser.js";
 import { buildAppointmentDateTime, toIstDatePart } from "../../schema/formats.js";
 import {
+  bookingPaidAmount,
+  closeRefundRequests,
+  isPaidBooking,
+  isWalletPaid,
+  openRefundRequests,
+} from "../../utils/refunds.js";
+import {
   CYCLE_WAITING,
   cycleAfterPayout,
   cycleFee,
@@ -4007,6 +4014,8 @@ getBookingsListV2: async (data = {}) => {
           a.discounted_amount,
           ROUND(a.discounted_amount * a.gst / 100, 2) AS gst_amount,
           a.discounted_amount + ROUND(a.discounted_amount * a.gst / 100, 2) AS payable_amount,
+          a.is_wallet,
+          a.payment_id,
           c.id AS user_id,
           TRIM(CONCAT_WS(' ', c.firstname, c.lastname)) AS user_name,
           c.phone AS user_phone,
@@ -4054,6 +4063,8 @@ getBookingsListV2: async (data = {}) => {
         discounted_amount: Number(row.discounted_amount) || 0,
         gst_amount: Number(row.gst_amount) || 0,
         payable_amount: Number(row.payable_amount) || 0,
+        // Paid from the Gloup wallet: a refund is credited back there.
+        wallet_paid: isWalletPaid(row),
         services: split(row.services),
         service_categories: split(row.service_categories),
       })),
@@ -4235,6 +4246,11 @@ getBookingsDetailsById: async (data) => {
           a.amount AS booking_amount,
           a.discounted_amount AS booking_subtotal,
           a.platform_fee AS booking_platform_fee,
+          a.is_wallet,
+          a.refunded_at,
+          a.refund_amount,
+          a.refund_method,
+          a.refund_reference,
 
           ai.id AS appointment_item_id,
           ai.service_amount AS item_charged,
@@ -4279,6 +4295,12 @@ getBookingsDetailsById: async (data) => {
       razorpay_id: rows[0].razorpay_id,
       payment_status: rows[0].payment_status,
       payment_id: rows[0].payment_id,
+      // Paid from the Gloup wallet (no Razorpay payment): refunds go back there.
+      wallet_paid: isWalletPaid(rows[0]),
+      refunded_at: rows[0].refunded_at,
+      refund_amount: rows[0].refund_amount === null ? null : Number(rows[0].refund_amount),
+      refund_method: rows[0].refund_method,
+      refund_reference: rows[0].refund_reference,
       appointment_items: [],
     };
 
@@ -4290,7 +4312,8 @@ getBookingsDetailsById: async (data) => {
     //   taxable_amount   appointments.discounted_amount (after coupon)
     //   gst_amount       taxable_amount x appointments.gst % (always 5)
     //   platform_fee     appointments.platform_fee
-    //   payable_amount   appointments.amount - what Razorpay charged
+    //   payable_amount   taxable + gst + platform fee - what Razorpay charged
+    //                    (appointments.amount holds it rounded to the rupee)
     const money = (v) => Number((Number(v) || 0).toFixed(2));
     let itemsTotal = 0;
 
@@ -4320,7 +4343,9 @@ getBookingsDetailsById: async (data) => {
     booking.gst_rate = gstRate;
     booking.gst_amount = money((taxable * gstRate) / 100);
     booking.platform_fee = money(rows[0].booking_platform_fee);
-    booking.payable_amount = money(rows[0].booking_amount);
+    // Sum of the lines above, not appointments.amount: that column is a
+    // BIGINT, so a ₹85.95 charge is stored as 86.
+    booking.payable_amount = money(taxable + booking.gst_amount + booking.platform_fee);
 
     return booking;
   } catch (error) {
@@ -4360,6 +4385,12 @@ updateBookingStatus: async ({ body }) => {
 
     // 🔹 Update status
     await adminDbController.app.updatebookingDBStatus(id, status);
+
+    // A paid booking the admin cancels needs refunding: open a refund request
+    // so it shows up as pending (unpaid bookings are skipped).
+    if (status === "cancelled") {
+      await openRefundRequests([booking], "Cancelled by admin");
+    }
 
     return `Booking ${status} successfully`;
   } catch (error) {
@@ -6230,35 +6261,72 @@ updateRefundBookingStatus: async ({ body, user }) => {
       throw Error.NotFound("Booking not found");
     }
 
-    // 🔒 Rule 1: Only completed bookings can be refunded
-    if (booking.status !== "completed") {
+    // 🔒 Rule 1: Only cancelled (customer didn't get the service) or completed
+    // (complaint) bookings can be refunded; booked/confirmed must be cancelled first
+    if (!["cancelled", "completed"].includes(booking.status)) {
       throw Error.BadRequest(
-        "Only completed bookings can be refunded"
+        "Only cancelled or completed bookings can be refunded"
       );
     }
 
     // 🔒 Rule 2: Payment must be successful
-    if (booking.payment_status !== "success") {
+    if (!isPaidBooking(booking)) {
       throw Error.BadRequest(
         "Payment not completed, refund not allowed"
       );
     }
 
-    // 🔹 TODO: Razorpay refund integration here
-    // await razorpay.payments.refund(booking.payment_id);
+    // No Razorpay call: card / UPI payments are refunded by hand on the
+    // Razorpay dashboard first (refund_reference = that refund's id, optional).
+    // Wallet-paid bookings go back to the customer's Gloup wallet here.
+    const walletPaid = isWalletPaid(booking);
+    const refundAmount = bookingPaidAmount(booking);
+    const reference = String(body.refund_reference || "").trim().slice(0, 100) || null;
 
-    // 🔹 Update booking
-    await adminDbController.Models.appointments.update(
-      {
-        status: "refunded",
-        payment_status: "refunded",
-        refunded_at: new Date(),
-        refunded_by: user?.id || null,
-      },
-      { where: { id: body.id } }
-    );
+    const transaction = await connection.transaction();
+    try {
+      // Conditional on the status so a double click can't refund twice.
+      const [updated] = await adminDbController.Models.appointments.update(
+        {
+          status: "refunded",
+          payment_status: "refunded",
+          refunded_at: new Date(),
+          refunded_by: user?.id || null,
+          refund_amount: refundAmount,
+          refund_method: walletPaid ? "wallet" : "manual",
+          refund_reference: walletPaid ? null : reference,
+        },
+        { where: { id: body.id, status: ["cancelled", "completed"] }, transaction }
+      );
+      if (updated === 0) {
+        throw Error.BadRequest("Booking is already refunded");
+      }
 
-    return "Refund processed successfully";
+      if (walletPaid && booking.user_id) {
+        await adminDbController.Models.User.increment(
+          { wallet: refundAmount },
+          { where: { id: booking.user_id }, transaction }
+        );
+        await adminDbController.Models.user_transaction_logs.create(
+          {
+            user_id: booking.user_id,
+            transaction_amount: refundAmount,
+            type: "credit",
+            description: `Refund for booking #${booking.id}`,
+            date: new Date(),
+          },
+          { transaction }
+        );
+      }
+
+      await closeRefundRequests(booking.id, transaction);
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    return { refund_amount: refundAmount, refund_method: walletPaid ? "wallet" : "manual" };
   } catch (error) {
     console.log("refundBooking DB error:", error);
     throw error;
@@ -12451,12 +12519,16 @@ verifypartnerdetails: async (data) => {
         }
       };
 
-      // Active users / DAU per window.
+      // Active users / DAU per window. DAU averages over tracked days only
+      // (from the first app session on), as User Analytics does - days
+      // before tracking began would pull the average down.
+      const activitySince = since?.activity_since || null;
       const activeIn = (w) => {
         const users = new Set();
         let sum = 0;
         let days = 0;
-        for (let d = w.from; d <= w.to && d <= today; d = addDays(d, 1)) {
+        const start = activitySince && activitySince > w.from ? activitySince : w.from;
+        for (let d = start; d <= w.to && d <= today; d = addDays(d, 1)) {
           const ids = activeDays.get(d) || [];
           ids.forEach((id) => users.add(id));
           sum += ids.length;

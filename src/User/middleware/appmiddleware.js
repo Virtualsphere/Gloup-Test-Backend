@@ -25,6 +25,8 @@ import {
     recordUserEvent,
 } from "../../core/utils/appUsageTracker.js";
 import { parseLocation, recordUserLocation } from "../../core/utils/userLocation.js";
+import { buildAppointmentDateTime } from "../../core/schema/formats.js";
+import { isPaidBooking } from "../../core/utils/refunds.js";
 
 
 const admin = require('firebase-admin');
@@ -483,24 +485,24 @@ userappmiddleware.user = {
         try {
             const get_ordrer = await userDbController.app.getorder(body, user.id);
 
+            if (!get_ordrer || get_ordrer === null) {
+                throw Error.SomethingWentWrong("No Order Found")
+            }
+
             if (get_ordrer.status === "cancelled") {
                 throw Error.SomethingWentWrong("Order already cancelled")
             }
 
-            if (!get_ordrer || get_ordrer === null) {
-                throw Error.SomethingWentWrong("No Order Found")
-            }
-            if (new Date(get_ordrer.booking_date) - new Date() > 10 * 60 * 60 * 1000) {
+            // booking_date is date-only (05:30 IST); the appointment time is
+            // the slot's start, so measure the 10 hours from day + Slots.from.
+            const slot = get_ordrer.slot_id
+                ? await userDbController.Models.Slots.findOne({ where: { id: get_ordrer.slot_id }, raw: true })
+                : null;
+            const appointmentAt = new Date(buildAppointmentDateTime(get_ordrer.booking_date, slot?.from));
 
-
-                const cancel_ortder = await userDbController.app.cancelorder(body, user.id);
-                if (!cancel_ortder) {
-                    throw Error.SomethingWentWrong("could not cancel order")
-                }
-
-                return "Order cancelled successfully";
-
-            } else {
+            // Paid and cancelled more than 10 hours before the appointment →
+            // refund. An unpaid booking has nothing to refund.
+            if (isPaidBooking(get_ordrer) && appointmentAt - new Date() > 10 * 60 * 60 * 1000) {
 
                 const cancel_ortder = await userDbController.app.cancelorder(body, user.id);
                 if (!cancel_ortder) {
@@ -513,6 +515,15 @@ userappmiddleware.user = {
                 }
 
                 return "Your order has been cancelled and a refund will be processed within 3 to 5 business days.";
+
+            } else {
+
+                const cancel_ortder = await userDbController.app.cancelorder(body, user.id);
+                if (!cancel_ortder) {
+                    throw Error.SomethingWentWrong("could not cancel order")
+                }
+
+                return "Order cancelled successfully";
             }
 
         } catch (error) {

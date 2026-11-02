@@ -730,6 +730,21 @@ appointments.init({
     type: DataTypes.INTEGER,
     allowNull: true
   },
+  // What was refunded and how (migration 20261103120000): refund_method is
+  // 'wallet' or 'manual' (refunded on the Razorpay dashboard), and
+  // refund_reference the Razorpay refund id the admin entered.
+  refund_amount: {
+    type: DataTypes.DECIMAL(10, 2),
+    allowNull: true
+  },
+  refund_method: {
+    type: DataTypes.STRING(20),
+    allowNull: true
+  },
+  refund_reference: {
+    type: DataTypes.STRING(100),
+    allowNull: true
+  },
 }, {
   sequelize: connection,
   modelName: 'Appointments',
