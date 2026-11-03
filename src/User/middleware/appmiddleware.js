@@ -1267,7 +1267,8 @@ userappmiddleware.user = {
                 booking_for, guest_id, guest_name, guest_phone, guest_gender,
                 professional_id, amount, is_wallet, is_discounted, discount_id,
                 coupon_code, wallet_amount_used, gst, platform_fee, store_id,
-                discounted_amount, customer_name, customer_phone, customer_email
+                discounted_amount, customer_name, customer_phone, customer_email,
+                lat, lng
             } = body;
 
             // 0. Customer contact details (required from app before booking)
@@ -1306,6 +1307,14 @@ userappmiddleware.user = {
                     if (!guestPhone) {
                         throw badRequest("A valid 10-digit mobile number is required for the guest");
                     }
+                }
+            }
+
+            // 0d. Record live location if provided with booking
+            if (lat != null && lng != null) {
+                const parsedLoc = parseLocation({ lat, lng, source: 'live' });
+                if (parsedLoc) {
+                    await recordUserLocation(user.id, parsedLoc);
                 }
             }
 
