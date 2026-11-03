@@ -25,6 +25,7 @@ import {
 import { error } from "shelljs";
 import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
+import { openRefundRequests } from "../../utils/refunds.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import Razorpay from "razorpay";
 import {
@@ -4429,6 +4430,8 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             "booking_date",
             "slot_id",
             "status",
+            "payment_status",
+            "is_wallet",
           ],
           transaction,
         });
@@ -4439,6 +4442,8 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             { status: "cancelled", updated_at: new Date() },
             { where: { id: { [Op.in]: ids } }, transaction },
           );
+          // Paid bookings the salon cancelled need refunding.
+          await openRefundRequests(toCancel, "Salon holiday", transaction);
         }
 
         await transaction.commit();
@@ -4567,7 +4572,7 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
 
         // MySQL DAYOFWEEK: 1=Sunday … 7=Saturday → JS weekday = DAYOFWEEK - 1
         const toCancel = await partnerDbController.connection.query(
-          `SELECT id, user_id, store_id, booking_date, slot_id, status
+          `SELECT id, user_id, store_id, booking_date, slot_id, status, payment_status, is_wallet
            FROM appointments
            WHERE store_id = :storeId
              AND status NOT IN ('cancelled', 'completed', 'refunded')
@@ -4586,6 +4591,8 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             { status: "cancelled", updated_at: new Date() },
             { where: { id: { [Op.in]: ids } }, transaction },
           );
+          // Paid bookings the salon cancelled need refunding.
+          await openRefundRequests(toCancel, "Salon weekly holiday", transaction);
         }
 
         await transaction.commit();
