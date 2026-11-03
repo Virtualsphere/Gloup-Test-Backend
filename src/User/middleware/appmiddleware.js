@@ -52,6 +52,20 @@ const normalizeGender = (value) => {
     return null;
 };
 
+const normalizeIndianMobileNumber = (value) => {
+    if (value == null) return null;
+    let digits = String(value).trim().replace(/\D/g, '');
+    if (digits.length === 11 && digits.startsWith('0')) {
+        digits = digits.slice(1);
+    } else if (digits.length === 12 && digits.startsWith('91')) {
+        digits = digits.slice(2);
+    }
+    if (digits.length === 10 && PHONE_REGEX.test(digits)) {
+        return digits;
+    }
+    return null;
+};
+
 
 
 const badRequest = (message) => {
@@ -67,7 +81,7 @@ const badRequest = (message) => {
  */
 function validateCustomerContact({ customer_name, customer_phone, customer_email }) {
     const name = (customer_name ?? '').toString().trim();
-    const phone = (customer_phone ?? '').toString().trim();
+    const rawPhone = (customer_phone ?? '').toString().trim();
     const email = (customer_email ?? '').toString().trim().toLowerCase();
 
     if (!name) {
@@ -76,10 +90,11 @@ function validateCustomerContact({ customer_name, customer_phone, customer_email
     if (name.length > CUSTOMER_NAME_MAX_LENGTH) {
         throw badRequest(`Customer name must be at most ${CUSTOMER_NAME_MAX_LENGTH} characters`);
     }
-    if (!phone) {
+    if (!rawPhone) {
         throw badRequest("Customer phone number is required");
     }
-    if (!PHONE_REGEX.test(phone)) {
+    const phone = normalizeIndianMobileNumber(rawPhone);
+    if (!phone) {
         throw badRequest("Customer phone number must be a valid 10-digit Indian mobile number");
     }
     if (!email) {
@@ -1019,6 +1034,11 @@ userappmiddleware.user = {
         ////console.log("🚀 ~ createorder: ~ body:", body)
         let transaction;
         try {
+            const orderPhone = normalizeIndianMobileNumber(body?.customer_phone || user?.phone);
+            if (!orderPhone) {
+                throw Error.BadRequest("A valid 10-digit mobile number is required before a booking can be confirmed");
+            }
+
             let total = 0
             //Service Data Amount Calculation
             for (const item of body?.service) {
@@ -1263,6 +1283,32 @@ userappmiddleware.user = {
                 throw badRequest("Please set your gender (Male or Female) before booking");
             }
 
+            // Sync verified mobile to user profile if missing or different (e.g., Google/Apple login)
+            if (contact.phone && (!profile?.phone || String(profile.phone).trim() === '' || String(profile.phone) !== contact.phone)) {
+                await userDbController.Models.User.update(
+                    { phone: contact.phone },
+                    { where: { id: user.id } }
+                );
+            }
+
+            // 0c. Validate guest mobile number if booking for someone else
+            if (booking_for && booking_for !== "myself") {
+                if (guest_id) {
+                    const guest = await userDbController.Models.GuestDetails.findOne({
+                        where: { id: guest_id, user_id: user.id }
+                    });
+                    const guestPhone = normalizeIndianMobileNumber(guest?.phone || guest_phone);
+                    if (!guestPhone) {
+                        throw badRequest("A valid 10-digit mobile number is required for the guest");
+                    }
+                } else {
+                    const guestPhone = normalizeIndianMobileNumber(guest_phone);
+                    if (!guestPhone) {
+                        throw badRequest("A valid 10-digit mobile number is required for the guest");
+                    }
+                }
+            }
+
             // 1. Validation & Pre-calculations
             const serviceIds = (services || []).map(s => s.service_id);
             const comboIds = (combos || []).map(c => c.combo_id);
@@ -1414,9 +1460,10 @@ userappmiddleware.user = {
             // 2. Handle Guest Booking
             let actualGuestId = guest_id;
             if (booking_for !== "myself" && !guest_id && guest_name) {
+                const cleanGuestPhone = normalizeIndianMobileNumber(guest_phone);
                 const newGuest = await userDbController.app.addGuestDetails({
                     name: guest_name,
-                    phone: guest_phone,
+                    phone: cleanGuestPhone,
                     gender: guest_gender,
                     age: null
                 }, user.id);
@@ -1628,6 +1675,11 @@ userappmiddleware.user = {
         let transaction;
 
         try {
+            const orderPhone = normalizeIndianMobileNumber(body?.customer_phone || user?.phone);
+            if (!orderPhone) {
+                throw Error.BadRequest("A valid 10-digit mobile number is required before a booking can be confirmed");
+            }
+
             let total = 0;
 
             // Service calculation
@@ -2978,7 +3030,12 @@ userappmiddleware.user = {
         try {
             const { name, gender, age, phone } = body;
             if (!name || !gender || !age || !phone) {
-                throw Error.SomethingWrong("name, gender, age and phone are required");
+                throw Error.BadRequest("name, gender, age and phone are required");
+            }
+
+            const cleanPhone = normalizeIndianMobileNumber(phone);
+            if (!cleanPhone) {
+                throw Error.BadRequest("Guest phone number must be a valid 10-digit Indian mobile number");
             }
 
             const normalizedGender = normalizeGender(gender);
@@ -2987,8 +3044,9 @@ userappmiddleware.user = {
             }
 
             // const userId = 36; // Constant userId for testing
-            return await userDbController.app.addGuestDetails({ ...body, gender: normalizedGender }, user.id);
+            return await userDbController.app.addGuestDetails({ ...body, phone: cleanPhone, gender: normalizedGender }, user.id);
         } catch (error) {
+            if (error.status) throw error;
             throw Error.SomethingWentWrong(error.message);
         }
     },
@@ -3020,6 +3078,13 @@ userappmiddleware.user = {
             }
 
             const updateBody = { ...req.body };
+            if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
+                const cleanPhone = normalizeIndianMobileNumber(phone);
+                if (!cleanPhone) {
+                    throw Error.BadRequest("Guest phone number must be a valid 10-digit Indian mobile number");
+                }
+                updateBody.phone = cleanPhone;
+            }
             if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
                 const normalizedGender = normalizeGender(gender);
                 if (!normalizedGender) {
@@ -3064,6 +3129,15 @@ userappmiddleware.user = {
                 throw Error.BadRequest("Invalid email format");
             }
 
+            let normalizedPhone = phone;
+            if (phone !== undefined && phone !== null && String(phone).trim() !== '' && String(phone).trim() !== 'null') {
+                const cleanPhone = normalizeIndianMobileNumber(phone);
+                if (!cleanPhone) {
+                    throw Error.BadRequest("Phone number must be a valid 10-digit Indian mobile number");
+                }
+                normalizedPhone = cleanPhone;
+            }
+
             let normalizedGender = gender;
             if (gender !== undefined && gender !== null && String(gender).trim() !== '') {
                 normalizedGender = normalizeGender(gender);
@@ -3072,7 +3146,7 @@ userappmiddleware.user = {
                 }
             }
 
-            const updateData = { firstname, lastname, email, phone, age, gender: normalizedGender, dob, city, country, profilePic };
+            const updateData = { firstname, lastname, email, phone: normalizedPhone, age, gender: normalizedGender, dob, city, country, profilePic };
 
             const success = await userDbController.app.updateProfileV2(user.id, updateData);
             if (!success) {

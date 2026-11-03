@@ -2302,9 +2302,14 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
               amount: bookingData.amount,
             },
             user_name:
-              [user.firstname, user.lastname].filter(Boolean).join(" ") || null,
+              [user.firstname, user.lastname].filter(Boolean).join(" ") ||
+              bookingData.customer_name ||
+              null,
             user_gender: user.gender || null,
-            user_phone: user.phone || null,
+            user_phone:
+              (bookingData.customer_phone && bookingData.customer_phone.trim()) ||
+              user.phone ||
+              null,
             paid_amount: bookingData.amount || null,
             services: services, // Return array of { name, price } objects
           });
@@ -2558,9 +2563,14 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
             },
             user_id: bookingData.user_id,
             user_name:
-              [user.firstname, user.lastname].filter(Boolean).join(" ") || null,
+              [user.firstname, user.lastname].filter(Boolean).join(" ") ||
+              bookingData.customer_name ||
+              null,
             user_gender: user.gender || null,
-            user_phone: user.phone || null,
+            user_phone:
+              (bookingData.customer_phone && bookingData.customer_phone.trim()) ||
+              user.phone ||
+              null,
             paid_amount: bookingData.amount || null,
             services,
           };

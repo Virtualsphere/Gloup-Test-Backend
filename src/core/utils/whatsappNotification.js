@@ -137,7 +137,7 @@ async function getBookingWhatsAppPayload(appointmentId) {
       TIME_FORMAT(e.\`from\`, '%h:%i %p') AS booking_time_fmt,
       u.firstname AS user_firstname,
       u.lastname AS user_lastname,
-      u.phone AS user_phone,
+      COALESCE(NULLIF(TRIM(a.customer_phone), ''), u.phone) AS user_phone,
       d.name AS salon_name,
       d.phone AS salon_phone,
       d.whatsapp_number AS salon_whatsapp,
