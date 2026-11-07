@@ -93,7 +93,9 @@ import {
   removeStoreHoliday,
   listStoreHolidays,
   addWeeklyHoliday,
-  removeWeeklyHoliday
+  removeWeeklyHoliday,
+  downloadDailyInvoice,
+  downloadMonthlyInvoice,
 } from "../controller/partnerappcontroller.js";
 import { approutes } from "../../User/routes/userapproutes.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
@@ -339,3 +341,7 @@ appRoutes.delete("/v2/holidays", partnerauthenticate, removeStoreHoliday);
 appRoutes.get("/v2/holidays", partnerauthenticate, listStoreHolidays);
 appRoutes.post("/v2/holidays/weekly", partnerauthenticate, addWeeklyHoliday);
 appRoutes.delete("/v2/holidays/weekly", partnerauthenticate, removeWeeklyHoliday);
+
+// Booking invoice PDFs for the logged-in store (daily by date / monthly by month)
+appRoutes.post("/v2/invoice/daily", partnerauthenticate, downloadDailyInvoice);
+appRoutes.post("/v2/invoice/monthly", partnerauthenticate, downloadMonthlyInvoice);
