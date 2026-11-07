@@ -16,6 +16,7 @@ const EXACT_BODY_MAP = {
   "POST /partner/auth/appleLogin": "SocialLoginRequest",
   "POST /admin/auth/login": "AdminLoginRequest",
   "POST /admin/auth/change-password": "AdminChangePasswordRequest",
+  "POST /admin/auth/reset-password": "AdminResetPasswordRequest",
 
   "POST /user/app/v2/store/nearby": "NearbyStoresRequest",
   "POST /user/app/v2/store/details": "StoreDetailsRequest",

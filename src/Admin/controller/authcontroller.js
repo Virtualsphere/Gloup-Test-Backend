@@ -66,6 +66,30 @@ export const logout= async(req,res) => {
         });
 }
 
+const sendAuthResult = (promise, res) =>
+    promise
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+
+export const forgotPassword = async (req, res) =>
+    sendAuthResult(adminauthmiddleware.auth.forgotPassword(), res);
+
+export const resetPassword = async (req, res) =>
+    sendAuthResult(adminauthmiddleware.auth.resetPassword(req.body), res);
+
 export const changePassword = async (req, res) => {
     const { oldPassword, newPassword } = req.body;
     if (!oldPassword || !newPassword) {

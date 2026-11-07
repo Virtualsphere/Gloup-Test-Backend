@@ -869,6 +869,14 @@ adminDbController.auth = {
       throw Error.SomethingWentWrong("Failed to check user");
     }
   },
+  findActiveAdmins: async () => {
+    try {
+      const admins = await adminDbController.Models.admin.findAll();
+      return admins.filter((admin) => String(admin.status).toLowerCase() === "active");
+    } catch {
+      throw Error.SomethingWentWrong("Failed to find admin accounts");
+    }
+  },
   insertsession: async (token, id, deviceinfo) => {
     try {
       return await adminDbController.Models.adminSession.create({

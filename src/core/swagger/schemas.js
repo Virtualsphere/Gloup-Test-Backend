@@ -53,6 +53,14 @@ export const OPENAPI_SCHEMAS = {
       newPassword: { type: "string", format: "password", example: "new_password123" },
     },
   },
+  AdminResetPasswordRequest: {
+    type: "object",
+    required: ["token", "newPassword"],
+    properties: {
+      token: { type: "string", description: "Token from the emailed reset link" },
+      newPassword: { type: "string", format: "password", example: "new_password123" },
+    },
+  },
   StoreIdRequest: {
     type: "object",
     required: ["store_id"],
