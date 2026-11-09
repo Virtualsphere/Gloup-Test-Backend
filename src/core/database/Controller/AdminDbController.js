@@ -13273,12 +13273,13 @@ verifypartnerdetails: async (data) => {
           d.name AS partner_name,
           d.phone AS partner_phone,
           d.email AS partner_email,
+          d.whatsapp_number AS partner_whatsapp,
           COUNT(DISTINCT a.id) AS booking_count
         FROM appointments a
         INNER JOIN Store d ON a.store_id = d.id
         WHERE DATE(a.booking_date) BETWEEN :fromDate AND :toDate
           AND a.status != 'cancelled'
-        GROUP BY d.id, d.name, d.phone, d.email
+        GROUP BY d.id, d.name, d.phone, d.email, d.whatsapp_number
         ORDER BY d.name ASC
         `,
         {
@@ -13303,6 +13304,7 @@ verifypartnerdetails: async (data) => {
           partner_name: row.partner_name,
           partner_phone: row.partner_phone,
           partner_email: row.partner_email,
+          partner_whatsapp: row.partner_whatsapp,
           booking_count: Number(row.booking_count || 0),
         })),
       };
@@ -13473,6 +13475,38 @@ verifypartnerdetails: async (data) => {
       console.log("🚀 ~ generateMonthlyInvoicePDFForPartner error:", error);
       throw Error.SomethingWentWrong("Failed to generate monthly invoice PDF");
     }
+  },
+
+  // ── Monthly report WhatsApp send log (MonthlyReportWhatsappLog) ──
+  getMonthlyReportWhatsAppLog: async (month) => {
+    return adminDbController.connection.query(
+      `SELECT store_id, status, attempts FROM MonthlyReportWhatsappLog WHERE month = :month`,
+      { replacements: { month }, type: Sequelize.QueryTypes.SELECT }
+    );
+  },
+
+  recordMonthlyReportWhatsApp: async ({ storeId, month, status, pdfUrl = null, error = null }) => {
+    await adminDbController.connection.query(
+      `
+      INSERT INTO MonthlyReportWhatsappLog (store_id, month, status, pdf_url, last_error, sent_at)
+      VALUES (:storeId, :month, :status, :pdfUrl, :error, IF(:status = 'sent', NOW(), NULL))
+      ON DUPLICATE KEY UPDATE
+        status = VALUES(status),
+        attempts = attempts + 1,
+        pdf_url = COALESCE(VALUES(pdf_url), pdf_url),
+        last_error = VALUES(last_error),
+        sent_at = COALESCE(VALUES(sent_at), sent_at)
+      `,
+      {
+        replacements: {
+          storeId,
+          month,
+          status,
+          pdfUrl,
+          error: error ? String(error).slice(0, 500) : null,
+        },
+      }
+    );
   },
 
 };

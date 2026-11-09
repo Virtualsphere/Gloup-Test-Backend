@@ -12,6 +12,7 @@ import { sendPushNotification } from "../../core/utils/pushNotificationService.j
 import { adminDbController } from "../../core/database/Controller/AdminDbController.js";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
 import { sendInvoiceViaWhatsApp } from "../../core/utils/invoiceWhatsapp.js";
+import { runMonthlyPartnerReports } from "../../core/utils/monthlyReportWhatsapp.js";
 import { sendBookingCancelledWhatsApp } from "../../core/utils/whatsappNotification.js";
 import generateInvoicePDF from "../../core/utils/generateInvoicePDF.js";
 import cron from 'node-cron';
@@ -87,8 +88,25 @@ export class CronHelper {
         this.schedulePendingAppointmentExpiry();
         this.scheduleDailyPartnerInvoices();
         this.scheduleCancelledBookingNotify();
+        this.scheduleMonthlyPartnerReports();
 
         // Add other cron jobs here
+    }
+
+    // On the 1st of each month: last month's report PDF to every salon over
+    // WhatsApp (gloup_montly_invoice), production server only. The first run
+    // is at 10:00 IST; the later ones retry failures, and salons already sent
+    // are skipped (see runMonthlyPartnerReports).
+    static scheduleMonthlyPartnerReports() {
+        cron.schedule('0 10,12,15,18 1 * *', async () => {
+            try {
+                await runMonthlyPartnerReports();
+            } catch (error) {
+                console.error("Error in monthly partner report cron:", error);
+            }
+        }, {
+            timezone: 'Asia/Kolkata'
+        });
     }
 
     // Every day at 8:30 PM IST: generate each partner's invoice PDF for
