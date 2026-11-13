@@ -17,6 +17,12 @@ dotenv.config();
 
 var CryptoJS = require("crypto-js");
 
+const ADMIN_RESET_EXPIRY_MINUTES = 30;
+// Taken from server config, never from the request's Host/Origin headers, so a
+// forged request can't produce a reset email that links to another site.
+const adminPanelUrl = () =>
+  (process.env.ADMIN_PANEL_URL || process.env.UAT_ADMIN_ORIGIN || "https://admin.gloup.in").replace(/\/+$/, "");
+
 
 export class adminauthmiddleware { }
 
@@ -171,6 +177,81 @@ adminauthmiddleware.auth = {
       });
 
       throw Error.AuthenticationFailed();
+    }
+  },
+  // The panel has one shared admin account, so the request names no account. With
+  // anything other than exactly one active admin there is no way to tell whose
+  // password to reset, so this fails instead of guessing.
+  forgotPassword: async () => {
+    try {
+      const admins = await adminDbController.auth.findActiveAdmins();
+      if (admins.length !== 1) {
+        logger.error(`Admin Forgot Password: expected 1 active admin, found ${admins.length}`);
+        throw Error.SomethingWentWrong("Could not send the reset email. Please contact the developers.");
+      }
+      const [user] = admins;
+      const token = authentications.generateAdminResetToken(user, ADMIN_RESET_EXPIRY_MINUTES);
+      await NodeMailerfunction.Email.adminPasswordReset({
+        adminName: user.username,
+        adminEmail: user.email,
+        resetUrl: `${adminPanelUrl()}/reset-password?token=${encodeURIComponent(token)}`,
+        expiresInMinutes: ADMIN_RESET_EXPIRY_MINUTES,
+      });
+      return "A password reset link has been sent to the admin email.";
+    } catch (error) {
+      logger.error(`Admin Forgot Password Error: ${error.message}`, { stack: error.stack });
+      await logErrorToDB({
+        module: "AdminAuth",
+        functionName: "forgotPassword",
+        error,
+        requestData: {}
+      });
+      throw error;
+    }
+  },
+  resetPassword: async ({ token, newPassword }) => {
+    // Rules match the login form, which refuses passwords containing spaces.
+    // bcrypt ignores everything past 72 bytes.
+    if (
+      typeof newPassword !== "string" ||
+      newPassword.length < 8 ||
+      Buffer.byteLength(newPassword) > 72 ||
+      /\s/.test(newPassword)
+    ) {
+      throw Error.NotValid("password", "Password must be 8 to 72 characters with no spaces");
+    }
+    // Not AuthenticationFailed: the panel's axios interceptor turns that code into
+    // a redirect to /auth, and the admin would never see why the link failed.
+    const invalidLink = () =>
+      Error.NotValid("reset-link", "This reset link is invalid or has expired. Please request a new one from the login page.");
+
+    if (typeof token !== "string" || !token) throw invalidLink();
+    const email = authentications.readAdminResetEmail(token);
+    if (!email) throw invalidLink();
+
+    try {
+      const user = await adminDbController.auth.checkuser(email);
+      if (
+        !user ||
+        String(user.status).toLowerCase() !== "active" ||
+        !authentications.verifyAdminResetToken(token, user)
+      ) {
+        throw invalidLink();
+      }
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await adminDbController.auth.updatePassword(user.id, hashedPassword);
+      await adminDbController.auth.destroyAllSessions(user.id);
+      return "Password reset successfully. Please log in with your new password.";
+    } catch (error) {
+      logger.error(`Admin Reset Password Error: ${error.message}`, { stack: error.stack });
+      await logErrorToDB({
+        module: "AdminAuth",
+        functionName: "resetPassword",
+        error,
+        requestData: { email }
+      });
+      throw error;
     }
   },
 }

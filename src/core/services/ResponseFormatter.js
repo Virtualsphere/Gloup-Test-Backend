@@ -622,6 +622,34 @@ function formatStoreMediaFields(store) {
   };
 }
 
+// Highlighted services for the card price ticker (name + exact price).
+// Only services flagged `important` are used; if none are flagged, fall back
+// to the first few so the card still shows a price. Max 5 entries.
+const buildDynamicServices = (servicesList) => {
+  try {
+    let list = [];
+    if (!servicesList) list = [];
+    else if (Array.isArray(servicesList)) list = servicesList;
+    else {
+      const parsed = JSON.parse(servicesList);
+      list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+    }
+    const highlighted = list.filter((s) => Number(s.important) === 1);
+    return (highlighted.length ? highlighted : list).slice(0, 5).map((s) => ({
+      name: s.name,
+      price: s.price != null ? Number(s.price) : null,
+      discountedPrice:
+        s.discountedPrice != null
+          ? Number(s.discountedPrice)
+          : s.price != null
+            ? Number(s.price)
+            : null,
+    }));
+  } catch (e) {
+    return [];
+  }
+};
+
 export function formatNearbyStores(stores = []) {
   if (!Array.isArray(stores)) return [];
 
@@ -653,6 +681,7 @@ export function formatNearbyStores(stores = []) {
       isFavorite: !!store.isFavorite,
       serviceName: store.serviceName || null,
       servicePrice: store.servicePrice || null,
+      dynamicServices: buildDynamicServices(store.servicesList),
       address,
       area: store.area || null,
       city: store.city || null,
@@ -714,30 +743,7 @@ export const formatSalonList = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
-        dynamicServices: (function() {
-          try {
-            let list = [];
-            if (!store.servicesList) list = [];
-            else if (Array.isArray(store.servicesList)) list = store.servicesList;
-            else {
-              const parsed = JSON.parse(store.servicesList);
-              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-            }
-            // Keep highlighted first (already ordered), max 5 for card ticker.
-            return list.slice(0, 5).map((s) => ({
-              name: s.name,
-              price: s.price != null ? Number(s.price) : null,
-              discountedPrice:
-                s.discountedPrice != null
-                  ? Number(s.discountedPrice)
-                  : s.price != null
-                    ? Number(s.price)
-                    : null,
-            }));
-          } catch (e) {
-            return [];
-          }
-        })(),
+        dynamicServices: buildDynamicServices(store.servicesList),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.languageCodes
           ? store.languageCodes.split(",")
@@ -798,30 +804,7 @@ export const formatTopSalons = ({
         isFavorite: Boolean(store.isFavorite),
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
-        dynamicServices: (function() {
-          try {
-            let list = [];
-            if (!store.servicesList) list = [];
-            else if (Array.isArray(store.servicesList)) list = store.servicesList;
-            else {
-              const parsed = JSON.parse(store.servicesList);
-              list = Array.isArray(parsed) ? parsed.filter(Boolean) : [];
-            }
-            // Keep highlighted first (already ordered), max 5 for card ticker.
-            return list.slice(0, 5).map((s) => ({
-              name: s.name,
-              price: s.price != null ? Number(s.price) : null,
-              discountedPrice:
-                s.discountedPrice != null
-                  ? Number(s.discountedPrice)
-                  : s.price != null
-                    ? Number(s.price)
-                    : null,
-            }));
-          } catch (e) {
-            return [];
-          }
-        })(),
+        dynamicServices: buildDynamicServices(store.servicesList),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.language_codes
           ? store.language_codes.split(",")

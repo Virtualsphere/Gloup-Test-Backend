@@ -228,6 +228,32 @@ NodeMailerfunction.Email = {
       return null;
     }
   },
+  // Admin forgot-password mail. The recipient is fixed on the server (never taken
+  // from the request): every reset link goes to the shared admin mailbox.
+  adminPasswordReset: async ({ adminName, adminEmail, resetUrl, expiresInMinutes }) => {
+    const recipient = process.env.ADMIN_RESET_EMAIL || "gloupdevelopers@gmail.com";
+    try {
+      const html = await ejs.renderFile(
+        path.join(mailTemplatefolder, "adminPasswordReset.ejs"),
+        { adminName, adminEmail, resetUrl, expiresInMinutes }
+      );
+
+      return await transporter.sendMail({
+        from: process.env.MAIL_FROM_ADDRESS,
+        to: recipient,
+        subject: "GloUp Admin: password reset link",
+        text:
+          `Someone asked to reset the password of the admin account ${adminName} (${adminEmail}).\n\n` +
+          `Open this link to choose a new password. It works once and expires in ${expiresInMinutes} minutes:\n` +
+          `${resetUrl}\n\n` +
+          `If nobody on your team asked for this, ignore this email.`,
+        html,
+      });
+    } catch (err) {
+      console.error("Admin password reset email error:", err.message);
+      throw Error.SomethingWentWrong("Could not send the reset email. Please try again later.");
+    }
+  },
   resetpassword: async (username, email, status, id, storename, socialinks, passowrd) => {
     const baseURL = process.env.baseUrl;
     const receiverEmail = email;

@@ -4,6 +4,7 @@ import { ApplicationResult } from "../../core/result.js";
 // import {par}
 import { partnerappmiddleware } from "../middleware/partnerappmiddleware.js";
 import { partnerDbController } from "../../core/database/Controller/partnerDbController.js";
+import { adminDbController } from "../../core/database/Controller/AdminDbController.js";
 dotenv.config();
 
 export const createstore = async (req, res) => {
@@ -1857,6 +1858,56 @@ export const removeWeeklyHoliday = async (req, res) => {
       message: "Weekly holiday removed successfully",
       data,
     });
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+// Invoice PDFs are always generated for the authenticated store (req.user.id);
+// any partner_id in the request is ignored.
+const sendInvoicePdf = (res, pdfBuffer, filename) => {
+  res.status(200);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename=${filename}`);
+  res.setHeader("Content-Length", pdfBuffer.length);
+  res.end(pdfBuffer);
+};
+
+export const downloadDailyInvoice = async (req, res) => {
+  try {
+    const date = req.body?.date || req.query?.date || null;
+    const pdfBuffer = await adminDbController.app.generateInvoicePDFForPartner({
+      partner_id: req.user.id,
+      date,
+    });
+    sendInvoicePdf(
+      res,
+      pdfBuffer,
+      `Invoice_${req.user.id}_${date || new Date().toISOString().slice(0, 10)}.pdf`,
+    );
+  } catch (error) {
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Something went wrong",
+    });
+  }
+};
+
+export const downloadMonthlyInvoice = async (req, res) => {
+  try {
+    const month = req.body?.month || req.query?.month || null;
+    const pdfBuffer = await adminDbController.app.generateMonthlyInvoicePDFForPartner({
+      partner_id: req.user.id,
+      month,
+    });
+    sendInvoicePdf(
+      res,
+      pdfBuffer,
+      `MonthlyInvoice_${req.user.id}_${month || new Date().toISOString().slice(0, 7)}.pdf`,
+    );
   } catch (error) {
     res.status(error.status || 500).json({
       success: false,
