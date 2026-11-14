@@ -1309,7 +1309,10 @@ adminDbController.app = {
           LEFT JOIN Slots e ON a.slot_id = e.id
           LEFT JOIN Coupons cp ON a.is_discounted = 1 AND cp.id = a.discount_id
           WHERE a.user_id = :id
-            AND a.payment_status IN ${PAID_PAYMENT_SQL}
+            -- Refunds set payment_status to 'refunded' (updateRefundBookingStatus);
+            -- keep those bookings in the list. The summary already excludes them
+            -- from total_bookings / spent / savings and counts them as refunded.
+            AND (a.payment_status IN ${PAID_PAYMENT_SQL} OR a.payment_status = 'refunded')
           ORDER BY a.booking_date DESC, e.\`from\` DESC, a.id DESC
         `),
       ]);
