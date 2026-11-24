@@ -3130,7 +3130,14 @@ userappmiddleware.user = {
                 throw Error.Unauthorized("User not authenticated");
             }
 
-            const { firstname, lastname, email, phone, age, gender, dob, city, country } = body;
+            let { name, firstname, lastname, email, phone, age, gender, dob, city, country } = body;
+            if (!firstname && name) {
+                const parts = String(name).trim().split(' ');
+                firstname = parts[0];
+                if (parts.length > 1) {
+                    lastname = parts.slice(1).join(' ');
+                }
+            }
             const profilePic = file ? file.path : body.profilePic;
 
             // Basic validation
