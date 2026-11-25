@@ -662,7 +662,7 @@ const buildOfferBadge = (servicesList) => {
     for (const s of list.filter(Boolean)) {
       const price = Number(s.price);
       const disc = Number(s.discountedPrice);
-      if (!(price > 0) || !(disc >= 0) || disc >= price) continue;
+      if (!(price > 0) || !(disc > 0) || disc >= price) continue; // a 0 price is bad data, not a 100% offer
       const flat = Math.round(price - disc);
       const percent = Math.round((flat / price) * 100);
       if (!best || percent > best.percent) {
