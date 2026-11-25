@@ -845,7 +845,7 @@ export const getAllSalons = async (req, res) => {
     let genderFilter = null;
     if (gender) {
       const g = gender.toLowerCase();
-      if (g === "male" || g === "female" || g === "unisex") {
+      if (["male", "female", "unisex", "male_only", "female_only"].includes(g)) {
         genderFilter = g;
       } else {
         return res.status(400).json({ success: false, message: "Invalid gender" });

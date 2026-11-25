@@ -5,6 +5,7 @@
  * male   → men/male salons + unisex
  * female → women/female salons + unisex
  * unisex → only salons marked as Unisex
+ * male_only / female_only → that gender only, unisex salons excluded (Home "UNI SEX" toggle off)
  */
 function storeTypeColumn(column) {
     return `LOWER(TRIM(${column}))`;
@@ -25,6 +26,14 @@ function maleTypeMatch(column) {
         AND ${col} NOT REGEXP 'women|female|ladies'
       )
     )`;
+}
+
+function strictMaleTypeMatch(column) {
+    return `(${maleTypeMatch(column)} AND NOT ${strictUnisexMatch(column)})`;
+}
+
+function strictFemaleTypeMatch(column) {
+    return `(${femaleTypeMatch(column)} AND NOT ${strictUnisexMatch(column)})`;
 }
 
 function femaleTypeMatch(column) {
@@ -60,6 +69,14 @@ export function storeGenderWhereSql(column = "S.store_type", gender = null) {
 
     if (g === "unisex") {
         return `AND ${strictUnisexMatch(column)}`;
+    }
+
+    if (g === "male_only") {
+        return `AND ${strictMaleTypeMatch(column)}`;
+    }
+
+    if (g === "female_only") {
+        return `AND ${strictFemaleTypeMatch(column)}`;
     }
 
     return "";

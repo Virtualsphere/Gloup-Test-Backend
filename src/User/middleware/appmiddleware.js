@@ -2544,7 +2544,7 @@ userappmiddleware.user = {
         let genderFilter = null;
         if (gender) {
             const g = gender.toLowerCase().trim();
-            if (g === "male" || g === "female" || g === "unisex") {
+            if (["male", "female", "unisex", "male_only", "female_only"].includes(g)) {
                 genderFilter = g;
             }
         }
