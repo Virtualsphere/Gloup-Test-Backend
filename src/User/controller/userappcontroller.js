@@ -820,7 +820,7 @@ export const getAllSalons = async (req, res) => {
   try {
     const startTime = Date.now();
 
-    let { page, limit, gender, category, lat, lng, search } = req.query;
+    let { page, limit, gender, category, lat, lng, search, sort, minRating, minPrice, maxPrice, hasOffers } = req.query;
 
     // Pagination validation
     const parsedPage = page ? Math.max(1, Number(page)) : 1;
@@ -860,7 +860,12 @@ export const getAllSalons = async (req, res) => {
       lat: parsedLat,
       lng: parsedLng,
       search: search || null,
-      userId: req.user?.id || null
+      userId: req.user?.id || null,
+      sort: ["distance", "rating", "price_asc", "price_desc"].includes(sort) ? sort : null,
+      minRating: minRating != null && minRating !== "" && !isNaN(Number(minRating)) ? Number(minRating) : null,
+      minPrice: minPrice != null && minPrice !== "" && !isNaN(Number(minPrice)) ? Number(minPrice) : null,
+      maxPrice: maxPrice != null && maxPrice !== "" && !isNaN(Number(maxPrice)) ? Number(maxPrice) : null,
+      hasOffers: hasOffers === true || hasOffers === "true"
     });
 
     // console.log(`Execution time: ${Date.now() - startTime}ms`);

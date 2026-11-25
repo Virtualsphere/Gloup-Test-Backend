@@ -2733,9 +2733,15 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     lat,
     lng,
     search,
-    userId = null
+    userId = null,
+    sort = null,
+    minRating = null,
+    minPrice = null,
+    maxPrice = null,
+    hasOffers = false
   }) => {
-    const cacheKey = `salons_v8_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const filterKey = `${sort ?? ''}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}`;
+    const cacheKey = `salons_v9_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${filterKey}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2793,7 +2799,80 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     `;
     }
 
+    if (minRating != null && !isNaN(Number(minRating))) {
+      conditions.push("IFNULL(R.rating_avg, 0) >= :minRating");
+      replacements.minRating = Number(minRating);
+    }
+    if (minPrice != null && !isNaN(Number(minPrice))) {
+      conditions.push("SS.servicePrice >= :minPrice");
+      replacements.minPrice = Number(minPrice);
+    }
+    if (maxPrice != null && !isNaN(Number(maxPrice))) {
+      conditions.push("SS.servicePrice <= :maxPrice");
+      replacements.maxPrice = Number(maxPrice);
+    }
+    if (hasOffers) {
+      conditions.push("SS.hasOffer = 1");
+    }
+    const hasListFilters = conditions.some((c) => /R\.rating_avg|SS\./.test(c));
+
     const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    const distanceOrder = lat && lng ? 'distance IS NULL, distance ASC' : 'S.id DESC';
+    const orderSql = {
+      rating: `rating DESC, ${distanceOrder}`,
+      price_asc: `SS.servicePrice ASC, ${distanceOrder}`,
+      price_desc: `SS.servicePrice DESC, ${distanceOrder}`,
+      distance: distanceOrder,
+    }[sort] || distanceOrder;
+
+    const ratingJoin = `
+  LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
+    FROM Reviews WHERE status = 'active' GROUP BY store_id
+  ) R ON R.store_id = S.id
+  `;
+    const servicesJoin = `
+  LEFT JOIN (
+    SELECT ss.store_id, 
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
+           GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               JSON_OBJECT(
+                 'name', ss.service_name,
+                 'price', ss.amount,
+                 'discountedPrice', ss.discounted_amount,
+                 'important', ss.important
+               )
+               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer
+    FROM StoreServices ss
+    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+  ) SS ON SS.store_id = S.id
+  `;
 
     const sql = `
   SELECT 
@@ -2829,50 +2908,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   ${addressJoin}
 
-  LEFT JOIN (
-    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
-    FROM Reviews WHERE status = 'active' GROUP BY store_id
-  ) R ON R.store_id = S.id
+  ${ratingJoin}
 
-  LEFT JOIN (
-    SELECT ss.store_id, 
-           COALESCE(
-             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
-             MIN(ss.discounted_amount)
-           ) AS servicePrice, 
-           COALESCE(
-             SUBSTRING_INDEX(
-               GROUP_CONCAT(
-                 CASE WHEN ss.important = 1 THEN ss.service_name END
-                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
-               ), '||', 1
-             ),
-             SUBSTRING_INDEX(
-               GROUP_CONCAT(
-                 ss.service_name
-                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
-               ), '||', 1
-             )
-           ) AS serviceName,
-           GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT(
-             '[',
-             GROUP_CONCAT(
-               JSON_OBJECT(
-                 'name', ss.service_name,
-                 'price', ss.amount,
-                 'discountedPrice', ss.discounted_amount,
-                 'important', ss.important
-               )
-               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
-             ),
-             ']'
-           ) AS servicesList
-    FROM StoreServices ss
-    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
-    WHERE ss.status = 'active'
-    GROUP BY ss.store_id
-  ) SS ON SS.store_id = S.id
+  ${servicesJoin}
 
   LEFT JOIN (
     SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
@@ -2888,10 +2926,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   ${whereClause}
 
-  ORDER BY ${lat && lng
-        ? 'distance IS NULL, distance ASC'
-        : 'S.id DESC'
-      }
+  ORDER BY ${orderSql}
 
   LIMIT :limit OFFSET :offset
   `;
@@ -2901,6 +2936,8 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
   FROM Store S
 
   ${addressJoin}
+
+  ${hasListFilters ? ratingJoin + servicesJoin : ''}
 
   ${whereClause}
   `;

@@ -771,6 +771,7 @@ export const formatSalonList = ({
         serviceName: store.serviceName,
         servicePrice: store.servicePrice ? Number(store.servicePrice) : null,
         dynamicServices: buildDynamicServices(store.servicesList),
+        offerBadge: buildOfferBadge(store.servicesList),
         categories: store.categories ? store.categories.split(",") : [],
         languageCodes: store.languageCodes
           ? store.languageCodes.split(",")
