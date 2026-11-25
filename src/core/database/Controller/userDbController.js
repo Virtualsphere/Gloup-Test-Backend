@@ -2738,9 +2738,10 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     minRating = null,
     minPrice = null,
     maxPrice = null,
-    hasOffers = false
+    hasOffers = false,
+    maxDistance = null
   }) => {
-    const filterKey = `${sort ?? ''}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}`;
+    const filterKey = `${sort ?? ''}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}_${maxDistance ?? ''}`;
     const cacheKey = `salons_v9_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${filterKey}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
@@ -2813,6 +2814,11 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     }
     if (hasOffers) {
       conditions.push("SS.hasOffer = 1");
+    }
+    // Radius filter needs a reference point; ignored without lat/lng.
+    if (maxDistance != null && !isNaN(Number(maxDistance)) && lat && lng) {
+      conditions.push("ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) / 1000 <= :maxDistance");
+      replacements.maxDistance = Number(maxDistance);
     }
     const hasListFilters = conditions.some((c) => /R\.rating_avg|SS\./.test(c));
 
