@@ -650,6 +650,32 @@ const buildDynamicServices = (servicesList) => {
   }
 };
 
+// Best offer on a salon's services, for the "FLAT ₹150 OFF" / "50% OFF" card badge.
+const buildOfferBadge = (servicesList) => {
+  try {
+    const list = !servicesList
+      ? []
+      : Array.isArray(servicesList)
+        ? servicesList
+        : JSON.parse(servicesList);
+    let best = null;
+    for (const s of list.filter(Boolean)) {
+      const price = Number(s.price);
+      const disc = Number(s.discountedPrice);
+      if (!(price > 0) || !(disc >= 0) || disc >= price) continue;
+      const flat = Math.round(price - disc);
+      const percent = Math.round((flat / price) * 100);
+      if (!best || percent > best.percent) {
+        best = { type: "percentage", percent, flat, serviceName: s.name };
+      }
+    }
+    if (!best) return null;
+    return { ...best, label: `${best.percent}% OFF` };
+  } catch (e) {
+    return null;
+  }
+};
+
 export function formatNearbyStores(stores = []) {
   if (!Array.isArray(stores)) return [];
 
@@ -682,6 +708,7 @@ export function formatNearbyStores(stores = []) {
       serviceName: store.serviceName || null,
       servicePrice: store.servicePrice || null,
       dynamicServices: buildDynamicServices(store.servicesList),
+      offerBadge: buildOfferBadge(store.servicesList),
       address,
       area: store.area || null,
       city: store.city || null,
@@ -827,6 +854,20 @@ export function formatCouponResponse(coupons = []) {
     // usageLimit: Number(coupon.usage_limit),
     // usedCount: Number(coupon.used_count || 0)
   }));
+}
+
+export function formatWelcomeOffer(coupon, validUntil) {
+  const isPercent = coupon.discount_type === "percentage";
+  const value = Number(coupon.discount_value);
+  return {
+    couponId: coupon.id,
+    code: coupon.code,
+    discountType: coupon.discount_type,
+    discountValue: value,
+    title: isPercent ? `Flat ${value}% off your first booking` : `Flat \u20B9${value} off your first booking`,
+    description: coupon.description || null,
+    validUntil: validUntil ? validUntil.toISOString() : null,
+  };
 }
 
 export function formatReviewListV2({ reviews, total, page, limit }) {

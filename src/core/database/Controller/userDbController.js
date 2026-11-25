@@ -706,6 +706,17 @@ userDbController.app = {
       throw Error.SomethingWentWrong();
     }
   },
+  getWelcomeCoupon: async (code) => {
+    const now = new Date();
+    const coupon = await userDbController.Models.Coupons.findOne({
+      where: { code, status: "active" },
+      raw: true,
+    });
+    if (!coupon) return null;
+    if (coupon.start_date && new Date(coupon.start_date) > now) return null;
+    if (coupon.end_date && new Date(coupon.end_date) < now) return null;
+    return coupon;
+  },
   getactivecoupons: async (id) => {
     try {
       return await userDbController.Models.Coupons.findAll({
@@ -2483,9 +2494,15 @@ WHERE S.status = 'active'
     radius = 10,
     user_id = null,
     limit = 10,
-    page = 1
+    page = 1,
+    sort = 'distance',
+    minRating = null,
+    minPrice = null,
+    maxPrice = null,
+    hasOffers = false
   }) => {
-    const cacheKey = `nearby_v6_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const filterKey = `${sort}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}`;
+    const cacheKey = `nearby_v7_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}_${filterKey}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2525,6 +2542,30 @@ WHERE S.status = 'active'
     };
 
     const genderCondition = storeGenderWhereSql("S.store_type", gender);
+
+    // Optional filters (Figma 06 "Filters and sorting"). Each is a no-op when unset.
+    let filterSql = "";
+    if (minRating != null && !isNaN(Number(minRating))) {
+      filterSql += " AND IFNULL(R.rating_avg, 0) >= :minRating";
+      replacements.minRating = Number(minRating);
+    }
+    if (minPrice != null && !isNaN(Number(minPrice))) {
+      filterSql += " AND SS.servicePrice >= :minPrice";
+      replacements.minPrice = Number(minPrice);
+    }
+    if (maxPrice != null && !isNaN(Number(maxPrice))) {
+      filterSql += " AND SS.servicePrice <= :maxPrice";
+      replacements.maxPrice = Number(maxPrice);
+    }
+    if (hasOffers) {
+      filterSql += " AND SS.hasOffer = 1";
+    }
+    const orderSql = {
+      rating: "rating DESC, distance ASC",
+      price_asc: "SS.servicePrice ASC, distance ASC",
+      price_desc: "SS.servicePrice DESC, distance ASC",
+      distance: "distance ASC",
+    }[sort] || "distance ASC";
 
     const sql = `
 SELECT 
@@ -2595,6 +2636,7 @@ LEFT JOIN (
              )
            ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer,
            CONCAT(
              '[',
              GROUP_CONCAT(
@@ -2630,6 +2672,7 @@ WHERE
     S.status = 'active'
     AND S.completion_status = 'completed'
     ${genderCondition}
+    ${filterSql}
 
     -- 1️⃣ Bounding box filter (fast)
     AND PA.latitude BETWEEN :minLat AND :maxLat
@@ -2641,7 +2684,7 @@ WHERE
         POINT(:longitude, :latitude)
     ) <= :radiusInMeters
 
-ORDER BY distance ASC
+ORDER BY ${orderSql}
 
 LIMIT :limit OFFSET :offset
 `;
@@ -2650,9 +2693,24 @@ LIMIT :limit OFFSET :offset
 SELECT COUNT(DISTINCT S.id) as total
 FROM Store S
 JOIN PartnerAddress PA ON PA.store_id = S.id AND PA.status = 'active'
+LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg FROM Reviews WHERE status = 'active' GROUP BY store_id
+) R ON R.store_id = S.id
+LEFT JOIN (
+    SELECT ss.store_id,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer
+    FROM StoreServices ss
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+) SS ON SS.store_id = S.id
 WHERE S.status = 'active'
 AND S.completion_status = 'completed'
 ${genderCondition}
+${filterSql}
 AND PA.latitude BETWEEN :minLat AND :maxLat
 AND PA.longitude BETWEEN :minLng AND :maxLng
 AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMeters

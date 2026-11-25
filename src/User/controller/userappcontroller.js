@@ -1158,6 +1158,18 @@ export const getStoresByServiceCategory = async (req, res) => {
 };
 
 // get active coupons version 2
+export const getWelcomeOfferV2 = async (req, res) => {
+  try {
+    const data = await userappmiddleware.user.getWelcomeOfferV2(req);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
 export const getactivecouponv2 = async (req, res) => {
   try {
     const data = await userappmiddleware.user.getactivecouponv2(req);

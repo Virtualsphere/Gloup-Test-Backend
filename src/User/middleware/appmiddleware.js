@@ -13,7 +13,7 @@ import { addfavourites, deletereview, getwalletamount, initiaterefund, topsaloon
 import { connection } from "../../core/database/connection.js";
 import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
 import axios from "axios";
-import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
+import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatWelcomeOffer, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../core/utils/servicePricing.js";
@@ -2527,11 +2527,12 @@ userappmiddleware.user = {
     },
 
     getnearbystoresv2: async ({ body, user }) => {
-        const { lat, lng, gender, page, limit } = body;
+        const { lat, lng, gender, page, limit, sort, minRating, minPrice, maxPrice, hasOffers } = body;
 
         if (!lat || !lng) {
             throw Error.SomethingWentWrong("lat and lng are required");
         }
+        const allowedSorts = ["distance", "rating", "price_asc", "price_desc"];
         const parsedPage = page ? Math.max(1, Number(page)) : 1;
         const parsedLimit = limit ? Math.max(1, Number(limit)) : 10;
         const radius = 10;
@@ -2555,7 +2556,12 @@ userappmiddleware.user = {
             radius,
             user_id: user?.id || null,
             limit: parsedLimit,
-            page: parsedPage
+            page: parsedPage,
+            sort: allowedSorts.includes(sort) ? sort : "distance",
+            minRating: minRating ?? null,
+            minPrice: minPrice ?? null,
+            maxPrice: maxPrice ?? null,
+            hasOffers: hasOffers === true || hasOffers === "true"
         });
 
         const totalPages = Math.ceil(totalRecords / parsedLimit);
@@ -2997,6 +3003,35 @@ userappmiddleware.user = {
     //         throw Error.SomethingWentWrong("could not get active coupons");
     //     }
     // },
+    // Home "Welcome gift" pop-up (Figma 04). Returns null once the user has
+    // booked or redeemed the welcome coupon, or when it is not configured.
+    getWelcomeOfferV2: async (req) => {
+        const userId = req.user.id;
+        const code = process.env.WELCOME_COUPON_CODE || "GLOWNEW";
+        const coupon = await userDbController.app.getWelcomeCoupon(code);
+        if (!coupon) return null;
+
+        const [user, used] = await Promise.all([
+            userDbController.Models.User.findOne({
+                where: { id: userId },
+                attributes: ["id", "registered_at", "paid_booking_count"],
+                raw: true,
+            }),
+            userDbController.app.getCouponUsageCountv2(coupon.id, userId),
+        ]);
+        if (!user || Number(user.paid_booking_count || 0) > 0 || used > 0) return null;
+
+        const hours = Number(process.env.WELCOME_OFFER_HOURS || 48);
+        const created = user.registered_at ? new Date(user.registered_at) : null;
+        let validUntil = created ? new Date(created.getTime() + hours * 3600 * 1000) : null;
+        if (coupon.end_date && (!validUntil || new Date(coupon.end_date) < validUntil)) {
+            validUntil = new Date(coupon.end_date);
+        }
+        if (validUntil && validUntil < new Date()) return null;
+
+        return formatWelcomeOffer(coupon, validUntil);
+    },
+
     getactivecouponv2: async (req) => {
         try {
             const userId = req.user.id;
