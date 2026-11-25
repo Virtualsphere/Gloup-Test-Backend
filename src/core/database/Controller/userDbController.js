@@ -3689,11 +3689,13 @@ END AS distance
         ranked.category_name,
         ranked.search_category,
         ranked.discounted_amount,
+        ranked.amount,
         CONCAT('https://storage.googleapis.com/gloup-images/', ranked.imageKey) AS image
 
       FROM (
         SELECT
           S.discounted_amount,
+          S.amount,
 
           -- Category ID
           C.id AS category_id,
