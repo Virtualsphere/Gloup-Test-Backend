@@ -3463,6 +3463,8 @@ END AS distance
   },
   getUserFavourites: async (userId) => {
 
+    // Aggregates are pre-grouped per store so joins cannot multiply rows
+    // (the old flat join skewed the rating average).
     return await connection.query(
       `
     SELECT 
@@ -3473,39 +3475,86 @@ END AS distance
       S.salon_image,
       S.is_premium,
       S.store_type,
-      
-      IFNULL(AVG(R.rating), 0) AS rating,
-      COUNT(DISTINCT R.id) AS reviewCount,
-      
-      MIN(SS.discounted_amount) AS servicePrice,
-      MIN(SS.service_name) AS serviceName,
-      
-      GROUP_CONCAT(DISTINCT SC.name) AS categories,
-      GROUP_CONCAT(DISTINCT L.code) AS languageCodes,
-      
+
+      IFNULL(R.rating_avg, 0) AS rating,
+      IFNULL(R.review_count, 0) AS reviewCount,
+
+      SS.servicePrice,
+      SS.serviceName,
+      SS.categories,
+      SS.servicesList,
+
+      L.languageCodes,
+
       PA.addressLine1,
       PA.area,
       PA.city,
       PA.zipcode,
       PA.latitude,
       PA.longitude,
-      
+
       1 AS isFavorite
-      
+
     FROM Favourites F
     INNER JOIN Store S ON S.id = F.store_id
     LEFT JOIN PartnerAddress PA ON PA.store_id = S.id AND PA.status = 'active'
-    LEFT JOIN Reviews R ON R.store_id = S.id AND R.status = 'active'
-    LEFT JOIN StoreServices SS ON SS.store_id = S.id AND SS.status = 'active'
-    LEFT JOIN Servicecategory SC ON SC.id = SS.service_category
-    LEFT JOIN StoreLanguages SL ON SL.store_id = S.id
-    LEFT JOIN Languages L ON L.id = SL.language_id AND L.status = 'active'
-    
+
+    LEFT JOIN (
+      SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count
+      FROM Reviews WHERE status = 'active' GROUP BY store_id
+    ) R ON R.store_id = S.id
+
+    LEFT JOIN (
+      SELECT ss.store_id,
+             COALESCE(
+               MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+               MIN(ss.discounted_amount)
+             ) AS servicePrice,
+             COALESCE(
+               SUBSTRING_INDEX(
+                 GROUP_CONCAT(
+                   CASE WHEN ss.important = 1 THEN ss.service_name END
+                   ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+                 ), '||', 1
+               ),
+               SUBSTRING_INDEX(
+                 GROUP_CONCAT(
+                   ss.service_name
+                   ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+                 ), '||', 1
+               )
+             ) AS serviceName,
+             GROUP_CONCAT(DISTINCT sc.name) AS categories,
+             CONCAT(
+               '[',
+               GROUP_CONCAT(
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount,
+                   'important', ss.important
+                 )
+                 ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
+               ),
+               ']'
+             ) AS servicesList
+      FROM StoreServices ss
+      LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+      WHERE ss.status = 'active'
+      GROUP BY ss.store_id
+    ) SS ON SS.store_id = S.id
+
+    LEFT JOIN (
+      SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
+      FROM StoreLanguages sl
+      JOIN Languages l ON l.id = sl.language_id AND l.status = 'active'
+      GROUP BY sl.store_id
+    ) L ON L.store_id = S.id
+
     WHERE F.user_id = :userId
       AND F.status = 'active'
       AND S.status = 'active'
-      
-    GROUP BY S.id, PA.id
+
     ORDER BY S.id DESC
     `,
       {
