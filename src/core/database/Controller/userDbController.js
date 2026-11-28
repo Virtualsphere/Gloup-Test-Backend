@@ -20,6 +20,7 @@ import {
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../utils/servicePricing.js";
 import { resolveClientPlatform } from "../../utils/appUsageTracker.js";
 import { bookingLocationSnapshot } from "../../utils/userLocation.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../utils/banners.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -870,12 +871,13 @@ userDbController.app = {
       throw Error.SomethingWentWrong();
     }
   },
-  getbanner: async () => {
+  // Live banners for one place (user by default; the website sends "web").
+  // This used to return every active banner, partner-app ones included.
+  getbanner: async (place) => {
     try {
       return await userDbController.Models.Banner.findAll({
-        where: {
-          status: "active"
-        }
+        where: liveBannerWhere(place, "user", true),
+        order: BANNER_ORDER,
       })
     } catch (error) {
       console.log("🚀 ~ error:", error)

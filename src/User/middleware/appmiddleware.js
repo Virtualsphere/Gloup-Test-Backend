@@ -27,6 +27,7 @@ import {
 import { parseLocation, recordUserLocation } from "../../core/utils/userLocation.js";
 import { buildAppointmentDateTime } from "../../core/schema/formats.js";
 import { isPaidBooking } from "../../core/utils/refunds.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../core/utils/banners.js";
 
 
 const admin = require('firebase-admin');
@@ -710,7 +711,8 @@ userappmiddleware.user = {
 
     getbanner: async ({ body }) => {
         try {
-            const getbanner = await userDbController.app.getbanner();
+            // body.place: "user" (default) or "web" for the website.
+            const getbanner = await userDbController.app.getbanner(body?.place === "web" ? "web" : "user");
 
             if (!getbanner) {
                 return []
@@ -2501,24 +2503,29 @@ userappmiddleware.user = {
 
     // this version2 of middleware
     // get banner 
-    getBannerV2: async () => {
+    // `place`: "user" (default) or "web" (?place=web, for the website).
+    // Live banners only (status active, inside their schedule), in the
+    // admin's display order. `type` is the placement the admin picked
+    // (main / sub / sub2) and `store_id` the linked salon, if any.
+    getBannerV2: async (place) => {
         try {
             const banners = await userDbController.Models.Banner.findAll({
-                where: {
-                    status: "active",
-                    place: "user",
-                },
-                attributes: ["id", "image"],
+                where: liveBannerWhere(place === "web" ? "web" : "user"),
+                attributes: ["id", "image", "type", "store_id", "name", "color"],
+                order: BANNER_ORDER,
                 raw: true,
             });
-            console.log(banners);
             if (!banners || banners.length === 0) {
                 return [];
             }
 
-            return banners.map((item, index) => ({
+            return banners.map((item) => ({
                 id: item.id,
                 imageUrl: item.image,
+                type: item.type || null,
+                store_id: item.store_id || null,
+                name: item.name || null,
+                color: item.color || null,
             }));
 
         } catch (error) {

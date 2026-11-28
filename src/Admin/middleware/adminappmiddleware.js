@@ -49,6 +49,46 @@ dotenv.config();
 // sendBulkUserPushV2: most users one send may target.
 const BULK_PUSH_MAX_USERS = 5000;
 
+const BANNER_PLACES = ["user", "partner", "web"];
+const BANNER_TYPES = ["main", "sub", "sub2"];
+
+/**
+ * The Banner V2 fields of an add / update request (multipart, so every value
+ * arrives as a string). Only keys present in `body` are returned, so an
+ * update leaves the rest alone. "" clears a date or the colour.
+ * Throws BadRequest on a bad date, colour or an end before the start.
+ */
+function bannerFields(body = {}) {
+    const fields = {};
+    const has = (key) => body[key] !== undefined;
+    const text = (value, max) => String(value ?? "").trim().slice(0, max) || null;
+    const date = (key) => {
+        const value = String(body[key] ?? "").trim();
+        if (!value) return null;
+        const parsed = new Date(value);
+        if (Number.isNaN(parsed.getTime())) throw Error.BadRequest(`Invalid ${key.replace("_", " ")}`);
+        return parsed;
+    };
+
+    if (has("name")) fields.name = text(body.name, 120);
+    if (has("description")) fields.description = text(body.description, 255);
+    if (has("start_date")) fields.start_date = date("start_date");
+    if (has("end_date")) fields.end_date = date("end_date");
+    if (fields.start_date && fields.end_date && fields.end_date < fields.start_date) {
+        throw Error.BadRequest("The end date is before the start date");
+    }
+    if (has("sort_order")) {
+        const order = Number.parseInt(body.sort_order, 10);
+        fields.sort_order = Number.isFinite(order) ? order : 0;
+    }
+    if (has("color")) {
+        const color = String(body.color ?? "").trim();
+        if (color && !/^#[0-9a-f]{6}$/i.test(color)) throw Error.BadRequest("Colour must look like #1A2B3C");
+        fields.color = color || null;
+    }
+    return fields;
+}
+
 const razorpay = new Razorpay({
     key_id: process.env.RZ_PAY_ID,
     key_secret: process.env.RZ_PAY_KEY
@@ -2719,6 +2759,9 @@ await Promise.all(
             if (!files || files.length === 0) {
                 throw Error.NotFound("No files found");
             }
+            // Name, description, schedule, order, colour (Banner V2 page;
+            // the V1 page sends none of these, so they stay NULL / 0).
+            const extra = { ...bannerFields(body), created_by: user?.id || null };
             const results = [];
             for (let file of files) {
                 const filePath = file.filename;
@@ -2745,14 +2788,92 @@ await Promise.all(
                     throw new Error("Upload failed");
                 }
 
-                const addbanner = await adminDbController.app.addbanner(body, "/" + uploaded.key);
+                const addbanner = await adminDbController.app.addbanner(body, "/" + uploaded.key, extra);
                 results.push(addbanner);
             }
 
             return "Banners Added Successfully";
         } catch (error) {
             console.log("🚀 ~ addbanner:async ~ error:", error)
+            if (error && error.type && error.code) throw error;
             throw Error.SomethingWentWrong("Failed to add banner");
+        }
+    },
+    getBannersV2: async () => {
+        try {
+            return (await adminDbController.app.getBannersV2()) || [];
+        } catch (error) {
+            throw Error.SomethingWentWrong("Failed to fetch banners");
+        }
+    },
+    // Edit a banner (Banner V1 Edit, Banner V2 edit dialog / quick actions).
+    // Multipart; every field is optional and only the ones sent change. A new
+    // `image` file replaces the picture. `status` is active | inactive.
+    updateBanner: async ({ body, user, file }) => {
+        try {
+            const id = Number(body.id);
+            const banner = id ? await adminDbController.app.getBannerById(id) : null;
+            if (!banner) throw Error.NotFound("Banner not found");
+
+            const fields = bannerFields(body);
+            const start = fields.start_date !== undefined ? fields.start_date : banner.start_date;
+            const end = fields.end_date !== undefined ? fields.end_date : banner.end_date;
+            if (start && end && new Date(end) < new Date(start)) {
+                throw Error.BadRequest("The end date is before the start date");
+            }
+
+            if (body.place !== undefined) {
+                if (!BANNER_PLACES.includes(body.place)) throw Error.BadRequest("Pick where the banner shows");
+                fields.place = body.place;
+            }
+            if (body.type !== undefined) {
+                if (!BANNER_TYPES.includes(body.type)) throw Error.BadRequest("Pick a placement");
+                fields.type = body.type;
+            }
+            if (body.store_id !== undefined) fields.store_id = Number(body.store_id) || null;
+            if (body.issub !== undefined) fields.issub = body.issub === true || body.issub === "true";
+            if (body.status !== undefined) {
+                if (!["active", "inactive"].includes(body.status)) throw Error.BadRequest("Invalid status");
+                fields.status = body.status;
+            }
+            if (file) {
+                const uploaded = await uploadToS3(file, "banner");
+                if (!uploaded || !uploaded.key) throw new Error("Upload failed");
+                fields.image = "/" + uploaded.key;
+            }
+
+            if ((fields.place ?? banner.place) !== "web" && (fields.type ?? banner.type) === "sub2") {
+                throw Error.BadRequest("Section Two is only for website banners");
+            }
+
+            await adminDbController.app.updateBanner(id, fields);
+            return "Banner Updated Successfully";
+        } catch (error) {
+            console.log("🚀 ~ updateBanner error:", error);
+            if (error && error.type && error.code) throw error;
+            throw Error.SomethingWentWrong("Failed to update banner");
+        }
+    },
+    // Copy of a banner (same picture and settings), paused so it doesn't go
+    // live until the admin turns it on.
+    duplicateBanner: async ({ body, user }) => {
+        try {
+            const banner = await adminDbController.app.getBannerById(Number(body.id));
+            if (!banner) throw Error.NotFound("Banner not found");
+            const { id, ...copy } = banner;
+            await adminDbController.Models.Banner.create({
+                ...copy,
+                name: `${banner.name || `Banner #${banner.id}`} (copy)`.slice(0, 120),
+                status: "inactive",
+                date: new Date(),
+                created_by: user?.id || null,
+                updated_at: null,
+            });
+            return "Banner Duplicated";
+        } catch (error) {
+            console.log("🚀 ~ duplicateBanner error:", error);
+            if (error && error.type && error.code) throw error;
+            throw Error.SomethingWentWrong("Failed to duplicate banner");
         }
     },
     downloadBookingPDF: async (req) => {

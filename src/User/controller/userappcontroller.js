@@ -734,7 +734,7 @@ export const addwallet = async (req, res) => {
 // this is get banner controller 
 export const getBannerV2 = async (req, res) => {
   try {
-    const banners = await userappmiddleware.user.getBannerV2();
+    const banners = await userappmiddleware.user.getBannerV2(req.query?.place);
     return res.status(200).json({
       success: true,
       data: banners,

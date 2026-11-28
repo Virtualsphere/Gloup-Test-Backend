@@ -6,6 +6,9 @@ import { upload, categoryupload, bannerupload, bannerimage, profileimage, imageS
 
 import {
   addbanner,
+  getBannersV2,
+  updateBanner,
+  duplicateBanner,
   sendMarketingWhatsapp,
   sendVideoMarketingWhatsapp,
   sendMarketingSMS,
@@ -258,6 +261,9 @@ approutes.post('/addpayout', verifyadmin, addpayouts);
 approutes.post('/addbanner', verifyadmin, S3upload.array('image', 10), addbanner);
 approutes.post('/getactivebanner', verifyadmin, getbanner);
 approutes.post('/deletebanner', verifyadmin, deletebanner);
+approutes.post('/getbannersv2', verifyadmin, getBannersV2);
+approutes.post('/updatebanner', verifyadmin, S3upload.single('image'), updateBanner);
+approutes.post('/duplicatebanner', verifyadmin, duplicateBanner);
 
 // category  
 approutes.post("/addcategory", verifyadmin, S3upload.single('image'), categoryimage, addcategory);
