@@ -9,7 +9,9 @@ Banner.init({
   store_id: { type: DataTypes.BIGINT, allowNull: true },
   image: { type: DataTypes.TEXT, allowNull: true },
   date: { type: DataTypes.DATE, allowNull: true },
-  status: { type: DataTypes.ENUM('active', 'inactive'), allowNull: true },
+  // active = live in the apps (inside its schedule), inactive = paused by an
+  // admin, deleted = removed from the admin list (soft delete).
+  status: { type: DataTypes.ENUM('active', 'inactive', 'deleted'), allowNull: true },
   type: { type: DataTypes.ENUM('main', 'sub', 'sub2', ''), allowNull: true },
   place: { type: DataTypes.ENUM('web', 'user', 'partner'), allowNull: true },
   issub: { type: DataTypes.BOOLEAN, allowNull: true },
@@ -21,6 +23,16 @@ Banner.init({
       is: /^#([0-9A-F]{6})$/i
     }
   },
+  // Migration 20261128120000-banner-management.
+  name: { type: DataTypes.STRING(120), allowNull: true },
+  description: { type: DataTypes.STRING(255), allowNull: true },
+  // Optional schedule: the apps only get the banner while NOW() is inside it.
+  start_date: { type: DataTypes.DATE, allowNull: true },
+  end_date: { type: DataTypes.DATE, allowNull: true },
+  // Display order in the apps, lowest first.
+  sort_order: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  created_by: { type: DataTypes.INTEGER, allowNull: true },
+  updated_at: { type: DataTypes.DATE, allowNull: true },
 
 }, { sequelize: connection, freezeTableName: true, timestamps: false });
 

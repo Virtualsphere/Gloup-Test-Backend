@@ -184,6 +184,29 @@ export const addbanner = async(req, res) => {
 }    
 
 
+// Banner V2 page: list (all not-deleted banners), edit, duplicate.
+const sendBanner = (promise, res) =>
+    promise
+        .then((data) => {
+            const response = ApplicationResult.forCreated();
+            var statuscode = 0;
+            ApplicationResponse.success(
+                response,
+                null,
+                (response) => (statuscode = response.status)
+            );
+            res.json({ status: statuscode, data: data });
+        })
+        .catch((error) => {
+            ApplicationResponse.error(error, null, (response) => {
+                res.status(response.status).json(response);
+            });
+        });
+
+export const getBannersV2 = async (req, res) => sendBanner(Adminappmiddleware.app.getBannersV2(req), res);
+export const updateBanner = async (req, res) => sendBanner(Adminappmiddleware.app.updateBanner(req), res);
+export const duplicateBanner = async (req, res) => sendBanner(Adminappmiddleware.app.duplicateBanner(req), res);
+
 export const getbanner = async(req, res) => {
     Adminappmiddleware.app.getbanners(req)
         .then((data) => {

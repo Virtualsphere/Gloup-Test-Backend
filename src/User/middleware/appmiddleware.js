@@ -13,7 +13,7 @@ import { addfavourites, deletereview, getwalletamount, initiaterefund, topsaloon
 import { connection } from "../../core/database/connection.js";
 import { sendBookingConfirmedNotifications } from "../../core/utils/bookingNotifications.js";
 import axios from "axios";
-import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
+import { formatNearbyStores, formatSalonList, formatTopSalons, formatSalonResponse, formatCouponResponse, formatWelcomeOffer, formatReviewListV2 } from "../../core/services/ResponseFormatter.js";
 import { broadcastNewBooking } from "../../core/utils/sseManager.js";
 import { sendBookingConfirmedWhatsApp } from "../../core/utils/whatsappNotification.js";
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../core/utils/servicePricing.js";
@@ -27,6 +27,7 @@ import {
 import { parseLocation, recordUserLocation } from "../../core/utils/userLocation.js";
 import { buildAppointmentDateTime } from "../../core/schema/formats.js";
 import { isPaidBooking } from "../../core/utils/refunds.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../core/utils/banners.js";
 
 
 const admin = require('firebase-admin');
@@ -710,7 +711,8 @@ userappmiddleware.user = {
 
     getbanner: async ({ body }) => {
         try {
-            const getbanner = await userDbController.app.getbanner();
+            // body.place: "user" (default) or "web" for the website.
+            const getbanner = await userDbController.app.getbanner(body?.place === "web" ? "web" : "user");
 
             if (!getbanner) {
                 return []
@@ -2501,24 +2503,29 @@ userappmiddleware.user = {
 
     // this version2 of middleware
     // get banner 
-    getBannerV2: async () => {
+    // `place`: "user" (default) or "web" (?place=web, for the website).
+    // Live banners only (status active, inside their schedule), in the
+    // admin's display order. `type` is the placement the admin picked
+    // (main / sub / sub2) and `store_id` the linked salon, if any.
+    getBannerV2: async (place) => {
         try {
             const banners = await userDbController.Models.Banner.findAll({
-                where: {
-                    status: "active",
-                    place: "user",
-                },
-                attributes: ["id", "image"],
+                where: liveBannerWhere(place === "web" ? "web" : "user"),
+                attributes: ["id", "image", "type", "store_id", "name", "color"],
+                order: BANNER_ORDER,
                 raw: true,
             });
-            console.log(banners);
             if (!banners || banners.length === 0) {
                 return [];
             }
 
-            return banners.map((item, index) => ({
+            return banners.map((item) => ({
                 id: item.id,
                 imageUrl: item.image,
+                type: item.type || null,
+                store_id: item.store_id || null,
+                name: item.name || null,
+                color: item.color || null,
             }));
 
         } catch (error) {
@@ -2527,11 +2534,12 @@ userappmiddleware.user = {
     },
 
     getnearbystoresv2: async ({ body, user }) => {
-        const { lat, lng, gender, page, limit } = body;
+        const { lat, lng, gender, page, limit, sort, minRating, minPrice, maxPrice, hasOffers } = body;
 
         if (!lat || !lng) {
             throw Error.SomethingWentWrong("lat and lng are required");
         }
+        const allowedSorts = ["distance", "rating", "price_asc", "price_desc"];
         const parsedPage = page ? Math.max(1, Number(page)) : 1;
         const parsedLimit = limit ? Math.max(1, Number(limit)) : 10;
         const radius = 10;
@@ -2543,7 +2551,7 @@ userappmiddleware.user = {
         let genderFilter = null;
         if (gender) {
             const g = gender.toLowerCase().trim();
-            if (g === "male" || g === "female" || g === "unisex") {
+            if (["male", "female", "unisex", "male_only", "female_only"].includes(g)) {
                 genderFilter = g;
             }
         }
@@ -2555,7 +2563,12 @@ userappmiddleware.user = {
             radius,
             user_id: user?.id || null,
             limit: parsedLimit,
-            page: parsedPage
+            page: parsedPage,
+            sort: allowedSorts.includes(sort) ? sort : "distance",
+            minRating: minRating ?? null,
+            minPrice: minPrice ?? null,
+            maxPrice: maxPrice ?? null,
+            hasOffers: hasOffers === true || hasOffers === "true"
         });
 
         const totalPages = Math.ceil(totalRecords / parsedLimit);
@@ -2997,6 +3010,35 @@ userappmiddleware.user = {
     //         throw Error.SomethingWentWrong("could not get active coupons");
     //     }
     // },
+    // Home "Welcome gift" pop-up (Figma 04). Returns null once the user has
+    // booked or redeemed the welcome coupon, or when it is not configured.
+    getWelcomeOfferV2: async (req) => {
+        const userId = req.user.id;
+        const code = process.env.WELCOME_COUPON_CODE || "GLOWNEW";
+        const coupon = await userDbController.app.getWelcomeCoupon(code);
+        if (!coupon) return null;
+
+        const [user, used] = await Promise.all([
+            userDbController.Models.User.findOne({
+                where: { id: userId },
+                attributes: ["id", "registered_at", "paid_booking_count"],
+                raw: true,
+            }),
+            userDbController.app.getCouponUsageCountv2(coupon.id, userId),
+        ]);
+        if (!user || Number(user.paid_booking_count || 0) > 0 || used > 0) return null;
+
+        const hours = Number(process.env.WELCOME_OFFER_HOURS || 48);
+        const created = user.registered_at ? new Date(user.registered_at) : null;
+        let validUntil = created ? new Date(created.getTime() + hours * 3600 * 1000) : null;
+        if (coupon.end_date && (!validUntil || new Date(coupon.end_date) < validUntil)) {
+            validUntil = new Date(coupon.end_date);
+        }
+        if (validUntil && validUntil < new Date()) return null;
+
+        return formatWelcomeOffer(coupon, validUntil);
+    },
+
     getactivecouponv2: async (req) => {
         try {
             const userId = req.user.id;
@@ -3130,7 +3172,14 @@ userappmiddleware.user = {
                 throw Error.Unauthorized("User not authenticated");
             }
 
-            const { firstname, lastname, email, phone, age, gender, dob, city, country } = body;
+            let { name, firstname, lastname, email, phone, age, gender, dob, city, country } = body;
+            if (!firstname && name) {
+                const parts = String(name).trim().split(' ');
+                firstname = parts[0];
+                if (parts.length > 1) {
+                    lastname = parts.slice(1).join(' ');
+                }
+            }
             const profilePic = file ? file.path : body.profilePic;
 
             // Basic validation

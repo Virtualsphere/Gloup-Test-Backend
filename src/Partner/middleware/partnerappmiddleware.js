@@ -19,6 +19,7 @@ import { helperfunction } from "../../core/utils/helperfunctions.js";
 import { Op, Sequelize } from "sequelize";
 import { uploadToS3 } from "../../core/utils/s3/s3Upload.js";
 import { sendBookingCancelledWhatsApp } from "../../core/utils/whatsappNotification.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../core/utils/banners.js";
 import {
   ensurePlanSyncedToRazorpay,
   resolveRazorpayPlanId,
@@ -536,11 +537,9 @@ partnerappmiddleware.addstore = {
   getBannerWithColor: async () => {
     try {
       return await partnerDbController.Models.Banner.findAll({
-        where: {
-          status: "active",
-          place: "partner",
-        },
+        where: liveBannerWhere("partner"),
         attributes: ["image", "color"],
+        order: BANNER_ORDER,
         raw: true,
       });
     } catch (error) {

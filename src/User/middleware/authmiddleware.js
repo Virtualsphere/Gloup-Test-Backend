@@ -335,7 +335,19 @@ userauthmiddleware.user = {
             var encryptedToken = CryptoJS.AES.encrypt(token, passwordSecret).toString();
             const addSession = await userDbController.auth.createSession(encryptedToken, device, userFound.id);
             if (addSession != null && addSession != undefined) {
-              return { token: encryptedToken, name: userFound.name };
+              const fullName = [userFound.firstname, userFound.lastname].filter(Boolean).join(" ").trim();
+              const hasName = Boolean((userFound.firstname && String(userFound.firstname).trim().length > 0) || fullName.length > 0 || (userFound.name && String(userFound.name).trim().length > 0));
+              const hasGender = Boolean(userFound.gender && String(userFound.gender).trim().length > 0);
+              const isDetailsFound = Boolean(hasName && hasGender);
+              return {
+                token: encryptedToken,
+                name: fullName || userFound.name || null,
+                firstname: userFound.firstname || null,
+                lastname: userFound.lastname || null,
+                gender: userFound.gender || null,
+                is_details_found: isDetailsFound,
+                is_new_user: !isDetailsFound,
+              };
             } else {
               throw Error.SomethingWentWrong();
             }

@@ -734,7 +734,7 @@ export const addwallet = async (req, res) => {
 // this is get banner controller 
 export const getBannerV2 = async (req, res) => {
   try {
-    const banners = await userappmiddleware.user.getBannerV2();
+    const banners = await userappmiddleware.user.getBannerV2(req.query?.place);
     return res.status(200).json({
       success: true,
       data: banners,
@@ -820,7 +820,7 @@ export const getAllSalons = async (req, res) => {
   try {
     const startTime = Date.now();
 
-    let { page, limit, gender, category, lat, lng, search } = req.query;
+    let { page, limit, gender, category, lat, lng, search, sort, minRating, minPrice, maxPrice, hasOffers, maxDistance } = req.query;
 
     // Pagination validation
     const parsedPage = page ? Math.max(1, Number(page)) : 1;
@@ -845,7 +845,7 @@ export const getAllSalons = async (req, res) => {
     let genderFilter = null;
     if (gender) {
       const g = gender.toLowerCase();
-      if (g === "male" || g === "female" || g === "unisex") {
+      if (["male", "female", "unisex", "male_only", "female_only"].includes(g)) {
         genderFilter = g;
       } else {
         return res.status(400).json({ success: false, message: "Invalid gender" });
@@ -860,7 +860,13 @@ export const getAllSalons = async (req, res) => {
       lat: parsedLat,
       lng: parsedLng,
       search: search || null,
-      userId: req.user?.id || null
+      userId: req.user?.id || null,
+      sort: ["distance", "rating", "price_asc", "price_desc"].includes(sort) ? sort : null,
+      minRating: minRating != null && minRating !== "" && !isNaN(Number(minRating)) ? Number(minRating) : null,
+      minPrice: minPrice != null && minPrice !== "" && !isNaN(Number(minPrice)) ? Number(minPrice) : null,
+      maxPrice: maxPrice != null && maxPrice !== "" && !isNaN(Number(maxPrice)) ? Number(maxPrice) : null,
+      hasOffers: hasOffers === true || hasOffers === "true",
+      maxDistance: maxDistance != null && maxDistance !== "" && !isNaN(Number(maxDistance)) && Number(maxDistance) > 0 ? Number(maxDistance) : null
     });
 
     // console.log(`Execution time: ${Date.now() - startTime}ms`);
@@ -1158,6 +1164,18 @@ export const getStoresByServiceCategory = async (req, res) => {
 };
 
 // get active coupons version 2
+export const getWelcomeOfferV2 = async (req, res) => {
+  try {
+    const data = await userappmiddleware.user.getWelcomeOfferV2(req);
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    return res.status(error.status || 500).json({
+      success: false,
+      message: error.message || "Internal Server Error"
+    });
+  }
+};
+
 export const getactivecouponv2 = async (req, res) => {
   try {
     const data = await userappmiddleware.user.getactivecouponv2(req);

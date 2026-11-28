@@ -58,6 +58,10 @@ const BOOKING_PAYMENT_FILTERS = {
   unpaid: "(a.payment_status = 'pending' OR a.payment_status IS NULL)",
   failed: "a.payment_status = 'failed'",
   refunded: "(a.status = 'refunded' OR a.payment_status = 'refunded')",
+  // The customer paid at some point: paid, plus bookings refunded later
+  // (Bookings by Order Date V2's default table view).
+  paid_or_refunded:
+    "(a.payment_status IN ('success', 'sucssess', 'refunded') OR a.status = 'refunded')",
 };
 const BOOKING_LIST_MAX_LIMIT = 10000;
 // What one appointment_items row adds to a partner's invoice - the pricing
@@ -3621,10 +3625,13 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
       throw Error.SomethingWentWrong("Failed to fetch refund request");
     }
   },
+  // Soft delete. 'inactive' now means paused (still listed in the admin
+  // panel); 'deleted' drops the banner from every list.
   deletebanner: async (data) => {
     try {
       return await adminDbController.Models.Banner.update({
-        status: "inactive",
+        status: "deleted",
+        updated_at: new Date(),
       }, {
         where: { id: data.id }
       });
@@ -3713,8 +3720,37 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
     }
   },
 
-  addbanner: async (data, file) => {
-    console.log("🚀 ~ data:", data)
+  // Banner V2 page: every banner that isn't deleted (active and paused), with
+  // the linked salon and the admin who added it. The page works out
+  // Scheduled / Expired from start_date / end_date itself.
+  getBannersV2: async () => {
+    try {
+      return await adminDbController.connection.query(
+        `
+        SELECT
+          b.id, b.store_id, b.image, b.date, b.status, b.type, b.place, b.issub,
+          b.color, b.name, b.description, b.start_date, b.end_date, b.sort_order,
+          b.created_by, b.updated_at,
+          s.name AS store_name,
+          s.email AS store_email,
+          s.phone AS store_phone,
+          ad.name AS created_by_name
+        FROM Banner b
+        LEFT JOIN Store s ON s.id = b.store_id
+        LEFT JOIN admin ad ON ad.id = b.created_by
+        WHERE b.status IN ('active', 'inactive')
+        ORDER BY b.date DESC, b.id DESC
+        `,
+        { type: Sequelize.QueryTypes.SELECT }
+      );
+    } catch (error) {
+      console.log("🚀 ~ getBannersV2 error:", error);
+      throw Error.SomethingWentWrong("Failed to fetch banners");
+    }
+  },
+
+  // `fields` comes from bannerFields() in adminappmiddleware.js.
+  addbanner: async (data, file, fields = {}) => {
     try {
       return await adminDbController.Models.Banner.create({
         store_id: data?.store_id || null,
@@ -3723,11 +3759,35 @@ saveSuccessfulNotificationTokens: async (successTokens) => {
         date: new Date(),
         type: data?.type,
         place: data?.place,
-        issub: data?.issub || false
+        issub: data?.issub || false,
+        ...fields,
       });
     } catch (error) {
       console.log("🚀 ~ error:", error)
       throw Error.SomethingWentWrong("Failed to add banner");
+    }
+  },
+
+  getBannerById: async (id) => {
+    try {
+      return await adminDbController.Models.Banner.findOne({
+        where: { id, status: { [Op.in]: ["active", "inactive"] } },
+        raw: true,
+      });
+    } catch (error) {
+      throw Error.SomethingWentWrong("Failed to fetch banner");
+    }
+  },
+
+  updateBanner: async (id, fields) => {
+    try {
+      return await adminDbController.Models.Banner.update(
+        { ...fields, updated_at: new Date() },
+        { where: { id, status: { [Op.in]: ["active", "inactive"] } } }
+      );
+    } catch (error) {
+      console.log("🚀 ~ updateBanner error:", error);
+      throw Error.SomethingWentWrong("Failed to update banner");
     }
   },
   getBookings: async (data) => {
@@ -5124,27 +5184,6 @@ New Customers: ${result.new_customers_percentage || 0}%, Returning Customers: ${
       });
     } catch (error) {
       throw Error.SomethingWentWrong("Failed to fetch active subscriptions");
-    }
-  },
-  checkbannerquantity: async (body, start_date, end_date) => {
-    try {
-      let sql = `SELECT COUNT(b.id) as total_banner 
-              FROM Banner b 
-              WHERE b.store_id = :store_id 
-              AND b.status = 'active' 
-              AND b.date <= :end_date 
-              AND b.date >= :start_date`;
-
-      return await adminDbController.connection.query(sql, {
-        replacements: {
-          store_id: body.id,
-          start_date: start_date,
-          end_date: end_date
-        },
-        type: Sequelize.QueryTypes.SELECT
-      });
-    } catch (error) {
-      throw Error.SomethingWentWrong("Failed to check banner quantity");
     }
   },
   checkbannerquantity: async (body, start_date, end_date) => {

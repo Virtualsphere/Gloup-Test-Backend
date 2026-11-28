@@ -26,6 +26,7 @@ import { error } from "shelljs";
 import logger from "../../utils/logger.js";
 import { logErrorToDB } from "../../utils/loggerDB.js";
 import { openRefundRequests } from "../../utils/refunds.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../utils/banners.js";
 import { uploadToS3, S3upload, deleteIfExists } from "../../utils/s3/s3Upload.js";
 import Razorpay from "razorpay";
 import {
@@ -553,13 +554,12 @@ PartnerSubscriptionPlanfeatureMapping.belongsTo(
         throw Error.InternalError();
       }
     },
+    // Live partner-app banners (inside their schedule), in display order.
     getbanner: async (body, id) => {
       try {
         return await partnerDbController.Models.Banner.findAll({
-          where: {
-            status: "active",
-            place: "partner",
-          },
+          where: liveBannerWhere("partner"),
+          order: BANNER_ORDER,
         });
       } catch (error) {
         throw Error.InternalError();

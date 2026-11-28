@@ -20,6 +20,7 @@ import {
 import { resolveDiscountedAmount, getActiveCategoryDiscountsMap } from "../../utils/servicePricing.js";
 import { resolveClientPlatform } from "../../utils/appUsageTracker.js";
 import { bookingLocationSnapshot } from "../../utils/userLocation.js";
+import { BANNER_ORDER, liveBannerWhere } from "../../utils/banners.js";
 
 const { appointments, StoreServices, Stylist, Servicecategory, Store, Languages, StoreLanguages } = Models;
 const { Op, Sequelize } = require("sequelize");
@@ -706,6 +707,17 @@ userDbController.app = {
       throw Error.SomethingWentWrong();
     }
   },
+  getWelcomeCoupon: async (code) => {
+    const now = new Date();
+    const coupon = await userDbController.Models.Coupons.findOne({
+      where: { code, status: "active" },
+      raw: true,
+    });
+    if (!coupon) return null;
+    if (coupon.start_date && new Date(coupon.start_date) > now) return null;
+    if (coupon.end_date && new Date(coupon.end_date) < now) return null;
+    return coupon;
+  },
   getactivecoupons: async (id) => {
     try {
       return await userDbController.Models.Coupons.findAll({
@@ -859,12 +871,13 @@ userDbController.app = {
       throw Error.SomethingWentWrong();
     }
   },
-  getbanner: async () => {
+  // Live banners for one place (user by default; the website sends "web").
+  // This used to return every active banner, partner-app ones included.
+  getbanner: async (place) => {
     try {
       return await userDbController.Models.Banner.findAll({
-        where: {
-          status: "active"
-        }
+        where: liveBannerWhere(place, "user", true),
+        order: BANNER_ORDER,
       })
     } catch (error) {
       console.log("🚀 ~ error:", error)
@@ -2483,9 +2496,15 @@ WHERE S.status = 'active'
     radius = 10,
     user_id = null,
     limit = 10,
-    page = 1
+    page = 1,
+    sort = 'distance',
+    minRating = null,
+    minPrice = null,
+    maxPrice = null,
+    hasOffers = false
   }) => {
-    const cacheKey = `nearby_v6_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}`;
+    const filterKey = `${sort}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}`;
+    const cacheKey = `nearby_v7_${parseFloat(latitude).toFixed(3)}_${parseFloat(longitude).toFixed(3)}_${gender||'all'}_${radius}_${limit}_${page}_${filterKey}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2525,6 +2544,30 @@ WHERE S.status = 'active'
     };
 
     const genderCondition = storeGenderWhereSql("S.store_type", gender);
+
+    // Optional filters (Figma 06 "Filters and sorting"). Each is a no-op when unset.
+    let filterSql = "";
+    if (minRating != null && !isNaN(Number(minRating))) {
+      filterSql += " AND IFNULL(R.rating_avg, 0) >= :minRating";
+      replacements.minRating = Number(minRating);
+    }
+    if (minPrice != null && !isNaN(Number(minPrice))) {
+      filterSql += " AND SS.servicePrice >= :minPrice";
+      replacements.minPrice = Number(minPrice);
+    }
+    if (maxPrice != null && !isNaN(Number(maxPrice))) {
+      filterSql += " AND SS.servicePrice <= :maxPrice";
+      replacements.maxPrice = Number(maxPrice);
+    }
+    if (hasOffers) {
+      filterSql += " AND SS.hasOffer = 1";
+    }
+    const orderSql = {
+      rating: "rating DESC, distance ASC",
+      price_asc: "SS.servicePrice ASC, distance ASC",
+      price_desc: "SS.servicePrice DESC, distance ASC",
+      distance: "distance ASC",
+    }[sort] || "distance ASC";
 
     const sql = `
 SELECT 
@@ -2595,6 +2638,7 @@ LEFT JOIN (
              )
            ) AS serviceName,
            GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer,
            CONCAT(
              '[',
              GROUP_CONCAT(
@@ -2630,6 +2674,7 @@ WHERE
     S.status = 'active'
     AND S.completion_status = 'completed'
     ${genderCondition}
+    ${filterSql}
 
     -- 1️⃣ Bounding box filter (fast)
     AND PA.latitude BETWEEN :minLat AND :maxLat
@@ -2641,7 +2686,7 @@ WHERE
         POINT(:longitude, :latitude)
     ) <= :radiusInMeters
 
-ORDER BY distance ASC
+ORDER BY ${orderSql}
 
 LIMIT :limit OFFSET :offset
 `;
@@ -2650,9 +2695,24 @@ LIMIT :limit OFFSET :offset
 SELECT COUNT(DISTINCT S.id) as total
 FROM Store S
 JOIN PartnerAddress PA ON PA.store_id = S.id AND PA.status = 'active'
+LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg FROM Reviews WHERE status = 'active' GROUP BY store_id
+) R ON R.store_id = S.id
+LEFT JOIN (
+    SELECT ss.store_id,
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer
+    FROM StoreServices ss
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+) SS ON SS.store_id = S.id
 WHERE S.status = 'active'
 AND S.completion_status = 'completed'
 ${genderCondition}
+${filterSql}
 AND PA.latitude BETWEEN :minLat AND :maxLat
 AND PA.longitude BETWEEN :minLng AND :maxLng
 AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMeters
@@ -2675,9 +2735,16 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     lat,
     lng,
     search,
-    userId = null
+    userId = null,
+    sort = null,
+    minRating = null,
+    minPrice = null,
+    maxPrice = null,
+    hasOffers = false,
+    maxDistance = null
   }) => {
-    const cacheKey = `salons_v8_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
+    const filterKey = `${sort ?? ''}_${minRating ?? ''}_${minPrice ?? ''}_${maxPrice ?? ''}_${hasOffers ? 1 : 0}_${maxDistance ?? ''}`;
+    const cacheKey = `salons_v9_${page}_${limit}_${gender||''}_${category||''}_${search||''}_${filterKey}_${lat ? parseFloat(lat).toFixed(3) : ''}_${lng ? parseFloat(lng).toFixed(3) : ''}`;
     const cached = await redisClient.get(cacheKey);
     if (cached) return JSON.parse(cached);
 
@@ -2735,7 +2802,85 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
     `;
     }
 
+    if (minRating != null && !isNaN(Number(minRating))) {
+      conditions.push("IFNULL(R.rating_avg, 0) >= :minRating");
+      replacements.minRating = Number(minRating);
+    }
+    if (minPrice != null && !isNaN(Number(minPrice))) {
+      conditions.push("SS.servicePrice >= :minPrice");
+      replacements.minPrice = Number(minPrice);
+    }
+    if (maxPrice != null && !isNaN(Number(maxPrice))) {
+      conditions.push("SS.servicePrice <= :maxPrice");
+      replacements.maxPrice = Number(maxPrice);
+    }
+    if (hasOffers) {
+      conditions.push("SS.hasOffer = 1");
+    }
+    // Radius filter needs a reference point; ignored without lat/lng.
+    if (maxDistance != null && !isNaN(Number(maxDistance)) && lat && lng) {
+      conditions.push("ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) / 1000 <= :maxDistance");
+      replacements.maxDistance = Number(maxDistance);
+    }
+    const hasListFilters = conditions.some((c) => /R\.rating_avg|SS\./.test(c));
+
     const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    const distanceOrder = lat && lng ? 'distance IS NULL, distance ASC' : 'S.id DESC';
+    const orderSql = {
+      rating: `rating DESC, ${distanceOrder}`,
+      price_asc: `SS.servicePrice ASC, ${distanceOrder}`,
+      price_desc: `SS.servicePrice DESC, ${distanceOrder}`,
+      distance: distanceOrder,
+    }[sort] || distanceOrder;
+
+    const ratingJoin = `
+  LEFT JOIN (
+    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
+    FROM Reviews WHERE status = 'active' GROUP BY store_id
+  ) R ON R.store_id = S.id
+  `;
+    const servicesJoin = `
+  LEFT JOIN (
+    SELECT ss.store_id, 
+           COALESCE(
+             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+             MIN(ss.discounted_amount)
+           ) AS servicePrice, 
+           COALESCE(
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 CASE WHEN ss.important = 1 THEN ss.service_name END
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             ),
+             SUBSTRING_INDEX(
+               GROUP_CONCAT(
+                 ss.service_name
+                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+               ), '||', 1
+             )
+           ) AS serviceName,
+           GROUP_CONCAT(DISTINCT sc.name) AS categories,
+           CONCAT(
+             '[',
+             GROUP_CONCAT(
+               JSON_OBJECT(
+                 'name', ss.service_name,
+                 'price', ss.amount,
+                 'discountedPrice', ss.discounted_amount,
+                 'important', ss.important
+               )
+               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
+             ),
+             ']'
+           ) AS servicesList,
+           MAX(ss.amount > ss.discounted_amount) AS hasOffer
+    FROM StoreServices ss
+    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+    WHERE ss.status = 'active'
+    GROUP BY ss.store_id
+  ) SS ON SS.store_id = S.id
+  `;
 
     const sql = `
   SELECT 
@@ -2771,50 +2916,9 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   ${addressJoin}
 
-  LEFT JOIN (
-    SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count 
-    FROM Reviews WHERE status = 'active' GROUP BY store_id
-  ) R ON R.store_id = S.id
+  ${ratingJoin}
 
-  LEFT JOIN (
-    SELECT ss.store_id, 
-           COALESCE(
-             MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
-             MIN(ss.discounted_amount)
-           ) AS servicePrice, 
-           COALESCE(
-             SUBSTRING_INDEX(
-               GROUP_CONCAT(
-                 CASE WHEN ss.important = 1 THEN ss.service_name END
-                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
-               ), '||', 1
-             ),
-             SUBSTRING_INDEX(
-               GROUP_CONCAT(
-                 ss.service_name
-                 ORDER BY ss.discounted_amount ASC SEPARATOR '||'
-               ), '||', 1
-             )
-           ) AS serviceName,
-           GROUP_CONCAT(DISTINCT sc.name) AS categories,
-           CONCAT(
-             '[',
-             GROUP_CONCAT(
-               JSON_OBJECT(
-                 'name', ss.service_name,
-                 'price', ss.amount,
-                 'discountedPrice', ss.discounted_amount,
-                 'important', ss.important
-               )
-               ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
-             ),
-             ']'
-           ) AS servicesList
-    FROM StoreServices ss
-    LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
-    WHERE ss.status = 'active'
-    GROUP BY ss.store_id
-  ) SS ON SS.store_id = S.id
+  ${servicesJoin}
 
   LEFT JOIN (
     SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
@@ -2830,10 +2934,7 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
 
   ${whereClause}
 
-  ORDER BY ${lat && lng
-        ? 'distance IS NULL, distance ASC'
-        : 'S.id DESC'
-      }
+  ORDER BY ${orderSql}
 
   LIMIT :limit OFFSET :offset
   `;
@@ -2843,6 +2944,8 @@ AND ST_Distance_Sphere(PA.location, POINT(:longitude, :latitude)) <= :radiusInMe
   FROM Store S
 
   ${addressJoin}
+
+  ${hasListFilters ? ratingJoin + servicesJoin : ''}
 
   ${whereClause}
   `;
@@ -3362,6 +3465,8 @@ END AS distance
   },
   getUserFavourites: async (userId) => {
 
+    // Aggregates are pre-grouped per store so joins cannot multiply rows
+    // (the old flat join skewed the rating average).
     return await connection.query(
       `
     SELECT 
@@ -3372,39 +3477,86 @@ END AS distance
       S.salon_image,
       S.is_premium,
       S.store_type,
-      
-      IFNULL(AVG(R.rating), 0) AS rating,
-      COUNT(DISTINCT R.id) AS reviewCount,
-      
-      MIN(SS.discounted_amount) AS servicePrice,
-      MIN(SS.service_name) AS serviceName,
-      
-      GROUP_CONCAT(DISTINCT SC.name) AS categories,
-      GROUP_CONCAT(DISTINCT L.code) AS languageCodes,
-      
+
+      IFNULL(R.rating_avg, 0) AS rating,
+      IFNULL(R.review_count, 0) AS reviewCount,
+
+      SS.servicePrice,
+      SS.serviceName,
+      SS.categories,
+      SS.servicesList,
+
+      L.languageCodes,
+
       PA.addressLine1,
       PA.area,
       PA.city,
       PA.zipcode,
       PA.latitude,
       PA.longitude,
-      
+
       1 AS isFavorite
-      
+
     FROM Favourites F
     INNER JOIN Store S ON S.id = F.store_id
     LEFT JOIN PartnerAddress PA ON PA.store_id = S.id AND PA.status = 'active'
-    LEFT JOIN Reviews R ON R.store_id = S.id AND R.status = 'active'
-    LEFT JOIN StoreServices SS ON SS.store_id = S.id AND SS.status = 'active'
-    LEFT JOIN Servicecategory SC ON SC.id = SS.service_category
-    LEFT JOIN StoreLanguages SL ON SL.store_id = S.id
-    LEFT JOIN Languages L ON L.id = SL.language_id AND L.status = 'active'
-    
+
+    LEFT JOIN (
+      SELECT store_id, AVG(rating) AS rating_avg, COUNT(id) AS review_count
+      FROM Reviews WHERE status = 'active' GROUP BY store_id
+    ) R ON R.store_id = S.id
+
+    LEFT JOIN (
+      SELECT ss.store_id,
+             COALESCE(
+               MIN(CASE WHEN ss.important = 1 THEN ss.discounted_amount END),
+               MIN(ss.discounted_amount)
+             ) AS servicePrice,
+             COALESCE(
+               SUBSTRING_INDEX(
+                 GROUP_CONCAT(
+                   CASE WHEN ss.important = 1 THEN ss.service_name END
+                   ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+                 ), '||', 1
+               ),
+               SUBSTRING_INDEX(
+                 GROUP_CONCAT(
+                   ss.service_name
+                   ORDER BY ss.discounted_amount ASC SEPARATOR '||'
+                 ), '||', 1
+               )
+             ) AS serviceName,
+             GROUP_CONCAT(DISTINCT sc.name) AS categories,
+             CONCAT(
+               '[',
+               GROUP_CONCAT(
+                 JSON_OBJECT(
+                   'name', ss.service_name,
+                   'price', ss.amount,
+                   'discountedPrice', ss.discounted_amount,
+                   'important', ss.important
+                 )
+                 ORDER BY ss.important DESC, ss.priority DESC, ss.discounted_amount ASC
+               ),
+               ']'
+             ) AS servicesList
+      FROM StoreServices ss
+      LEFT JOIN Servicecategory sc ON sc.id = ss.service_category
+      WHERE ss.status = 'active'
+      GROUP BY ss.store_id
+    ) SS ON SS.store_id = S.id
+
+    LEFT JOIN (
+      SELECT sl.store_id, GROUP_CONCAT(DISTINCT l.code) AS languageCodes
+      FROM StoreLanguages sl
+      JOIN Languages l ON l.id = sl.language_id AND l.status = 'active'
+      GROUP BY sl.store_id
+    ) L ON L.store_id = S.id
+
     WHERE F.user_id = :userId
       AND F.status = 'active'
       AND S.status = 'active'
-      
-    GROUP BY S.id, PA.id
+
     ORDER BY S.id DESC
     `,
       {
@@ -3631,11 +3783,13 @@ END AS distance
         ranked.category_name,
         ranked.search_category,
         ranked.discounted_amount,
+        ranked.amount,
         CONCAT('https://storage.googleapis.com/gloup-images/', ranked.imageKey) AS image
 
       FROM (
         SELECT
           S.discounted_amount,
+          S.amount,
 
           -- Category ID
           C.id AS category_id,
